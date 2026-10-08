@@ -209,8 +209,9 @@ function whiteboardCliPath(): string | undefined {
  * state directory so no other running Whiteboard answers the agent. */
 export function headlessAskTools(
   stateDir: string,
-  cliPath: string | undefined = whiteboardCliPath(),
+  cliPath: string | null = whiteboardCliPath() ?? null,
 ): AskTools {
+  const cli = cliPath ?? undefined;
   const cliEnv = () => [
     { name: "DEV_REVIEW_SERVER_DIR", value: stateDir },
     ...(process.versions.electron
@@ -223,22 +224,22 @@ export function headlessAskTools(
 
   return {
     mcpServers: () =>
-      cliPath
+      cli
         ? [
             {
               name: "whiteboard",
               command: process.execPath,
-              args: [cliPath, "mcp"],
+              args: [cli, "mcp"],
               env: cliEnv(),
             },
           ]
         : [],
     cli: () =>
-      cliPath &&
+      cli &&
       [
         ...cliEnv().map(({ name, value }) => `${name}=${shellQuote(value)}`),
         shellQuote(process.execPath),
-        shellQuote(cliPath),
+        shellQuote(cli),
       ].join(" "),
   };
 }

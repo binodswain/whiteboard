@@ -1545,7 +1545,7 @@ it("points the agents' Whiteboard tools at the server's state directory", () => 
   expect(command).toContain(`DEV_REVIEW_SERVER_DIR=${shellQuote(stateDir)}`);
   expect(command).toContain(shellQuote(cliPath));
 
-  // A source checkout has no built CLI to advertise.
-  expect(headlessAskTools(stateDir, undefined).mcpServers!()).toEqual([]);
-  expect(headlessAskTools(stateDir, undefined).cli!()).toBeUndefined();
+  // With no CLI to hand out there is nothing to advertise.
+  expect(headlessAskTools(stateDir, null).mcpServers!()).toEqual([]);
+  expect(headlessAskTools(stateDir, null).cli!()).toBeUndefined();
 });
