@@ -8,13 +8,13 @@ line-diff panes.
 
 Why and what the plan rests on: [the blueprint audit](../audits/minimalist-docker-blueprint.md).
 
-Each section below is one GitHub issue. The first section is the epic; the rest
+Each section below is one GitHub issue (number in the heading). The first section is the epic; the rest
 are its sub-issues, in build order. Each has an implementation plan,
 acceptance criteria and a definition of done.
 
 ---
 
-## Epic: Run Whiteboard as a local Docker web service
+## Epic: Run Whiteboard as a local Docker web service (#2)
 
 ### Why this is mostly wiring
 
@@ -60,7 +60,7 @@ Cloudflare Durable Objects / pi-durable, and deleting `apps/review-desktop` or
 
 ---
 
-## 1. Let the headless server listen on a non-loopback address
+## 1. Let the headless server listen on a non-loopback address (#3)
 
 ### Context
 
@@ -99,7 +99,7 @@ reachable from the host, so Docker port publishing does nothing.
 
 ---
 
-## 2. Add a browser entry and bridge for the review canvas
+## 2. Add a browser entry and bridge for the review canvas (#4)
 
 ### Context
 
@@ -152,7 +152,7 @@ browser has none of these.
 
 ---
 
-## 3. Serve the web canvas from the headless server
+## 3. Serve the web canvas from the headless server (#5)
 
 Depends on 1 and 2.
 
@@ -195,7 +195,7 @@ from the same origin so the browser can call the API without CORS.
 
 ---
 
-## 4. Trim the web canvas to summary, diagrams and Ask
+## 4. Trim the web canvas to summary, diagrams and Ask (#6)
 
 Depends on 2.
 
@@ -237,7 +237,7 @@ welcome screens and Settings don't apply in the browser.
 
 ---
 
-## 5. Enable Ask (send to agent) in the headless server
+## 5. Enable Ask (send to agent) in the headless server (#7)
 
 Depends on 1.
 
@@ -282,7 +282,7 @@ Pi) over ACP (`packages/review/src/ask/agents.ts`).
 
 ---
 
-## 6. Docker image and compose file
+## 6. Docker image and compose file (#8)
 
 Depends on 1, 3 and 5.
 
@@ -333,7 +333,7 @@ repository being reviewed.
 
 ---
 
-## 7. CI: build the image and smoke-test it in a browser
+## 7. CI: build the image and smoke-test it in a browser (#9)
 
 Depends on 6.
 
