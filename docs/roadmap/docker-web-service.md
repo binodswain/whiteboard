@@ -319,19 +319,32 @@ repository being reviewed.
      `@dev.fast/diffr` as `workspace:*` and its `prebuild` builds it (plain
      `tsc`); the native code comes from the optional platform package.
    - runtime stage: Node 24 slim, `git`, `gh` (needed by
-     `pull-request.ts` for private and GitHub Enterprise PRs; authenticate
-     with `GH_TOKEN`), the built CLI and web assets, and an optional agent
-     CLI layer (`ARG AGENT=claude|codex|none`). Run as a non-root user.
-2. Entry point:
-   `whiteboard server start --host 0.0.0.0 --port 3000 --web /app/web --state-dir /data`.
+     `pull-request.ts` for private and GitHub Enterprise PRs), the built CLI
+     and web assets, and an optional agent CLI layer
+     (`ARG AGENT=claude|codex|none`). Mark the checkout trusted
+     (`git config --system --add safe.directory /workspace`); otherwise Git
+     stops with "detected dubious ownership" when host and container UIDs
+     differ.
+2. Entry point script, started as root, that drops to an unprivileged user
+   before running anything else:
+   - read `PUID`/`PGID` (default `1000`), create or reuse a matching user,
+     and `chown` `/data` to it. A named volume is created root-owned, so a
+     plain `user:` override can't write the state directory;
+   - as that user, run `gh auth setup-git` when `GH_TOKEN` or
+     `GH_ENTERPRISE_TOKEN` is set, so the `git fetch` in `fetchPullRequest`
+     (which disables credential prompts) authenticates over HTTPS, not just
+     the `gh pr view` metadata lookup;
+   - `exec setpriv --reuid … --regid … --init-groups whiteboard server start
+     --host 0.0.0.0 --port 3000 --web /app/web --state-dir /data`.
 3. `docker-compose.yml`: publish `127.0.0.1:3000:3000` (loopback on the host by
    default), a named volume for `/data`, the repository mounted at
-   `/workspace`, and `WHITEBOARD_TOKEN`, `GH_TOKEN` and agent keys from
-   `.env`. Run the service as the host user (`user: "${UID}:${GID}"`) so the
-   mounted checkout is writable, and mark it trusted in the image
-   (`git config --system --add safe.directory /workspace`); otherwise Git
-   stops with "detected dubious ownership" when host and container UIDs
-   differ.
+   `/workspace`, and `PUID`, `PGID`, `WHITEBOARD_TOKEN`, `GH_TOKEN`,
+   `GH_ENTERPRISE_TOKEN`, `GH_HOST` and agent keys from `.env`. Ship a
+   `.env.example`, and have the docs write the host IDs into `.env`
+   (`printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> .env`), because
+   Compose only interpolates exported or `.env` variables and the shell's
+   `UID` isn't exported. Optionally mount `~/.ssh` read-only for SSH
+   remotes.
 4. A `HEALTHCHECK` against the existing public `/health` route.
 5. A `.dockerignore` that drops `apps/review-desktop`, the Rust parts of
    `diffr/` (everything except `diffr/diffr-ts`), `node_modules` and `.git`.
@@ -345,11 +358,15 @@ repository being reviewed.
 - [ ] Reviews survive `docker compose down && docker compose up`.
 - [ ] The image is linux/amd64 and linux/arm64, and under 500 MB without an
       agent CLI.
-- [ ] The container runs as a non-root user and needs no extra privileges.
+- [ ] The server and agents run as a non-root user, and the container needs
+      no extra privileges beyond the entrypoint's start-up `chown`.
 - [ ] On Linux, with host and image UIDs that differ, Git can read the mounted
-      checkout and Ask can write to it.
-- [ ] Creating a review from a private GitHub PR URL works when `GH_TOKEN` is
-      set.
+      checkout, Ask can write to it, and the server can write `/data`.
+- [ ] `docker compose up` with only the documented `.env` works; no shell
+      variables need exporting by hand.
+- [ ] Creating a review from a private GitHub PR URL works with `GH_TOKEN`,
+      including the `git fetch` over an HTTPS remote, and from a GitHub
+      Enterprise Server PR with `GH_ENTERPRISE_TOKEN` and `GH_HOST`.
 - [ ] A review authored by an agent against `/workspace` shows code peeks
       from that checkout.
 
