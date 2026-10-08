@@ -10,7 +10,7 @@ try {
   const page = await browser.newPage();
   try {
     await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`, {
-      waitUntil: "networkidle",
+      waitUntil: "load",
       timeout: 60_000,
     });
     await page.getByText("Docker web smoke review", { exact: true }).first().click();
