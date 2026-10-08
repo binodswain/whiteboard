@@ -14,25 +14,22 @@ FROM node:24-bookworm-slim AS runtime-base
 RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && git config --system --add safe.directory /workspace \
- && git config --system credential.helper '!gh auth git-credential' \
- && groupadd --gid 1000 whiteboard \
- && useradd --uid 1000 --gid whiteboard --create-home --shell /usr/sbin/nologin whiteboard
+ && git config --system credential.helper '!gh auth git-credential'
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=build --chown=whiteboard:whiteboard /out ./
-COPY --from=build --chown=whiteboard:whiteboard /app/packages/review/app/dist/web ./web
+COPY --from=build --chown=node:node /out ./
+COPY --from=build --chown=node:node /app/packages/review/app/dist/web ./web
 RUN ln -s /app/dist/cli.js /usr/local/bin/whiteboard && chmod 755 /app/dist/cli.js \
  && mkdir -p /data && chmod 1777 /data
 VOLUME /data /workspace
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-USER whiteboard
+USER node
 ENV HOME=/tmp
 CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web", "--state-dir", "/data"]
 
 FROM runtime-base AS runtime
 ARG AGENT=none
 USER root
-RUN if [ "$AGENT" = claude ]; then npm install -g @anthropic-ai/claude-code; elif [ "$AGENT" = codex ]; then npm install -g @openai/codex; elif [ "$AGENT" != none ]; then echo "AGENT must be claude, codex, or none" >&2; exit 1; fi \
- && chown -R whiteboard:whiteboard /usr/local/lib/node_modules /usr/local/bin
-USER whiteboard
+RUN if [ "$AGENT" = claude ]; then npm install -g @anthropic-ai/claude-code; elif [ "$AGENT" = codex ]; then npm install -g @openai/codex; elif [ "$AGENT" != none ]; then echo "AGENT must be claude, codex, or none" >&2; exit 1; fi
+USER node
