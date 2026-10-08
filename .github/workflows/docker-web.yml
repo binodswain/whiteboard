@@ -42,7 +42,10 @@ jobs:
         with:
           node-version: 24
 
+      # The root package.json uses pnpm's catalog: protocol, which npm
+      # cannot parse; install the smoke harness inside its own directory.
       - name: Install Playwright
+        working-directory: scripts/docker-smoke
         run: |
           npm install --no-save playwright@1.62.1
           npx playwright install --with-deps chromium
