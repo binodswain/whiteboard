@@ -173,6 +173,13 @@ export function CodePeekCard({
     );
   }, [key, outcome, reportOutcome, session]);
 
+  if (session.config.surface === "web")
+    return (
+      <section role="note" className="code-peek">
+        This code peek is not available in web reviews.
+      </section>
+    );
+
   if (!ranges.length)
     return (
       <section
@@ -239,7 +246,10 @@ function FileSnippetCard({
   const subject = useMemo(() => codePeekSubject(source), [source]);
 
   const onNativeFocusRef = useRef(onNativeFocus);
-  onNativeFocusRef.current = onNativeFocus;
+
+  useEffect(() => {
+    onNativeFocusRef.current = onNativeFocus;
+  }, [onNativeFocus]);
 
   return (
     <section

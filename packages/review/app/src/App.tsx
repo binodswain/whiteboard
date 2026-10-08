@@ -431,8 +431,14 @@ function ReviewLayoutContent({
         hasChangeRange,
         softwareMapEnabled,
         hasTraceSessions,
+        surface: session.config.surface,
       }),
-    [hasChangeRange, hasTraceSessions, softwareMapEnabled],
+    [
+      hasChangeRange,
+      hasTraceSessions,
+      session.config.surface,
+      softwareMapEnabled,
+    ],
   );
 
   useLayoutEffect(() => {
@@ -607,7 +613,7 @@ function ReviewLayoutContent({
                   shellStyles.topbarContext,
                 )}
               >
-                {!scratchpad && (
+                {session.config.surface !== "web" && !scratchpad && (
                   <Button
                     variant="ghost"
                     xstyle={shellStyles.openSourceTree}
@@ -645,6 +651,7 @@ function ReviewLayoutContent({
               </div>
               <ReviewStackSelector />
               <AskHistoryControl />
+              {session.config.surface === "web" && <WebHelpControl />}
               <ShareControl />
               <IconButton
                 xstyle={shellStyles.topbarItem}
@@ -769,7 +776,7 @@ function ReviewLayoutContent({
                     showFloatingActions={!rightPanelOpen}
                     variant="view"
                   />
-                  <MapSettingsControl />
+                  {session.config.surface !== "web" && <MapSettingsControl />}
                 </div>
               </div>
             )}
@@ -948,6 +955,81 @@ function ReviewBatonChip({
  * gear that held nothing else, which put map-only controls in front of readers
  * who never open the map.
  */
+function WebHelpControl(): ReactElement {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === "?" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        const target = event.target;
+
+        if (target instanceof HTMLElement && target.isContentEditable) return;
+
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement
+        )
+          return;
+        event.preventDefault();
+        setOpen((value) => !value);
+      } else if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  return (
+    <>
+      <IconButton
+        aria-label="Keyboard shortcuts"
+        title="Keyboard shortcuts (?)"
+        onClick={() => setOpen((value) => !value)}
+      >
+        ?
+      </IconButton>
+      {open && (
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard shortcuts"
+          className="web-shortcuts-help"
+        >
+          <h2>Keyboard shortcuts</h2>
+          <p>
+            <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> Move between controls and
+            diagram nodes.
+          </p>
+          <p>
+            <kbd>Shift</kbd> + arrow keys Select text.
+          </p>
+          <p>
+            <kbd>⌘ F</kbd> Find in the whiteboard.
+          </p>
+          <p>
+            <kbd>⌘ L</kbd> Ask the selected text or diagram node.
+          </p>
+          <p>
+            <kbd>⌘ ⇧ C</kbd> Copy selected agent context.
+          </p>
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Close
+          </Button>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** Map-specific settings stay out of the general review toolbar. */
 function MapSettingsControl(): ReactElement {
   const {
     showModifiedOnly,

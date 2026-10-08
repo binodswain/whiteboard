@@ -9,15 +9,31 @@ export async function copyAgentContext(
   session: ReviewSession,
   selection: AgentSelection,
 ): Promise<void> {
-  const response = await session.fetch("/copy-context", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(selection),
-  });
+  let text: string;
 
-  if (!response.ok) throw new Error("Context unavailable");
+  try {
+    const response = await session.fetch("/copy-context", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(selection),
+    });
 
-  const { text } = z.object({ text: z.string() }).parse(await response.json());
+    if (!response.ok) throw new Error("Context unavailable");
+
+    ({ text } = z.object({ text: z.string() }).parse(await response.json()));
+  } catch (error) {
+    if (session.config.surface !== "web") throw error;
+
+    // Public/browser deployments may not expose the desktop context endpoint.
+    // Preserve the selected target as portable context rather than failing.
+    text = [
+      "## Selected review context",
+      "",
+      "```json",
+      JSON.stringify(selection, null, 2),
+      "```",
+    ].join("\n");
+  }
 
   if (!(await copyText(text))) throw new Error("Clipboard unavailable");
 }

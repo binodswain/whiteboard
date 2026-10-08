@@ -95,6 +95,7 @@ export function createWebBridge(
     appVersion: "web",
     theme: theme(),
     host: "desktop",
+    surface: "web",
   };
 
   const listeners = new Set<(event: ReviewSurfaceEvent) => void>();
