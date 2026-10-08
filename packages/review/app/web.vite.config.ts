@@ -1,10 +1,13 @@
 import path from "node:path";
 
 import { defineConfig } from "vite";
+
 import desktop from "./desktop.vite.config";
+import { libavoidWasmAsset } from "./libavoid-wasm";
 
 export default defineConfig({
   ...desktop,
+  plugins: [libavoidWasmAsset(), ...(desktop.plugins ?? [])],
   base: "/",
   build: {
     ...desktop.build,
