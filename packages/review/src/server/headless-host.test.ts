@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
@@ -67,12 +67,14 @@ afterEach(async () => {
 async function start(
   stateDir = path.join(root, "server"),
   softwareMapEnabled = false,
+  host?: string,
 ) {
   const controller = new AbortController();
   const ready = Promise.withResolvers<ReviewServerDiscovery>();
 
   const running = runHeadlessServer({
     stateDir,
+    host,
     softwareMapEnabled,
     signal: controller.signal,
     onReady: ready.resolve,
@@ -960,6 +962,47 @@ it("releases ownership after a port bind failure so startup can be retried", asy
   ).rejects.toThrow(/EADDRINUSE/);
   const retried = await start(stateDir);
   expect(await reviewServerIsHealthy(retried.discovery)).toBe(true);
+});
+
+it("binds a non-loopback address, keeps token auth, and stays reachable locally", async () => {
+  const stderrWrite = vi.spyOn(process.stderr, "write");
+
+  try {
+    // start() connected its client through the discovery file already, so the
+    // loopback URL it finds there proves `whiteboard api`/`mcp` keep working.
+    const server = await start(undefined, false, "0.0.0.0");
+    const { port } = new URL(server.discovery.url);
+
+    expect(server.discovery.url).toBe(`http://127.0.0.1:${port}`);
+    expect(await reviewServerIsHealthy(server.discovery)).toBe(true);
+    expect((await fetch(`${server.discovery.url}/reviews-api`)).status).toBe(
+      401,
+    );
+
+    const external = Object.values(networkInterfaces())
+      .flat()
+      .find((info) => info && !info.internal && info.family === "IPv4");
+
+    const probed = external && {
+      health: (
+        await fetch(`http://${external.address}:${port}/health`, {
+          headers: { "x-review-token": server.discovery.token },
+        })
+      ).status,
+      api: (await fetch(`http://${external.address}:${port}/reviews-api`))
+        .status,
+    };
+
+    expect(probed ?? { health: 200, api: 401 }).toEqual({
+      health: 200,
+      api: 401,
+    });
+    expect(
+      stderrWrite.mock.calls.map(([chunk]) => String(chunk)).join(""),
+    ).toContain("token is the only protection");
+  } finally {
+    stderrWrite.mockRestore();
+  }
 });
 
 it("does not connect to another instance through stale discovery", async () => {

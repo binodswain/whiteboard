@@ -8,11 +8,7 @@ import { devReviewHome } from "./review-home-paths.js";
 const discoverySchema = z.object({
   version: z.literal(1),
   instanceId: z.uuid(),
-  url: z.url().refine((value) => {
-    const url = new URL(value);
-
-    return url.protocol === "http:" && url.hostname === "127.0.0.1";
-  }),
+  url: z.url().refine((value) => new URL(value).protocol === "http:"),
   serverPid: z.number().int().positive(),
   token: z.string().min(1),
 });
