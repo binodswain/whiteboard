@@ -2,6 +2,7 @@
 node_modules
 **/node_modules
 apps/review-desktop
+# Keep only the TypeScript wrapper; native binaries are installed as platform packages.
 diffr/*
 !diffr/diffr-ts
 !diffr/diffr-ts/**

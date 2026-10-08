@@ -6,11 +6,11 @@ Docker Compose runs Whiteboard on `http://localhost:3000`. The port is bound to 
 
 ```sh
 cp .env.example .env
-printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> .env
+printf 'UID=%s\nGID=%s\n' "$(id -u)" "$(id -g)" >> .env
 docker compose up --build
 ```
 
-The entrypoint starts as root only to prepare `/data` ownership, then runs the server as the configured unprivileged UID/GID. To stop it, use `docker compose down`; do not add `-v` if you want to retain reviews.
+The server runs directly as the configured unprivileged UID/GID; the named data volume must be writable by that user. To stop it, use `docker compose down`; do not add `-v` if you want to retain reviews.
 
 ## Review a local repository
 
@@ -20,11 +20,11 @@ The current repository is mounted at `/workspace` by default. To review another 
 REPOSITORY=/absolute/path/to/checkout
 ```
 
-For example, a repository registered in Whiteboard must use the in-container path `/workspace`. On Linux, the configured UID/GID allow Ask to write to the host checkout. The optional `~/.ssh` mount is read-only for SSH Git remotes.
+For example, a repository registered in Whiteboard must use the in-container path `/workspace`. On Linux, the configured UID/GID allow Ask to write to the host checkout. For SSH Git remotes, configure SSH credentials in the container separately; this Compose setup does not mount host SSH keys.
 
 ## Access token and GitHub
 
-Set `WHITEBOARD_TOKEN` in `.env` to require the same token for web/API access. Keep `.env` private; do not commit credentials. For private GitHub PRs set `GH_TOKEN`; for GitHub Enterprise set `GH_ENTERPRISE_TOKEN` and `GH_HOST`. The entrypoint configures GitHub CLI's Git credential helper for the unprivileged server account so HTTPS fetches authenticate too.
+Set `WHITEBOARD_TOKEN` in `.env` to require the same token for web/API access. Keep `.env` private; do not commit credentials. For private GitHub PRs set `GH_TOKEN`; for GitHub Enterprise set `GH_ENTERPRISE_TOKEN` and `GH_HOST`. The image configures Git to use GitHub CLI's credential helper, which reads the supplied token environment variables for HTTPS fetches as well as PR metadata lookup.
 
 ## Connect a host agent
 
