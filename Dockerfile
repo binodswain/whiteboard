@@ -8,11 +8,17 @@ COPY . .
 RUN pnpm install --frozen-lockfile --filter @dev.fast/whiteboard... --filter @dev.fast/review-canvas...
 RUN pnpm --filter @dev.fast/whiteboard build \
  && pnpm --filter @dev.fast/review-canvas build:web \
- && pnpm --filter @dev.fast/whiteboard deploy --prod /out
+ && pnpm --filter @dev.fast/whiteboard deploy --prod --legacy /out \
+ && apt-get update && apt-get install -y --no-install-recommends binutils \
+ && rm -rf /var/lib/apt/lists/* \
+ && strip /out/node_modules/@dev.fast/diffr-*/diffr \
+ && rm -rf /out/src \
+ && find /out -type f \( -name '*.map' -o -name '*.d.ts' \) -delete
 
 FROM node:24-bookworm-slim AS runtime-base
 RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
+ && dpkg --remove --force-depends perl perl-modules-5.36 libperl5.36 \
+ && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale \
  && git config --system --add safe.directory /workspace \
  && git config --system credential.helper '!gh auth git-credential'
 ENV NODE_ENV=production
