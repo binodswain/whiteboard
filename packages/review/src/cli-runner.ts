@@ -297,6 +297,13 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         "--software-maps",
         "allow the authoring skill to generate optional software maps",
       )
+      .addOption(
+        new Option(
+          "--ask",
+          "let reviewers send selections to an installed coding agent (env WHITEBOARD_ASK; default when one is found)",
+        ),
+      )
+      .addOption(new Option("--no-ask", "serve without Ask"))
       // Batch authoring was removed; name that instead of "unknown option".
       .addOption(new Option("--authoring-mode <mode>").hideHelp()),
     "plain",
@@ -306,6 +313,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       host?: string;
       port: string;
       softwareMaps?: boolean;
+      ask?: boolean;
       authoringMode?: string;
       json?: boolean;
     }>();
@@ -321,6 +329,10 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         "--port must be an integer between 0 and 65535.",
       );
     const stateDir = reviewServerStateDir(authoringEnv(options.stateDir));
+    // An explicit flag wins over the env; with neither, the server runs Ask
+    // only when it detects an installed agent.
+    const askEnv = env.WHITEBOARD_ASK?.trim();
+    const ask = options.ask ?? (askEnv ? isEnabledEnvValue(askEnv) : undefined);
     const controller = new AbortController();
     const stop = () => controller.abort();
     process.once("SIGINT", stop);
@@ -333,6 +345,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         port,
         host: options.host?.trim() || undefined,
         softwareMapEnabled: options.softwareMaps,
+        ask,
         signal: controller.signal,
         telemetry,
         onReady: ({ url, serverPid }) => {
@@ -1454,6 +1467,10 @@ async function attemptTelemetry(fn: () => Promise<void>): Promise<void> {
 
 function commanderErrorMessage(error: CommanderError): string {
   return error.message.replace(/^error:\s*/i, "");
+}
+
+function isEnabledEnvValue(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true";
 }
 
 function formatCliError(cause: unknown): string {

@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -21,6 +22,14 @@ import {
   REVIEW_CLIENT_REMOTE,
   parseReviewDesktopVerbFrame,
 } from "@dev.fast/review-protocol";
+import { shellQuote } from "@dev.fast/trace-core";
+import type { AskAgentStatus } from "@review/ask/agents.js";
+import {
+  type AskThreadState,
+  type AskWatchLine,
+  applyAskChange,
+  askWatchLineSchema,
+} from "@review/ask/thread-state.js";
 import { runReviewCli } from "@review/cli-runner.js";
 import {
   connectReviewApi,
@@ -46,7 +55,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createGlobalReviewServer } from "./desktop-server.js";
-import { runHeadlessServer } from "./headless-host.js";
+import { headlessAskTools, runHeadlessServer } from "./headless-host.js";
 
 let root: string;
 
@@ -68,6 +77,7 @@ async function start(
   stateDir = path.join(root, "server"),
   softwareMapEnabled = false,
   host?: string,
+  ask?: boolean,
 ) {
   const controller = new AbortController();
   const ready = Promise.withResolvers<ReviewServerDiscovery>();
@@ -76,6 +86,7 @@ async function start(
     stateDir,
     host,
     softwareMapEnabled,
+    ask,
     signal: controller.signal,
     onReady: ready.resolve,
   });
@@ -1163,4 +1174,378 @@ it("refuses the removed batch authoring mode instead of ignoring it", async () =
 
   expect(result.exitCode).not.toBe(0);
   expect(result.errors).toContain("--authoring-mode was removed");
+});
+
+/** An executable `cursor-agent acp` stand-in: ACP over ndjson on stdio,
+ * logging each request and its own pid for the shutdown check. */
+const STUB_CURSOR_AGENT = `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const record = (entry) =>
+  process.env.STUB_ACP_LOG &&
+  fs.appendFileSync(process.env.STUB_ACP_LOG, JSON.stringify(entry) + "\\n");
+
+if (process.env.STUB_ACP_PID)
+  fs.writeFileSync(process.env.STUB_ACP_PID, String(process.pid));
+
+const modes = (current) => [
+  {
+    id: "mode",
+    name: "Mode",
+    type: "select",
+    currentValue: current,
+    options: [
+      { value: "ask", name: "Ask" },
+      { value: "agent", name: "Agent" },
+    ],
+  },
+];
+
+readline
+  .createInterface({ input: process.stdin })
+  .on("line", (line) => {
+    const message = JSON.parse(line);
+
+    // Notifications carry no id and get no reply.
+    if (message.id === undefined) return;
+
+    const reply = (result) =>
+      send({ jsonrpc: "2.0", id: message.id, result });
+    const chunks = (text) =>
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: message.params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text },
+          },
+        },
+      });
+
+    if (message.method === "initialize")
+      reply({
+        protocolVersion: 1,
+        agentCapabilities: {
+          loadSession: false,
+          promptCapabilities: { image: false },
+        },
+        authMethods: [],
+      });
+    else if (message.method === "session/new") {
+      record({ method: message.method, params: message.params });
+      reply({ sessionId: "stub-session", configOptions: modes("agent") });
+    } else if (message.method === "session/set_config_option") {
+      record({ method: message.method, params: message.params });
+      reply({ configOptions: modes(message.params.value) });
+    } else if (message.method === "session/prompt") {
+      record({ method: message.method, params: message.params });
+      chunks("The stub checked: ");
+      chunks("value is a constant.");
+      reply({ stopReason: "end_turn" });
+    } else
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: { code: -32601, message: \`Unknown \${message.method}\` },
+      });
+  });
+`;
+
+/** An empty dir as PATH and HOME: no agent CLI exists to detect. */
+async function withoutAgents() {
+  const bin = path.join(root, "empty-bin");
+  const home = path.join(root, "empty-home");
+  await mkdir(bin);
+  await mkdir(home);
+  vi.stubEnv("PATH", bin);
+  vi.stubEnv("HOME", home);
+}
+
+async function waitForServer(stateDir: string) {
+  let discovery: ReviewServerDiscovery | null = null;
+
+  await expect
+    .poll(
+      async () => {
+        discovery = await readReviewServerDiscovery(stateDir);
+
+        return discovery !== null && (await reviewServerIsHealthy(discovery));
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+
+  return discovery!;
+}
+
+async function askAgentsRoute(
+  discovery: Pick<ReviewServerDiscovery, "url" | "token">,
+) {
+  return fetch(`${discovery.url}/reviews-api/review/ask/agents`, {
+    headers: { "x-review-token": discovery.token },
+  });
+}
+
+it("answers a selection through an installed agent's ACP session and stops it with the server", async () => {
+  const repo = await repository();
+
+  // A stub `cursor-agent` on PATH speaks ACP; the server finds it, offers it
+  // in the picker, and asks it. Its own log says where it worked.
+  const bin = path.join(root, "bin");
+  const stubLog = path.join(root, "stub-agent.log");
+  const stubPid = path.join(root, "stub-agent.pid");
+  await mkdir(bin);
+  const stub = path.join(bin, "cursor-agent");
+  await writeFile(stub, STUB_CURSOR_AGENT);
+  await chmod(stub, 0o755);
+
+  vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH}`);
+  vi.stubEnv("STUB_ACP_LOG", stubLog);
+  vi.stubEnv("STUB_ACP_PID", stubPid);
+
+  const server = await start();
+
+  const { id: repositoryId } = await server.client.post<{ id: string }>(
+    "/repositories",
+    { path: repo.directory },
+  );
+
+  const created = await server.client.post<Result>("/commands", {
+    operation: {
+      type: "create",
+      title: "Asked",
+      target: { kind: "worktree", repositoryId, base: repo.base },
+      open: false,
+    },
+  });
+
+  const reviewId = created.reviewId;
+
+  const agents = await server.client.read<{ agents: AskAgentStatus[] }>(
+    `/${reviewId}/ask/agents`,
+  );
+
+  expect(agents.agents.find((agent) => agent.id === "cursor")).toMatchObject({
+    name: "Cursor",
+    available: true,
+    readOnly: true,
+  });
+
+  const { threadId } = await server.client.post<{ threadId: string }>(
+    `/${reviewId}/ask`,
+    {
+      agent: "cursor",
+      question: { text: "What does example.ts export?" },
+      selection: {
+        target: { kind: "text", quote: "export const value = 2;" },
+        title: "example.ts",
+      },
+    },
+  );
+
+  const response = await fetch(
+    `${server.discovery.url}/reviews-api/${reviewId}/ask/watch`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-review-token": server.discovery.token,
+      },
+      body: JSON.stringify({ threads: [threadId] }),
+    },
+  );
+
+  expect(response.status).toBe(200);
+
+  const reader = response
+    .body!.pipeThrough(new TextDecoderStream())
+    .getReader();
+
+  const lines: AskWatchLine[] = [];
+  let buffered = "";
+  let state: AskThreadState | undefined;
+
+  const drained = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+
+      if (done) return;
+      buffered += value;
+
+      let end: number;
+
+      while ((end = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, end).trim();
+        buffered = buffered.slice(end + 1);
+
+        if (!line) continue;
+
+        const parsed = askWatchLineSchema.parse(JSON.parse(line));
+        lines.push(parsed);
+        const update = "update" in parsed ? parsed.update : undefined;
+
+        if (update && "snapshot" in update) state = update.snapshot;
+        else if (update && state) state = applyAskChange(state, update.change);
+      }
+    }
+  })();
+
+  // The stub streams two chunks and ends the turn; the last state is idle.
+  await expect
+    .poll(() => (state?.status === "failed" ? state.error : state?.status), {
+      timeout: 10_000,
+    })
+    .toBe("idle");
+  expect(state).toMatchObject({
+    agentName: "Cursor",
+    readOnly: true,
+    cwd: await realpath(repo.directory),
+  });
+  expect(
+    state?.entries.some(
+      (entry) =>
+        entry.kind === "agent" &&
+        entry.text.includes("The stub checked: value is a constant."),
+    ),
+  ).toBe(true);
+
+  // The agent worked in the review's checkout, was set to its read-only ask
+  // mode, and was told the selection and to leave files alone.
+  const log = (await readFile(stubLog, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+
+  expect(log.find((entry) => entry.method === "session/new")?.params.cwd).toBe(
+    await realpath(repo.directory),
+  );
+  expect(
+    log.find(
+      (entry) =>
+        entry.method === "session/set_config_option" &&
+        entry.params.configId === "mode",
+    )?.params.value,
+  ).toBe("ask");
+
+  const prompt = JSON.stringify(
+    log.find((entry) => entry.method === "session/prompt")?.params.prompt,
+  );
+
+  expect(prompt).toContain("What does example.ts export?");
+  expect(prompt).toContain("export const value = 2;");
+  expect(prompt).toContain("Do not change files");
+
+  const pid = Number(await readFile(stubPid, "utf8"));
+  await server.stop();
+  await drained;
+  expect(lines.at(-1)).toEqual({ threadId, ended: true });
+  await expect
+    .poll(
+      () => {
+        try {
+          process.kill(pid, 0);
+
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(false);
+});
+
+it("runs Ask only when it is enabled or an agent is installed", async () => {
+  await withoutAgents();
+
+  // With nothing installed to ask, the default server serves no Ask routes.
+  const off = await start();
+  expect((await askAgentsRoute(off.discovery)).status).toBe(404);
+  await off.stop();
+
+  // WHITEBOARD_ASK=1 turns Ask on; the picker reports each agent missing.
+  const envDir = path.join(root, "env-ask");
+
+  const byEnv = cli(["--state-dir", envDir, "server", "start"], {
+    ...process.env,
+    WHITEBOARD_ASK: "1",
+  });
+
+  try {
+    const discovery = await waitForServer(envDir);
+    const response = await askAgentsRoute(discovery);
+    expect(response.status).toBe(200);
+
+    const { agents } = (await response.json()) as {
+      agents: AskAgentStatus[];
+    };
+
+    expect(agents.length).toBeGreaterThan(0);
+    expect(agents.every((agent) => !agent.available)).toBe(true);
+  } finally {
+    process.emit("SIGINT");
+    expect((await byEnv).exitCode).toBe(0);
+  }
+
+  // A flag beats the env: --no-ask with WHITEBOARD_ASK=1 stays off.
+  const flagDir = path.join(root, "flag-ask");
+
+  const byFlag = cli(["--state-dir", flagDir, "server", "start", "--no-ask"], {
+    ...process.env,
+    WHITEBOARD_ASK: "1",
+  });
+
+  try {
+    const discovery = await waitForServer(flagDir);
+    expect((await askAgentsRoute(discovery)).status).toBe(404);
+  } finally {
+    process.emit("SIGINT");
+    expect((await byFlag).exitCode).toBe(0);
+  }
+
+  // --ask alone turns it on with nothing installed to ask.
+  const askDir = path.join(root, "ask-on");
+
+  const byAsk = cli(["--state-dir", askDir, "server", "start", "--ask"], {
+    ...process.env,
+    WHITEBOARD_ASK: "0",
+  });
+
+  try {
+    const discovery = await waitForServer(askDir);
+    expect((await askAgentsRoute(discovery)).status).toBe(200);
+  } finally {
+    process.emit("SIGINT");
+    expect((await byAsk).exitCode).toBe(0);
+  }
+});
+
+it("points the agents' Whiteboard tools at the server's state directory", () => {
+  const stateDir = path.join(root, "asked-state");
+  const cliPath = path.join(root, "dist", "cli.js");
+  const tools = headlessAskTools(stateDir, cliPath);
+  const [server] = tools.mcpServers!();
+
+  expect(server).toEqual({
+    name: "whiteboard",
+    command: process.execPath,
+    args: [cliPath, "mcp"],
+    env: expect.arrayContaining([
+      { name: "DEV_REVIEW_SERVER_DIR", value: stateDir },
+      { name: "DEV_REVIEW_HOME", value: process.env.DEV_REVIEW_HOME },
+    ]),
+  });
+
+  const command = tools.cli!();
+
+  expect(command).toContain(`DEV_REVIEW_SERVER_DIR=${shellQuote(stateDir)}`);
+  expect(command).toContain(shellQuote(cliPath));
+
+  // A source checkout has no built CLI to advertise.
+  expect(headlessAskTools(stateDir, undefined).mcpServers!()).toEqual([]);
+  expect(headlessAskTools(stateDir, undefined).cli!()).toBeUndefined();
 });

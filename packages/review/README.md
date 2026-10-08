@@ -61,6 +61,25 @@ container. On a non-loopback bind the discovery-file token is the only
 protection, and same-machine `whiteboard api` and `whiteboard mcp` keep
 working through it.
 
+The server also serves Ask — sending a selection in a review to a coding
+agent — once it detects an installed agent: Claude Code (`claude`), Codex
+(`codex`), Cursor (`cursor-agent`), OpenCode (`opencode`), or Pi (`pi`), found
+on `PATH` or in its installer's directory. `--ask` and `--no-ask` override the
+default, as does `WHITEBOARD_ASK=1` or `WHITEBOARD_ASK=0`; a flag beats the
+environment. With no agent installed, the Ask panel lists the supported
+agents and offers to copy the selection instead.
+
+Ask sessions run the agent's own CLI as a child of the server process, signed
+in the way that CLI is signed in: the server's environment and mounts apply —
+for example `ANTHROPIC_API_KEY` or a mounted `~/.claude` for Claude Code,
+`OPENAI_API_KEY` or `~/.codex` for Codex, `CURSOR_API_KEY` for Cursor, the
+provider keys or `opencode auth login` state for OpenCode, and `/login` inside
+`pi` for Pi. Nothing is stored in the review's state directory. Where the
+agent has a mode that keeps the checkout as it is, Ask runs it that way.
+Whiteboard gives each session its own tools — `whiteboard mcp`, or `whiteboard
+api` from the agent's shell — pointed at the server's state directory, and
+stopping the server stops the agent processes.
+
 To select a review, run:
 
 ```sh
