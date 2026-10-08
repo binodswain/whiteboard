@@ -1,7 +1,6 @@
 import type { ReviewCanvasBridge, ReviewRuntimeConfig } from "@dev.fast/review-protocol";
 import { reviewFetchUrl } from "../host/review-client";
-
-const wasmUrl = new URL("../../../node_modules/@mr_mint/elkjs-libavoid/dist/libavoid.wasm", import.meta.url).href;
+import wasmUrl from "@mr_mint/elkjs-libavoid/dist/libavoid.wasm?url";
 
 export function createWebBridge(reviewId = ""): ReviewCanvasBridge {
   const url = new URL(location.href);
