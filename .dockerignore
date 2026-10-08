@@ -1,0 +1,7 @@
+.git
+node_modules
+**/node_modules
+apps/review-desktop
+diffr/*
+!diffr/diffr-ts
+!diffr/diffr-ts/**
