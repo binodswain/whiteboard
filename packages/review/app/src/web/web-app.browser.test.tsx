@@ -1,16 +1,12 @@
+import { fixtureReviewBridge, settled } from "@canvas/fixture-review-bridge";
 import type {
   ReviewApiSummary,
   ReviewCanvasBridge,
 } from "@dev.fast/review-protocol";
-import {
-  assignFreshIds,
-  documentSchema,
-} from "@review/review-api/document";
+import { assignFreshIds, documentSchema } from "@review/review-api/document";
 import type { Snapshot } from "@review/review-api/store";
 import { act } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-
-import { fixtureReviewBridge, settled } from "@canvas/fixture-review-bridge";
 
 import { type WebAppHandle, startWebCanvas } from "./web-app";
 
@@ -139,10 +135,7 @@ function webFixtureRequest(state: FixtureState) {
   return { request, push };
 }
 
-function fixtureReview(
-  reviewId: string,
-  title: string,
-): Snapshot {
+function fixtureReview(reviewId: string, title: string): Snapshot {
   const blocks = documentSchema.parse([
     {
       type: "flow_diagram",
@@ -169,7 +162,12 @@ function fixtureReview(
     version: 1,
     title,
     pins: { repositoryId: "repo", base: "base", head: "head" },
-    target: { kind: "commits", repositoryId: "repo", base: "base", head: "head" },
+    target: {
+      kind: "commits",
+      repositoryId: "repo",
+      base: "base",
+      head: "head",
+    },
     document: blocks,
     createdAt: "2026-01-05T00:00:00.000Z",
   };
@@ -225,9 +223,7 @@ describe("the web canvas entry", () => {
     await act(async () => push());
 
     expect(
-      await settled(() =>
-        container!.textContent?.includes("Published later"),
-      ),
+      await settled(() => container!.textContent?.includes("Published later")),
     ).toBe(true);
 
     // Opening a review routes to /r/:id and renders its flow diagram.
@@ -246,5 +242,47 @@ describe("the web canvas entry", () => {
       ),
     ).toBe(true);
     expect(container!.textContent).toContain("Queue order");
+  });
+
+  it("bootstraps the token from the URL fragment and asks for one when missing", async () => {
+    const state: FixtureState = { catalog: [], snapshots: new Map() };
+    const fixture = webFixtureRequest(state);
+
+    let requested = false;
+
+    const request = (url: string, init?: RequestInit) => {
+      requested = true;
+
+      return fixture.request(url, init);
+    };
+
+    // No token anywhere: a short prompt, not a stack trace or a blank page.
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, { request });
+    });
+
+    expect(container.textContent).toContain("token");
+    expect(container.querySelector("input[type=password]")).toBeTruthy();
+    expect(requested).toBe(false);
+
+    await act(async () => app?.dispose());
+    container.replaceChildren();
+
+    // The fragment bootstrap: captured, kept in sessionStorage, stripped.
+    history.replaceState(null, "", "/#token=abcd1234abcd1234abcd1234");
+
+    await act(async () => {
+      app = startWebCanvas(container!, { request });
+    });
+
+    expect(location.hash).toBe("");
+    expect(sessionStorage.getItem("review-token")).toBe(
+      "abcd1234abcd1234abcd1234",
+    );
+    expect(await settled(() => requested)).toBe(true);
   });
 });
