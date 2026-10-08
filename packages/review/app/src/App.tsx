@@ -90,6 +90,7 @@ import {
   elevation,
   fontSize,
   fontWeight,
+  layer,
   motion,
   radius,
 } from "./scale.stylex";
@@ -668,7 +669,7 @@ function ReviewLayoutContent({
               </IconButton>
               <BugReportControl />
               <ReviewBatonChip outcome={review.submissionOutcome} />
-              <DiffLayoutControl />
+              {session.config.surface !== "web" && <DiffLayoutControl />}
               {!scratchpad &&
                 !review.historicalRevision &&
                 !review.submissionOutcome && (
@@ -1001,24 +1002,28 @@ function WebHelpControl(): ReactElement {
           role="dialog"
           aria-modal="true"
           aria-label="Keyboard shortcuts"
-          className="web-shortcuts-help"
+          {...stylex.props(webHelpStyles.dialog)}
         >
           <h2>Keyboard shortcuts</h2>
           <p>
             <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> Move between controls and
-            diagram nodes.
+            diagram nodes; press <kbd>Enter</kbd> or <kbd>Space</kbd> to select
+            a node.
           </p>
           <p>
             <kbd>Shift</kbd> + arrow keys Select text.
           </p>
           <p>
-            <kbd>⌘ F</kbd> Find in the whiteboard.
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>F</kbd> Find in the
+            whiteboard.
           </p>
           <p>
-            <kbd>⌘ L</kbd> Ask the selected text or diagram node.
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>L</kbd> Ask the selected
+            text or diagram node.
           </p>
           <p>
-            <kbd>⌘ ⇧ C</kbd> Copy selected agent context.
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>{" "}
+            Copy selected agent context.
           </p>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             Close
@@ -1028,6 +1033,24 @@ function WebHelpControl(): ReactElement {
     </>
   );
 }
+
+const webHelpStyles = stylex.create({
+  dialog: {
+    position: "absolute",
+    zIndex: layer.popover,
+    insetBlockStart: 48,
+    insetInlineEnd: 12,
+    width: "min(360px, calc(100vw - 24px))",
+    padding: 18,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: tokens.rule,
+    borderRadius: radius.surface,
+    color: tokens.ink,
+    backgroundColor: tokens.tray,
+    boxShadow: elevation.popover,
+  },
+});
 
 /** Map-specific settings stay out of the general review toolbar. */
 function MapSettingsControl(): ReactElement {

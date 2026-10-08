@@ -248,12 +248,20 @@ export function AgentSelectionProvider({
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
+      const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+
+      const shortcutModifier =
+        session.config.surface === "web"
+          ? mac
+            ? event.metaKey && !event.ctrlKey
+            : event.ctrlKey && !event.metaKey
+          : event.metaKey && !event.ctrlKey;
+
       if (
         selection &&
-        event.metaKey &&
+        shortcutModifier &&
         event.shiftKey &&
         !event.altKey &&
-        !event.ctrlKey &&
         event.key.toLowerCase() === "c"
       ) {
         event.preventDefault();
@@ -264,10 +272,9 @@ export function AgentSelectionProvider({
       if (
         selection &&
         askAgent &&
-        event.metaKey &&
+        shortcutModifier &&
         !event.shiftKey &&
         !event.altKey &&
-        !event.ctrlKey &&
         event.key.toLowerCase() === "l"
       ) {
         event.preventDefault();
