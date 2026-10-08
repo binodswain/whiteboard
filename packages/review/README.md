@@ -54,6 +54,13 @@ Reviews are authored through the JSON API: `whiteboard api` calls a tool
 directly, and `whiteboard mcp` serves the same catalog over stdio MCP for a
 connected agent.
 
+`whiteboard server start` runs that API without Desktop. It binds `127.0.0.1`
+by default; pass `--host <address>` (or set `WHITEBOARD_HOST`) to bind another
+interface, such as `0.0.0.0` for every interface when the server runs inside a
+container. On a non-loopback bind the discovery-file token is the only
+protection, and same-machine `whiteboard api` and `whiteboard mcp` keep
+working through it.
+
 To select a review, run:
 
 ```sh

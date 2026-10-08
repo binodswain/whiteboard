@@ -282,9 +282,15 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         "--state-dir <path>",
         "directory for saved reviews and server discovery",
       )
+      .addOption(
+        new Option(
+          "--host <address>",
+          "address to bind (0.0.0.0 listens on every interface)",
+        ).env("WHITEBOARD_HOST"),
+      )
       .option(
         "--port <port>",
-        "loopback port (0 chooses an available port)",
+        "port to listen on (0 chooses an available port)",
         "0",
       )
       .option(
@@ -297,6 +303,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
   ).action(async (_options, command: Command) => {
     const options = command.optsWithGlobals<{
       stateDir?: string;
+      host?: string;
       port: string;
       softwareMaps?: boolean;
       authoringMode?: string;
@@ -324,6 +331,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       await runHeadlessServer({
         stateDir,
         port,
+        host: options.host?.trim() || undefined,
         softwareMapEnabled: options.softwareMaps,
         signal: controller.signal,
         telemetry,
