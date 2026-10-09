@@ -187,7 +187,9 @@ export class SqliteMetadataStore {
         .all()
         .map((column) => String(column.name)),
     );
+
     const missing = REVIEW_COLUMNS.filter((column) => !present.has(column));
+
     if (!missing.length) return;
 
     for (const column of missing)
@@ -197,7 +199,8 @@ export class SqliteMetadataStore {
       UPDATE reviews SET
         branch=(SELECT json_extract(versions.snapshot,'$.origin.branch') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
         base_sha=(SELECT json_extract(versions.snapshot,'$.pins.base') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
-        head_sha=(SELECT json_extract(versions.snapshot,'$.pins.head') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
+        head_sha=(SELECT json_extract(versions.snapshot,'$.pins.head') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        created_by=(SELECT json_extract(versions.snapshot,'$.createdBy') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
       CREATE INDEX IF NOT EXISTS reviews_branch ON reviews(branch);
       CREATE INDEX IF NOT EXISTS reviews_created_by ON reviews(created_by);`);
   }
@@ -374,12 +377,19 @@ export async function importHeadlessStore(
 
           database.exec(`
           INSERT OR IGNORE INTO resources SELECT s.id,r.new_id,s.kind,s.mime_type,s.data FROM headless.resources s JOIN repository_ids r ON s.repository_id=r.old_id;
-          INSERT INTO reviews SELECT * FROM headless.reviews;
+          INSERT INTO reviews(id,version,next_id,branch,base_sha,head_sha,created_by)
+            SELECT id,version,next_id,NULL,NULL,NULL,NULL FROM headless.reviews;
           INSERT INTO versions SELECT s.review_id,s.version,
             CASE WHEN json_type(s.snapshot,'$.target')='object'
               THEN json_set(s.snapshot,'$.pins.repositoryId',r.new_id,'$.target.repositoryId',r.new_id)
               ELSE json_set(s.snapshot,'$.pins.repositoryId',r.new_id) END
             FROM headless.versions s JOIN repository_ids r ON json_extract(s.snapshot,'$.pins.repositoryId')=r.old_id;
+          UPDATE reviews SET
+            branch=(SELECT json_extract(versions.snapshot,'$.origin.branch') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+            base_sha=(SELECT json_extract(versions.snapshot,'$.pins.base') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+            head_sha=(SELECT json_extract(versions.snapshot,'$.pins.head') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+            created_by=(SELECT json_extract(versions.snapshot,'$.createdBy') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version)
+            WHERE branch IS NULL OR base_sha IS NULL OR head_sha IS NULL;
           INSERT INTO review_attention SELECT * FROM headless.review_attention;
         `);
 
@@ -420,4 +430,19 @@ function initializeReviewStoreSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS comparison_stats(identity TEXT PRIMARY KEY, stats TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS server_identity(one INTEGER PRIMARY KEY CHECK(one=1), id TEXT NOT NULL);
   `);
+
+  const columns = new Set(
+    db
+      .prepare("PRAGMA table_info(reviews)")
+      .all()
+      .map((column) => String(column.name)),
+  );
+
+  for (const column of REVIEW_COLUMNS)
+    if (!columns.has(column))
+      db.exec(`ALTER TABLE reviews ADD COLUMN ${column} TEXT`);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS reviews_branch ON reviews(branch);
+    CREATE INDEX IF NOT EXISTS reviews_created_by ON reviews(created_by);`);
 }

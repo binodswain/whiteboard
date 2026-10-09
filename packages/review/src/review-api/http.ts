@@ -260,10 +260,10 @@ export function createReviewApi(
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   },
   headlessOpenUrl?: (reviewId: string) => string,
-  jobs?: JobRunner,
   /** Remote-mode repository authorization; absent locally, where the outer
    * token wall remains the whole boundary. */
   access?: ReviewApiAccess,
+  jobs?: JobRunner,
 ) {
   const app = new Hono();
   app.onError((error, context) => {
@@ -334,10 +334,12 @@ export function createReviewApi(
     await store.askQueue.reapExpired();
 
     const asks = await store.askQueue.pending();
+
     const visible = await Promise.all(
       asks.map(async (ask) => {
         try {
           await assertRepoAccess(ask.reviewId);
+
           return ask;
         } catch {
           return null;
@@ -358,6 +360,7 @@ export function createReviewApi(
     const { runnerId } = claimAskSchema.parse(
       await readBoundedRequestJson(context.req.raw),
     );
+
     await assertAskAccess(context.req.param("askId"));
 
     const ask = await store.askQueue.claim(
@@ -373,6 +376,7 @@ export function createReviewApi(
     const input = completeAskSchema.parse(
       await readBoundedRequestJson(context.req.raw),
     );
+
     await assertAskAccess(context.req.param("askId"));
 
     const completed = await store.askQueue.complete(
@@ -389,6 +393,7 @@ export function createReviewApi(
     const { runnerId } = heartbeatAskSchema.parse(
       await readBoundedRequestJson(context.req.raw),
     );
+
     await assertAskAccess(context.req.param("askId"));
 
     const renewed = await store.askQueue.heartbeat(
@@ -404,6 +409,7 @@ export function createReviewApi(
     const input = failAskSchema.parse(
       await readBoundedRequestJson(context.req.raw),
     );
+
     await assertAskAccess(context.req.param("askId"));
 
     const failed = await store.askQueue.fail(

@@ -824,7 +824,6 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       state.exitCode = 0;
     });
 
-
   const reviews = configureJsonOutput(
     program
       .command("reviews")
@@ -927,7 +926,6 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       },
     );
   }
-
 
   const instanceOutput = (command: Command) => ({
     env,

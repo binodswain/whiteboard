@@ -429,7 +429,6 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     input.localBrowserAuth,
     input.webSettings,
     input.headlessOpenUrl,
-    jobs,
     auth === null
       ? undefined
       : {
@@ -438,6 +437,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
             auth.access.canRead(principal, repoPath),
           normalizeRepoPath: (repoPath) => auth.access.normalize(repoPath),
         },
+    jobs,
   );
 
   // A shared store mounts the publisher with the rest of sharing.

@@ -81,7 +81,8 @@ export const POSTGRES_MIGRATIONS: {
       UPDATE reviews SET
         branch=(SELECT versions.snapshot::jsonb #>> '{origin,branch}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
         base_sha=(SELECT versions.snapshot::jsonb #>> '{pins,base}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
-        head_sha=(SELECT versions.snapshot::jsonb #>> '{pins,head}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
+        head_sha=(SELECT versions.snapshot::jsonb #>> '{pins,head}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        created_by=(SELECT versions.snapshot::jsonb #>> '{createdBy}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
       CREATE INDEX reviews_branch ON reviews(branch);
       CREATE INDEX reviews_created_by ON reviews(created_by);
       CREATE TABLE review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL, PRIMARY KEY(review_id,tag));

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import type { JobRunner } from "@review/jobs/job-runner.js";
 import { createReviewApi } from "@review/review-api/http.js";
 import { type ReviewProviders, ReviewStore } from "@review/review-api/store.js";
 import { publicDeploymentConfig } from "@review/server/deployment-config.js";
@@ -577,7 +578,7 @@ describe("oauth driver", () => {
 });
 
 describe("remote server wall", () => {
-  const wall = async (driver: AuthDriver) => {
+  const wall = async (driver: AuthDriver, jobs?: JobRunner) => {
     const api = createReviewApi(
       store,
       undefined,
@@ -598,6 +599,7 @@ describe("remote server wall", () => {
           driver.access.canRead(principal, repoPath),
         normalizeRepoPath: (repoPath) => driver.access.normalize(repoPath),
       },
+      jobs,
     );
 
     const app = createReviewServerApp({
@@ -666,7 +668,17 @@ describe("remote server wall", () => {
     });
 
     const driver = oauthDriver(fetchImpl);
-    const app = await wall(driver);
+
+    const jobs: JobRunner = {
+      submit: async () => {
+        throw new Error("A denied repository must not create a job.");
+      },
+      get: async () => undefined,
+      runNext: async () => false,
+      run: async () => false,
+    };
+
+    const app = await wall(driver, jobs);
 
     // Two repositories: one readable, one hidden from this user.
     const open = await store.registerRemoteRepository(
@@ -706,6 +718,18 @@ describe("remote server wall", () => {
     const cookie = sessionCookie(await signIn(app, "/auth"));
     const auth = { cookie: `wb_session=${cookie}` };
 
+    const deniedJob = await app.request("/reviews-api/jobs", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({
+        repository: "https://github.test/acme/secret",
+        base: "base",
+        head: "head",
+      }),
+    });
+
+    expect(deniedJob.status).toBe(404);
+
     const catalog = (await (
       await app.request("/reviews-api", { headers: auth })
     ).json()) as { title: string }[];
@@ -727,5 +751,34 @@ describe("remote server wall", () => {
         })
       ).status,
     ).toBe(200);
+
+    expect(
+      (
+        await app.request(`/reviews-api/${hidden.reviewId}/comments`, {
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+
+    const hiddenAsk = await store.askQueue.create({
+      reviewId: hidden.reviewId,
+      prompt: "Read the private review",
+      createdBy: "connector",
+    });
+
+    expect(
+      (
+        await app.request(`/reviews-api/asks/${hiddenAsk}`, {
+          headers: auth,
+        })
+      ).status,
+    ).toBe(404);
+
+    const pendingAsks = await app.request("/reviews-api/asks/pending", {
+      headers: auth,
+    });
+
+    expect(pendingAsks.status).toBe(200);
+    expect(await pendingAsks.json()).toMatchObject({ asks: [] });
   });
 });
