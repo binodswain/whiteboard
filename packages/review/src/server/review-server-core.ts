@@ -39,6 +39,7 @@ import {
   readBoundedRequestJson,
 } from "./hono-http";
 import { HttpJsonError, ReviewServerError } from "./http-json";
+import { createSetupInfoHandler } from "./setup-info.js";
 import type { WebSettings } from "./web-settings.js";
 
 const version = readReviewPackageVersion(import.meta.url);
@@ -85,6 +86,16 @@ export function createReviewServerApp(input: {
         : health,
     );
   });
+
+  // Open like /health — it is how a host-side agent learns to connect — but
+  // the token stays behind the same checks that guard it elsewhere.
+  const setupInfo = createSetupInfoHandler({
+    token: input.token,
+    localBrowserAuth: input.localBrowserAuth,
+    localBrowserPort: input.localBrowserPort,
+  });
+
+  app.get("/setup-info", (context) => setupInfo(context.req.raw));
   app.use("*", async (context, next) => {
     if (isAuthorizedRequest(context.req.raw, input.token)) return next();
 
@@ -260,6 +271,7 @@ export function serveWebCanvas(
 
   outer.get("/", index);
   outer.get("/r/*", index);
+  outer.get("/setup", index);
 
   outer.route("/", app);
   outer.notFound(() => serverJson(404, { ok: false, error: "Not found." }));

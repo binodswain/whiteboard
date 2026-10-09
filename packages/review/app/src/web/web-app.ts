@@ -8,6 +8,7 @@ import type {
 } from "@dev.fast/review-protocol";
 import { ReviewApiClient } from "@dev.fast/review-protocol";
 
+import { mountSetupLink, mountWebSetup } from "./setup-view";
 import {
   type WebSettingsValues,
   createWebBridge,
@@ -134,6 +135,11 @@ export function startWebCanvas(
       : reviewFetchUrl({ serverUrl, token }, url, requestInit);
   };
 
+  // The setup landing page is reachable before any token exists: it is what
+  // teaches an agent how to connect, so it never hits the token prompt.
+  if (location.pathname === "/setup")
+    return mountWebSetup(container, { serverUrl, token, request });
+
   if (token) return mountWebCanvas(container, serverUrl, token, request);
 
   let disposed = false;
@@ -174,6 +180,7 @@ function mountWebCanvas(
 ): WebAppHandle {
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
+  const setupLink = mountSetupLink(container);
 
   let reviews: ReviewApiSummary[] = [];
   let repositories: ReviewApiRepository[] = [];
@@ -397,6 +404,8 @@ function mountWebCanvas(
   }
 
   function route() {
+    setupLink.setVisible(location.pathname === "/");
+
     if (location.pathname === "/settings") {
       activeReviewContent = undefined;
       activeBridge = undefined;
@@ -441,6 +450,7 @@ function mountWebCanvas(
       catalog?.abort();
       window.removeEventListener("popstate", route);
       colorScheme.removeEventListener("change", updateSystemTheme);
+      setupLink.dispose();
       canvas.dispose();
     },
   };

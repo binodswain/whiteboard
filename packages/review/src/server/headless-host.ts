@@ -183,6 +183,9 @@ async function serve(input: HeadlessServerInput) {
     published = true;
     input.onReady(discovery);
 
+    if (input.webDir)
+      process.stderr.write(`Setup: ${discovery.url}/setup\n`);
+
     await new Promise<void>((resolve) => {
       if (input.signal.aborted) resolve();
       else
