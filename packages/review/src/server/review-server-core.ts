@@ -18,6 +18,7 @@ import {
   type AuthoringCapabilities,
   type ReviewApiHooks,
   createReviewApi,
+  isLocalBrowserRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
 import type { ReviewStore } from "@review/review-api/store.js";
@@ -54,13 +55,14 @@ export function createReviewServerApp(input: {
   /** The review store's `serverId()`. */
   serverId: string;
   relay: ReviewDesktopVerbRelay;
+  localBrowserAuth?: boolean;
+  localBrowserPort?: () => number | undefined;
 }): Hono<ReviewHonoEnv> {
   const app = new Hono<ReviewHonoEnv>();
   app.use("*", async (context, next) => {
     await next();
     applyCorsHeaders(context.req.raw, context.res);
   });
-  app.options("*", (context) => corsPreflightResponse(context.req.raw));
   // Open to any caller, but the stable ids only to one holding the token.
   app.get("/health", (context) => {
     const health: ReviewServerHealth = {
@@ -83,12 +85,31 @@ export function createReviewServerApp(input: {
     );
   });
   app.use("*", async (context, next) => {
-    if (!isAuthorizedRequest(context.req.raw, input.token)) {
-      return serverJson(401, { ok: false, error: "Unauthorized" });
-    }
+    if (isAuthorizedRequest(context.req.raw, input.token)) return next();
 
-    await next();
+    const path = new URL(context.req.url).pathname;
+
+    const reviewApiPath =
+      path === "/reviews-api" || path.startsWith("/reviews-api/");
+
+    if (
+      input.localBrowserAuth &&
+      reviewApiPath &&
+      isLocalBrowserRequest(context.req.raw, input.localBrowserPort?.())
+    )
+      return next();
+
+    if (input.localBrowserAuth && reviewApiPath)
+      return serverJson(403, {
+        ok: false,
+        error: "Local browser request not allowed",
+      });
+
+    if (context.req.method === "OPTIONS") return next();
+
+    return serverJson(401, { ok: false, error: "Unauthorized" });
   });
+  app.options("*", (context) => corsPreflightResponse(context.req.raw));
   app.get("/control", (context) => openControlEvents(context, input.relay));
   app.post("/control/result", async (context) => {
     const accepted = input.relay.acceptResult(
@@ -123,6 +144,8 @@ export interface WhiteboardCoreInput {
   relay: ReviewDesktopVerbRelay;
   token: string;
   instanceId: string;
+  localBrowserAuth?: boolean;
+  localBrowserPort?: () => number | undefined;
   softwareMapEnabled?: boolean;
   scratchpad: () => boolean;
   status: () => JsonObject;
@@ -138,6 +161,8 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     instanceId: input.instanceId,
     serverId: store.serverId(),
     relay: input.relay,
+    localBrowserAuth: input.localBrowserAuth,
+    localBrowserPort: input.localBrowserPort,
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -156,6 +181,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     input.status,
     input.hooks,
     askThreads && { threads: askThreads, agents: () => detectAskAgents() },
+    input.localBrowserAuth,
   );
 
   // A shared store mounts the publisher with the rest of sharing.

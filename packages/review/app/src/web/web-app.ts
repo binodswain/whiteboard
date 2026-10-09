@@ -115,19 +115,56 @@ export function startWebCanvas(
   const token =
     options.token || fragmentToken || sessionStorage.getItem(TOKEN_KEY) || "";
 
-  if (!token) {
-    renderTokenPrompt(container);
-
-    return { dispose: () => container.replaceChildren() };
-  }
-
   const serverUrl = options.serverUrl ?? location.origin;
 
-  const request =
-    options.request ??
-    ((url: string, init?: RequestInit) =>
-      reviewFetchUrl({ serverUrl, token }, url, init));
+  const request = (url: string, init?: RequestInit) => {
+    const requestInit = token
+      ? init
+      : { ...init, credentials: "omit" as const };
 
+    return options.request
+      ? options.request(url, requestInit)
+      : reviewFetchUrl({ serverUrl, token }, url, requestInit);
+  };
+
+  if (token) return mountWebCanvas(container, serverUrl, token, request);
+
+  let disposed = false;
+  let mounted: WebAppHandle | undefined;
+
+  const showPrompt = () => {
+    if (!disposed) renderTokenPrompt(container);
+  };
+
+  void request(`${serverUrl}/reviews-api/capabilities`)
+    .then(async (response) => {
+      if (!response.ok || (await response.json()).localBrowserAuth !== true) {
+        showPrompt();
+
+        return;
+      }
+
+      if (!disposed)
+        mounted = mountWebCanvas(container, serverUrl, token, request);
+    })
+    .catch(showPrompt);
+
+  return {
+    dispose() {
+      disposed = true;
+      mounted?.dispose();
+
+      if (!mounted) container.replaceChildren();
+    },
+  };
+}
+
+function mountWebCanvas(
+  container: HTMLElement,
+  serverUrl: string,
+  token: string,
+  request: (url: string, init?: RequestInit) => Promise<Response>,
+): WebAppHandle {
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
 
