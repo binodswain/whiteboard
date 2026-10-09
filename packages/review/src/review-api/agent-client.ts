@@ -1,4 +1,3 @@
-import { isJsonObject } from "@dev.fast/json";
 import { detectLocalVcsSync } from "@dev.fast/local-vcs";
 import {
   ReviewInstanceUnavailableError,
@@ -109,9 +108,19 @@ export async function connectReviewInstance(
 
 async function reviewUrlIsHealthy(serverUrl: string) {
   try {
-    const response = await fetch(new URL("/health", serverUrl));
+    const response = await fetch(new URL("/health", serverUrl), {
+      signal: AbortSignal.timeout(1_500),
+    });
 
-    return response.ok;
+    if (!response.ok) return false;
+
+    const health: unknown = await response.json();
+
+    return (
+      isJsonObject(health) &&
+      health.ok === true &&
+      isStringValue(health.instanceId)
+    );
   } catch {
     return false;
   }
@@ -217,16 +226,26 @@ function withDefaultRepositoryPath(
     return vcs.rootPath;
   };
 
-  if (isJsonObject(fields.target)) {
+  if (
+    (tool.commandType === "create" || tool.commandType === "set_target") &&
+    isJsonObject(fields.target)
+  ) {
     const target = fields.target;
 
-    if (!target.repositoryPath && !target.repositoryId)
+    const hasPathTarget =
+      target.kind === "worktree" || target.kind === "commits";
+
+    if (
+      hasPathTarget &&
+      !("repositoryPath" in target) &&
+      !("repositoryId" in target)
+    )
       fields.target = { ...target, repositoryPath: repositoryPath() };
   }
 
   if (
     tool.commandType === "create" &&
-    !fields.repositoryPath &&
+    !("repositoryPath" in fields) &&
     fields.pullRequestUrl &&
     !fields.target
   )
@@ -254,6 +273,7 @@ export function toolResultText(
 
 import {
   isBooleanValue,
+  isJsonObject,
   isNumberValue,
   isStringValue,
   type JsonValue,
