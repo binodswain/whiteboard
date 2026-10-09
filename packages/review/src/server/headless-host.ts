@@ -40,6 +40,7 @@ interface HeadlessServerInput {
   webDir?: string;
   /** Pin the auth token; a fresh one is generated when omitted. */
   token?: string;
+  localBrowserAuth?: boolean;
   softwareMapEnabled?: boolean;
   /** Ask reviewers through an installed agent CLI; unset runs Ask when one
    * is detected. */
@@ -110,6 +111,7 @@ async function serve(input: HeadlessServerInput) {
     token: input.token ?? randomBytes(32).toString("base64url"),
   };
 
+  let localBrowserPort: number | undefined;
   const relay = new GlobalReviewDesktopVerbRelay();
 
   const ask =
@@ -120,6 +122,8 @@ async function serve(input: HeadlessServerInput) {
     relay,
     token: discovery.token,
     instanceId: discovery.instanceId,
+    localBrowserAuth: input.localBrowserAuth,
+    localBrowserPort: () => localBrowserPort,
     softwareMapEnabled: input.softwareMapEnabled,
     // The scratchpad is the laptop's alone, even with a Desktop attached.
     scratchpad: () => false,
@@ -134,6 +138,7 @@ async function serve(input: HeadlessServerInput) {
   const server = createServer(
     createNodeRequestListener(
       input.webDir ? serveWebCanvas(app, input.webDir) : app,
+      { requireHostOnReviewApi: input.localBrowserAuth },
     ),
   );
 
@@ -147,13 +152,14 @@ async function serve(input: HeadlessServerInput) {
 
     if (!isObjectValue(address))
       throw new Error("Whiteboard server did not bind a TCP port.");
+    localBrowserPort = address.port;
     // Same-machine clients dial the discovery URL: a wildcard bind still gets
     // loopback, while a specific interface is only reachable by its own address.
     discovery.url = `http://${discoveryHost(address.address)}:${address.port}`;
 
     if (!isLoopbackAddress(address.address))
       process.stderr.write(
-        `Whiteboard server is listening on ${address.address}, reachable from other machines; the token is the only protection.\n`,
+        `Whiteboard server is listening on ${address.address}, reachable from other machines; ${input.localBrowserAuth ? "local browser auth trusts Host and Origin and is unsafe when exposed" : "the token is the only protection"}.\n`,
       );
     await writePrivateJsonAtomic(
       reviewServerDiscoveryPath(input.stateDir),
