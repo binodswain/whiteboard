@@ -1,11 +1,10 @@
+import { mountReviewCanvas } from "@canvas/desktop-entry";
+import { reviewFetchUrl } from "@canvas/host/review-client";
 import type {
   ReviewApiSummary,
   ReviewCanvasContent,
 } from "@dev.fast/review-protocol";
 import { ReviewApiClient } from "@dev.fast/review-protocol";
-
-import { mountReviewCanvas } from "@canvas/desktop-entry";
-import { reviewFetchUrl } from "@canvas/host/review-client";
 
 import { createWebBridge, webNotify } from "./web-bridge";
 
@@ -114,10 +113,7 @@ export function startWebCanvas(
   const fragmentToken = captureFragmentToken();
 
   const token =
-    options.token ||
-    fragmentToken ||
-    sessionStorage.getItem(TOKEN_KEY) ||
-    "";
+    options.token || fragmentToken || sessionStorage.getItem(TOKEN_KEY) || "";
 
   if (!token) {
     renderTokenPrompt(container);
@@ -159,10 +155,7 @@ export function startWebCanvas(
     reviews,
     openReview,
     openTutorial() {
-      webNotify(
-        "success",
-        "The tutorial runs in the Whiteboard desktop app.",
-      );
+      webNotify("success", "The tutorial runs in the Whiteboard desktop app.");
     },
   });
 

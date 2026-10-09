@@ -1218,6 +1218,7 @@ export class ReviewCanvasEditorPane extends EditorPane {
 			appVersion: this.productService.reviewVersion ?? this.productService.version,
 			theme: this.colorScheme(),
 			host: "desktop",
+			surface: "desktop",
 		};
 	}
 

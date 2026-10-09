@@ -1018,8 +1018,8 @@ function WebHelpControl(): ReactElement {
             whiteboard.
           </p>
           <p>
-            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>L</kbd> Ask the selected
-            text or diagram node.
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>L</kbd> Ask the selected text
+            or diagram node.
           </p>
           <p>
             <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>{" "}

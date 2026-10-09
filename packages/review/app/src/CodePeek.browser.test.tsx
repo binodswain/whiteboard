@@ -50,9 +50,12 @@ describe("CodePeek native editor", () => {
   it("renders API file content as selectable read-only code on the web", async () => {
     session = createTestSession("web-session", "web");
 
-    const fetch = vi.spyOn(session, "fetch").mockImplementation(async () =>
-      new Response(JSON.stringify({ text: "zero\none\ntwo\nthree" })),
-    );
+    const fetch = vi
+      .spyOn(session, "fetch")
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ text: "zero\none\ntwo\nthree" })),
+      );
 
     const container = document.createElement("div");
     document.body.append(container);
@@ -77,9 +80,7 @@ describe("CodePeek native editor", () => {
         "2  one\n3  two",
       ),
     );
-    expect(fetch).toHaveBeenCalledWith(
-      "/file?side=head&file=src%2Fcurrent.ts",
-    );
+    expect(fetch).toHaveBeenCalledWith("/file?side=head&file=src%2Fcurrent.ts");
     expect(container.querySelector("[data-review-inline-editor]")).toBeNull();
     expect(container.querySelector("button")).toBeNull();
   });
@@ -87,9 +88,12 @@ describe("CodePeek native editor", () => {
   it("renders map and grouped code peeks from the API on the web", async () => {
     session = createTestSession("web-session", "web");
 
-    const fetch = vi.spyOn(session, "fetch").mockImplementation(async () =>
-      new Response(JSON.stringify({ text: "zero\none\ntwo\nthree" })),
-    );
+    const fetch = vi
+      .spyOn(session, "fetch")
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ text: "zero\none\ntwo\nthree" })),
+      );
 
     const container = document.createElement("div");
     document.body.append(container);

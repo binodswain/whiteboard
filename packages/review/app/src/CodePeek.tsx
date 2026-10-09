@@ -276,7 +276,11 @@ function WebCodePeek({
 }: {
   file: string;
   pins?: DiffSelection["pins"];
-  ranges: readonly { side: ReviewDiffSide; startLine: number; endLine: number }[];
+  ranges: readonly {
+    side: ReviewDiffSide;
+    startLine: number;
+    endLine: number;
+  }[];
   outcome: PeekResolutionOutcome;
 }) {
   const session = useReviewSession();
@@ -298,7 +302,10 @@ function WebCodePeek({
         if (pins.base) query.set("base", pins.base);
       }
 
-      return { key: `${range.side}:${range.startLine}-${range.endLine}`, query };
+      return {
+        key: `${range.side}:${range.startLine}-${range.endLine}`,
+        query,
+      };
     };
 
     setResults([]);
@@ -317,7 +324,10 @@ function WebCodePeek({
 
           return { key, text };
         } catch {
-          return { key, error: "This code peek is not available in web reviews." };
+          return {
+            key,
+            error: "This code peek is not available in web reviews.",
+          };
         }
       }),
     ).then((loaded) => {

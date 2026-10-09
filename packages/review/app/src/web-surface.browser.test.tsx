@@ -8,16 +8,16 @@ import { AgentSelectionProvider, useAgentSelection } from "./agent-selection";
 import { observeAgentTextSelection } from "./agent-text-selection";
 import { ReviewDebugSettingsProvider } from "./debug-settings";
 import { FlowGraph } from "./flow-graph";
-import { ReviewFindProvider } from "./review-find";
 import {
   type ReviewSession,
   ReviewSessionProvider,
 } from "./host/review-session";
+import { ReviewFindProvider } from "./review-find";
 import { ReviewPanelProvider, useReviewPanelStore } from "./review-panel";
 import type { ReviewPanelStore } from "./review-panel-store";
 import { ReviewRootsProvider } from "./review-root-context";
-import { offeredReviewViews } from "./review-view-route";
 import { testReviewSession } from "./review-session-test-utils";
+import { offeredReviewViews } from "./review-view-route";
 
 let root: ReturnType<typeof createRoot> | undefined;
 
@@ -82,7 +82,9 @@ it("opens Find with the browser command shortcut", async () => {
 
   expect(event.defaultPrevented).toBe(true);
   await vi.waitFor(() =>
-    expect(container.querySelector('[role="search"][aria-label="Find in session"]')).toBeTruthy(),
+    expect(
+      container.querySelector('[role="search"][aria-label="Find in session"]'),
+    ).toBeTruthy(),
   );
 });
 
@@ -136,9 +138,7 @@ it("selects document text and opens Ask with the keyboard shortcut", async () =>
 
   await userEvent.tab();
   await userEvent.keyboard("{Home}{Shift>}{End}{/Shift}");
-  await vi.waitFor(() =>
-    expect(container.textContent).toContain("Ask Codex"),
-  );
+  await vi.waitFor(() => expect(container.textContent).toContain("Ask Codex"));
   await userEvent.keyboard(askShortcut());
 
   await vi.waitFor(() => expect(panelStore?.getState().asks).toHaveLength(1));
