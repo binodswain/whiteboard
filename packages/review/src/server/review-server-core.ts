@@ -189,7 +189,8 @@ export interface WhiteboardCoreInput {
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const { store, data, shared } = input.profile;
-  const deployment = publicDeploymentConfig(loadDeploymentConfig());
+  const deploymentConfig = loadDeploymentConfig();
+  const deployment = publicDeploymentConfig(deploymentConfig);
 
   const app = createReviewServerApp({
     token: input.token,
@@ -225,7 +226,12 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   // A shared store mounts the publisher with the rest of sharing.
   if (!shared) mountSharingPublisher(api, store, data);
 
-  return { app, api, close: () => askThreads?.closeAll() };
+  return {
+    app,
+    api,
+    deployment: deploymentConfig,
+    close: () => askThreads?.closeAll(),
+  };
 }
 
 // The canvas runs its own scripts, its styles, its fonts and the libavoid

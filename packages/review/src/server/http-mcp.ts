@@ -17,7 +17,7 @@ import { Hono } from "hono";
 
 /**
  * A Streamable HTTP endpoint. Local mode keeps a session per client, with
- * idle-session cleanup. Stateless mode (WHITEBOARD_MODE=remote by default)
+ * idle-session cleanup. Stateless mode is selected by the deployment config.
  * serves each request on a fresh server, so any replica can answer it.
  */
 export function createHttpMcpApp(input: {
@@ -25,7 +25,7 @@ export function createHttpMcpApp(input: {
   scratchpad: () => boolean;
   stateless?: boolean;
 }) {
-  const stateless = input.stateless ?? process.env.WHITEBOARD_MODE === "remote";
+  const stateless = input.stateless ?? false;
   const app = new Hono();
 
   const sessions = new Map<

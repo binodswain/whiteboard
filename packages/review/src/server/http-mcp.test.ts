@@ -9,8 +9,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { openReviewProfile } from "@review/review-api/profile.js";
 import type { ReviewStore } from "@review/review-api/store.js";
-import type { Hono } from "hono";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { Hono } from "hono";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 import { createHttpMcpApp } from "./http-mcp.js";
@@ -142,3 +142,13 @@ it("completes a create, author and read flow alternating between two stateless r
 
   await client.close();
 }, 30_000);
+
+it("keeps MCP stateful unless its caller selects stateless mode", async () => {
+  vi.stubEnv("WHITEBOARD_MODE", "remote");
+  const app = createHttpMcpApp({ api: new Hono(), scratchpad: () => false });
+
+  const response = await app.request("/", { method: "GET" });
+
+  expect(response.status).not.toBe(405);
+  vi.unstubAllEnvs();
+});

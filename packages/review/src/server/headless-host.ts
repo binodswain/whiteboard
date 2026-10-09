@@ -157,6 +157,7 @@ async function serve(input: HeadlessServerInput) {
     createHttpMcpApp({
       api,
       scratchpad: () => persistedSettings.scratchpadEnabled,
+      stateless: core.deployment.mode === "remote",
     }),
   );
 
