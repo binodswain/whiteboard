@@ -10,6 +10,7 @@ import {
   readdir,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -184,6 +185,37 @@ it("serves authenticated web preferences and restores them after a server restar
     codeFontSize: 16,
     scratchpadEnabled: true,
   });
+});
+
+it("reuses a private generated token across server restarts", async () => {
+  let server = await start();
+  const token = server.discovery.token;
+  const tokenPath = path.join(server.stateDir, "review-server", "token");
+
+  expect(await readFile(tokenPath, "utf8")).toBe(token);
+  expect((await stat(tokenPath)).mode & 0o777).toBe(0o600);
+
+  await server.stop();
+  server = await start(server.stateDir);
+
+  expect(server.discovery.token).toBe(token);
+});
+
+it("explains how to mount a repository path unavailable to the server", async () => {
+  const server = await start();
+
+  await expect(
+    server.client.post("/commands", {
+      operation: {
+        type: "create",
+        title: "Unmounted checkout",
+        target: {
+          kind: "worktree",
+          repositoryPath: path.join(root, "unmounted-repository"),
+        },
+      },
+    }),
+  ).rejects.toThrow(/outside the mounted CODE_ROOT/);
 });
 
 async function repository() {

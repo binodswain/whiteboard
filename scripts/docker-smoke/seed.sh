@@ -2,6 +2,7 @@
 set -euo pipefail
 
 container=${1:?container name required}
+repository=${2:?same-path repository mount required}
 api() { docker exec "$container" whiteboard api "$@"; }
 override_dir=/tmp/whiteboard-state-override
 if override_error=$(docker exec "$container" whiteboard --state-dir "$override_dir" api tools 2>&1 >/dev/null); then
@@ -12,7 +13,8 @@ case "$override_error" in
   *"$override_dir"*) ;;
   *) printf 'Unexpected --state-dir override error: %s\n' "$override_error" >&2; exit 1 ;;
 esac
-created=$(api session_create '{"title":"Docker web smoke review","target":{"kind":"worktree","repositoryPath":"/workspace"}}')
+create_input=$(node -e 'process.stdout.write(JSON.stringify({title:"Docker web smoke review",target:{kind:"worktree",repositoryPath:process.argv[1]}}))' "$repository")
+created=$(api session_create "$create_input")
 session_id=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).sessionId)' "$created")
 edit() { api session_edit "$(node -e 'process.stdout.write(JSON.stringify({sessionId:process.argv[1],edit:{type:"insert",content:JSON.parse(process.argv[2])}}))' "$session_id" "$1")" >/dev/null; }
 edit '{"type":"markdown","markdown":"# Browser smoke test\n\nThis review was seeded by CI."}'

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -39,7 +39,7 @@ interface HeadlessServerInput {
   host?: string;
   /** Serve the built web canvas from this directory on the same origin. */
   webDir?: string;
-  /** Pin the auth token; a fresh one is generated when omitted. */
+  /** Pin the auth token; one is generated and persisted when omitted. */
   token?: string;
   localBrowserAuth?: boolean;
   softwareMapEnabled?: boolean;
@@ -100,6 +100,8 @@ async function serve(input: HeadlessServerInput) {
 
   if (input.telemetry) await drainServerCrashReport(input.telemetry);
 
+  const token = input.token ?? (await persistedServerToken(input.stateDir));
+
   const local = await openReviewProfile(input.stateDir, {
     manageWorkspaces: false,
   });
@@ -109,7 +111,7 @@ async function serve(input: HeadlessServerInput) {
     instanceId: randomUUID(),
     url: "http://127.0.0.1:0",
     serverPid: process.pid,
-    token: input.token ?? randomBytes(32).toString("base64url"),
+    token,
   };
 
   let localBrowserPort: number | undefined;
@@ -174,7 +176,7 @@ async function serve(input: HeadlessServerInput) {
 
     if (!isLoopbackAddress(address.address))
       process.stderr.write(
-        `Whiteboard server is listening on ${address.address}, reachable from other machines; ${input.localBrowserAuth ? "local browser auth trusts Host and Origin and is unsafe when exposed" : "the token is the only protection"}.\n`,
+        `Whiteboard server is listening on ${address.address}, reachable from other machines; ${input.localBrowserAuth ? "local auth trusts Host and Origin and is unsafe when exposed" : "the token is the only protection"}.\n`,
       );
     await writePrivateJsonAtomic(
       reviewServerDiscoveryPath(input.stateDir),
@@ -183,8 +185,7 @@ async function serve(input: HeadlessServerInput) {
     published = true;
     input.onReady(discovery);
 
-    if (input.webDir)
-      process.stderr.write(`Setup: ${discovery.url}/setup\n`);
+    if (input.webDir) process.stderr.write(`Setup: ${discovery.url}/setup\n`);
 
     await new Promise<void>((resolve) => {
       if (input.signal.aborted) resolve();
@@ -214,6 +215,47 @@ async function serve(input: HeadlessServerInput) {
       }
     }
   }
+}
+
+async function persistedServerToken(stateDir: string) {
+  const directory = path.join(stateDir, "review-server");
+  const tokenPath = path.join(directory, "token");
+
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+
+  try {
+    const token = await readFile(tokenPath, "utf8");
+
+    if (token.length < 32)
+      throw new Error(`The persisted server token in ${tokenPath} is invalid.`);
+
+    return token;
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      throw error;
+  }
+
+  const token = randomBytes(32).toString("base64url");
+
+  try {
+    await writeFile(tokenPath, token, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+
+    return token;
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
+      throw error;
+  }
+
+  const persistedToken = await readFile(tokenPath, "utf8");
+
+  if (persistedToken.length < 32)
+    throw new Error(`The persisted server token in ${tokenPath} is invalid.`);
+
+  return persistedToken;
 }
 
 export function headlessSessionUrl(

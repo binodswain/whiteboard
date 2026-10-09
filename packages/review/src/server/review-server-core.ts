@@ -18,7 +18,7 @@ import {
   type AuthoringCapabilities,
   type ReviewApiHooks,
   createReviewApi,
-  isLocalBrowserRequest,
+  isLocalAuthRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
 import type { ReviewStore } from "@review/review-api/store.js";
@@ -76,7 +76,9 @@ export function createReviewServerApp(input: {
 
     return serverJson(
       200,
-      isAuthorizedRequest(context.req.raw, input.token)
+      isAuthorizedRequest(context.req.raw, input.token) ||
+        (input.localBrowserAuth &&
+          isLocalAuthRequest(context.req.raw, input.localBrowserPort?.()))
         ? ({
             ...health,
             serverId: input.serverId,
@@ -104,17 +106,20 @@ export function createReviewServerApp(input: {
     const reviewApiPath =
       path === "/reviews-api" || path.startsWith("/reviews-api/");
 
+    const localAuthPath =
+      reviewApiPath || path === "/control" || path === "/control/result";
+
     if (
       input.localBrowserAuth &&
-      reviewApiPath &&
-      isLocalBrowserRequest(context.req.raw, input.localBrowserPort?.())
+      localAuthPath &&
+      isLocalAuthRequest(context.req.raw, input.localBrowserPort?.())
     )
       return next();
 
-    if (input.localBrowserAuth && reviewApiPath)
+    if (input.localBrowserAuth && localAuthPath)
       return serverJson(403, {
         ok: false,
-        error: "Local browser request not allowed",
+        error: "Local auth request not allowed",
       });
 
     if (context.req.method === "OPTIONS") return next();
