@@ -7,16 +7,20 @@ export function offeredReviewViews({
   hasChangeRange,
   softwareMapEnabled,
   hasTraceSessions,
+  surface = "desktop",
 }: {
   hasChangeRange: boolean;
   softwareMapEnabled: boolean;
   hasTraceSessions: boolean;
+  surface?: "desktop" | "web";
 }): readonly ReviewView[] {
   return [
     "review",
-    ...(hasChangeRange ? (["commits", "diff"] as const) : []),
+    ...(surface === "desktop" && hasChangeRange
+      ? (["commits", "diff"] as const)
+      : []),
     ...(softwareMapEnabled ? (["map"] as const) : []),
-    ...(hasTraceSessions ? (["trace"] as const) : []),
+    ...(surface === "desktop" && hasTraceSessions ? (["trace"] as const) : []),
   ];
 }
 

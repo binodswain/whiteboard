@@ -10,13 +10,17 @@ import {
 } from "@review/lens-selection";
 import { type FileLineRange, codePeekSource } from "@review/source";
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { z } from "zod";
 
 import { DocumentCodeView } from "./DocumentCodeView";
 import { drawStyles } from "./draw-styles";
 import { useReviewSession } from "./host/review-session";
 import { codeInspectorMarker, documentMarker } from "./markers.stylex";
-import { peekResolutionOutcome } from "./peek-telemetry";
+import {
+  type PeekResolutionOutcome,
+  peekResolutionOutcome,
+} from "./peek-telemetry";
 import { type ReviewLensView, useReviewLenses } from "./review-lenses";
 import type { SourcePeekAnchor } from "./review-panel-model";
 import { withClass } from "./stylex-props";
@@ -43,6 +47,23 @@ export interface CodePeekSubject {
 // Review documents receive ReviewCodePeek instead.
 export function CodePeek(props: CodePeekProps) {
   const source = useMemo(() => codePeekSource(props), [props]);
+  const session = useReviewSession();
+
+  if (session.config.surface === "web")
+    return (
+      <WebCodePeek
+        file={source.file}
+        pins={source.pins}
+        ranges={[
+          {
+            side: source.side,
+            startLine: source.fromLine,
+            endLine: source.toLine,
+          },
+        ]}
+        outcome="resolved"
+      />
+    );
 
   return (
     <FileSnippetCard
@@ -82,6 +103,19 @@ export function CodePeekGroup({
     <>
       {groups.map((group) => {
         const primaryRange = group.ranges[0]!;
+
+        if (session.config.surface === "web")
+          return (
+            <WebCodePeek
+              key={group.key}
+              file={group.file}
+              ranges={group.ranges.map((range) => ({
+                ...range,
+                side: range.side ?? group.side,
+              }))}
+              outcome="resolved"
+            />
+          );
 
         return (
           <section
@@ -142,14 +176,17 @@ export function CodePeekCard({
   const session = useReviewSession();
   const contextLenses = useReviewLenses();
   const lenses = lensesOverride ?? contextLenses;
-  const resolved = lenses?.resolve([source]) ?? [];
   const anchor = sourceAnchor(source);
 
-  const ranges = resolved.map((range) => ({
-    side: range.side,
-    startLine: range.fromLine,
-    endLine: range.toLine,
-  }));
+  const ranges = useMemo(
+    () =>
+      (lenses?.resolve([source]) ?? []).map((range) => ({
+        side: range.side,
+        startLine: range.fromLine,
+        endLine: range.toLine,
+      })),
+    [lenses, source],
+  );
 
   const key = selectionKey(source);
 
@@ -172,6 +209,16 @@ export function CodePeekCard({
       { root_kind: "range" },
     );
   }, [key, outcome, reportOutcome, session]);
+
+  if (session.config.surface === "web")
+    return (
+      <WebCodePeek
+        file={source.file}
+        pins={source.pins}
+        ranges={ranges}
+        outcome={outcome}
+      />
+    );
 
   if (!ranges.length)
     return (
@@ -221,6 +268,123 @@ export function CodePeekCard({
   );
 }
 
+function WebCodePeek({
+  file,
+  pins,
+  ranges,
+  outcome,
+}: {
+  file: string;
+  pins?: DiffSelection["pins"];
+  ranges: readonly { side: ReviewDiffSide; startLine: number; endLine: number }[];
+  outcome: PeekResolutionOutcome;
+}) {
+  const session = useReviewSession();
+
+  const [results, setResults] = useState<
+    readonly { key: string; text?: string; error?: string }[]
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const queryFor = (range: (typeof ranges)[number]) => {
+      const query = new URLSearchParams({ side: range.side, file });
+
+      if (pins) {
+        query.set("repositoryId", pins.repositoryId);
+        query.set("head", pins.head);
+
+        if (pins.base) query.set("base", pins.base);
+      }
+
+      return { key: `${range.side}:${range.startLine}-${range.endLine}`, query };
+    };
+
+    setResults([]);
+    void Promise.all(
+      ranges.map(async (range) => {
+        const { key, query } = queryFor(range);
+
+        try {
+          const response = await session.fetch(`/file?${query.toString()}`);
+
+          if (!response.ok) throw new Error("Source unavailable");
+
+          const { text } = z
+            .object({ text: z.string() })
+            .parse(await response.json());
+
+          return { key, text };
+        } catch {
+          return { key, error: "This code peek is not available in web reviews." };
+        }
+      }),
+    ).then((loaded) => {
+      if (!cancelled) setResults(loaded);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, pins, ranges, session]);
+
+  if (!ranges.length)
+    return (
+      <section
+        className="code-peek"
+        role={outcome === "pending" ? "status" : "note"}
+      >
+        {outcome === "pending"
+          ? "Loading code peek…"
+          : "This code peek is not available in web reviews."}
+      </section>
+    );
+
+  return (
+    <section
+      {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
+      data-code-rendering="read-only"
+    >
+      {ranges.map((range) => {
+        const key = `${range.side}:${range.startLine}-${range.endLine}`;
+        const result = results.find((item) => item.key === key);
+
+        if (result?.error)
+          return (
+            <p key={key} role="note">
+              {result.error}
+            </p>
+          );
+
+        if (!result?.text)
+          return (
+            <p key={key} role="status">
+              Loading code peek…
+            </p>
+          );
+
+        const lines = result.text.split("\n");
+
+        const excerpt = lines
+          .slice(range.startLine - 1, range.endLine)
+          .map((line, index) => `${range.startLine + index}  ${line}`)
+          .join("\n");
+
+        return (
+          <pre
+            key={key}
+            tabIndex={0}
+            aria-label={`${file}, ${range.side} lines ${range.startLine} to ${range.endLine}`}
+          >
+            <code data-review-copy-prose>{excerpt}</code>
+          </pre>
+        );
+      })}
+    </section>
+  );
+}
+
 function FileSnippetCard({
   source,
   active = false,
@@ -239,7 +403,10 @@ function FileSnippetCard({
   const subject = useMemo(() => codePeekSubject(source), [source]);
 
   const onNativeFocusRef = useRef(onNativeFocus);
-  onNativeFocusRef.current = onNativeFocus;
+
+  useEffect(() => {
+    onNativeFocusRef.current = onNativeFocus;
+  }, [onNativeFocus]);
 
   return (
     <section

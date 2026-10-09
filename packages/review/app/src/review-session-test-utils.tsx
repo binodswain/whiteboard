@@ -22,6 +22,7 @@ export const TEST_REVIEW_CONFIG = {
   appVersion: "0.0.13",
   theme: "dark",
   host: "desktop",
+  surface: "desktop",
 } satisfies ReviewRuntimeConfig;
 
 export function testReviewBridge(

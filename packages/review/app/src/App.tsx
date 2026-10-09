@@ -90,6 +90,7 @@ import {
   elevation,
   fontSize,
   fontWeight,
+  layer,
   motion,
   radius,
 } from "./scale.stylex";
@@ -431,8 +432,14 @@ function ReviewLayoutContent({
         hasChangeRange,
         softwareMapEnabled,
         hasTraceSessions,
+        surface: session.config.surface,
       }),
-    [hasChangeRange, hasTraceSessions, softwareMapEnabled],
+    [
+      hasChangeRange,
+      hasTraceSessions,
+      session.config.surface,
+      softwareMapEnabled,
+    ],
   );
 
   useLayoutEffect(() => {
@@ -607,7 +614,7 @@ function ReviewLayoutContent({
                   shellStyles.topbarContext,
                 )}
               >
-                {!scratchpad && (
+                {session.config.surface !== "web" && !scratchpad && (
                   <Button
                     variant="ghost"
                     xstyle={shellStyles.openSourceTree}
@@ -645,6 +652,7 @@ function ReviewLayoutContent({
               </div>
               <ReviewStackSelector />
               <AskHistoryControl />
+              {session.config.surface === "web" && <WebHelpControl />}
               <ShareControl />
               <IconButton
                 xstyle={shellStyles.topbarItem}
@@ -661,7 +669,7 @@ function ReviewLayoutContent({
               </IconButton>
               <BugReportControl />
               <ReviewBatonChip outcome={review.submissionOutcome} />
-              <DiffLayoutControl />
+              {session.config.surface !== "web" && <DiffLayoutControl />}
               {!scratchpad &&
                 !review.historicalRevision &&
                 !review.submissionOutcome && (
@@ -769,7 +777,7 @@ function ReviewLayoutContent({
                     showFloatingActions={!rightPanelOpen}
                     variant="view"
                   />
-                  <MapSettingsControl />
+                  {session.config.surface !== "web" && <MapSettingsControl />}
                 </div>
               </div>
             )}
@@ -948,6 +956,103 @@ function ReviewBatonChip({
  * gear that held nothing else, which put map-only controls in front of readers
  * who never open the map.
  */
+function WebHelpControl(): ReactElement {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === "?" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        const target = event.target;
+
+        if (target instanceof HTMLElement && target.isContentEditable) return;
+
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement
+        )
+          return;
+        event.preventDefault();
+        setOpen((value) => !value);
+      } else if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  return (
+    <>
+      <IconButton
+        aria-label="Keyboard shortcuts"
+        title="Keyboard shortcuts (?)"
+        onClick={() => setOpen((value) => !value)}
+      >
+        ?
+      </IconButton>
+      {open && (
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard shortcuts"
+          {...stylex.props(webHelpStyles.dialog)}
+        >
+          <h2>Keyboard shortcuts</h2>
+          <p>
+            <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> Move between controls and
+            diagram nodes; press <kbd>Enter</kbd> or <kbd>Space</kbd> to select
+            a node.
+          </p>
+          <p>
+            <kbd>Shift</kbd> + arrow keys Select text.
+          </p>
+          <p>
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>F</kbd> Find in the
+            whiteboard.
+          </p>
+          <p>
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>L</kbd> Ask the selected
+            text or diagram node.
+          </p>
+          <p>
+            <kbd>⌘</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>{" "}
+            Copy selected agent context.
+          </p>
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Close
+          </Button>
+        </section>
+      )}
+    </>
+  );
+}
+
+const webHelpStyles = stylex.create({
+  dialog: {
+    position: "absolute",
+    zIndex: layer.popover,
+    insetBlockStart: 48,
+    insetInlineEnd: 12,
+    width: "min(360px, calc(100vw - 24px))",
+    padding: 18,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: tokens.rule,
+    borderRadius: radius.surface,
+    color: tokens.ink,
+    backgroundColor: tokens.tray,
+    boxShadow: elevation.popover,
+  },
+});
+
+/** Map-specific settings stay out of the general review toolbar. */
 function MapSettingsControl(): ReactElement {
   const {
     showModifiedOnly,
