@@ -990,8 +990,11 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     program
       .command("connect")
       .description(
-        "Print the prompt that connects a coding agent to Whiteboard",
+        "Connect a coding agent to Whiteboard or run a hosted ask connector",
       )
+      .option("--server <url>", "run a laptop connector for hosted asks")
+      .option("--token <token>", "server token; defaults to WHITEBOARD_TOKEN")
+      .option("--agent <agent>", "installed CLI agent to run", "claude")
       .addArgument(
         new Argument("[target...]", "coding agent").choices([
           "claude",
@@ -1008,49 +1011,96 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     "plain",
   );
 
-  connect.action(async (targets: string[], options: { json?: boolean }) => {
-    const selected = parseTargets(targets);
+  connect.action(
+    async (
+      targets: string[],
+      options: {
+        json?: boolean;
+        server?: string;
+        token?: string;
+        agent: string;
+      },
+    ) => {
+      if (options.server) {
+        const { askAgentIds } = await import("./ask/thread-state.js");
+        const agent = askAgentIds.find((id) => id === options.agent);
 
-    const { homeDir, devHome } = scope;
+        if (!agent)
+          throw new ReviewCliUsageError(
+            `--agent must be one of: ${askAgentIds.join(", ")}.`,
+          );
 
-    const prompts = connectPrompts({
-      legacyPaths: await scanLegacySkills(homeDir),
-      hasShim:
-        (await isOwnedShim(pathShimPath(homeDir))) ||
-        (await windowsInstallerCommand(
-          findReviewPackageRoot(import.meta.url),
-          env,
-        )) !== undefined,
-      traceEnabled: await traceMachineEnabled({ homeDir, env }),
-      fffBinaryPath: path.join(homeDir, ".local", "bin", "fff-mcp"),
-      fffCorpusRoot: path.join(devHome, "trace-search"),
-    });
+        const cliPath = input.cliPaths?.effectivePath ?? process.argv[1];
 
-    const output = {
-      json: options.json,
-      stdout: input.stdout,
-      stderr: input.stderr,
-    };
+        if (!cliPath)
+          throw new ReviewCliUsageError("Could not locate the Whiteboard CLI.");
 
-    if (options.json) {
-      emitJsonEvent(output, {
-        event: "connect",
-        prompts: Object.fromEntries(
-          selected.map((target) => [target, prompts[target]]),
-        ),
+        const { runAskConnector } = await import("./ask/runner/connector.js");
+        const controller = new AbortController();
+        const stop = () => controller.abort();
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+
+        try {
+          await runAskConnector({
+            server: options.server,
+            token: options.token ?? env.WHITEBOARD_TOKEN,
+            agent,
+            cliPath,
+            signal: controller.signal,
+            onStatus: (message) => input.stdout.write(`${message}\n`),
+          });
+        } finally {
+          process.off("SIGINT", stop);
+          process.off("SIGTERM", stop);
+        }
+
+        return;
+      }
+
+      const selected = parseTargets(targets);
+
+      const { homeDir, devHome } = scope;
+
+      const prompts = connectPrompts({
+        legacyPaths: await scanLegacySkills(homeDir),
+        hasShim:
+          (await isOwnedShim(pathShimPath(homeDir))) ||
+          (await windowsInstallerCommand(
+            findReviewPackageRoot(import.meta.url),
+            env,
+          )) !== undefined,
+        traceEnabled: await traceMachineEnabled({ homeDir, env }),
+        fffBinaryPath: path.join(homeDir, ".local", "bin", "fff-mcp"),
+        fffCorpusRoot: path.join(devHome, "trace-search"),
       });
 
-      return;
-    }
+      const output = {
+        json: options.json,
+        stdout: input.stdout,
+        stderr: input.stderr,
+      };
 
-    const sections = selected.map((target) =>
-      selected.length > 1
-        ? `## ${TARGET_LABELS[target]}\n\n${prompts[target]}`
-        : prompts[target],
-    );
+      if (options.json) {
+        emitJsonEvent(output, {
+          event: "connect",
+          prompts: Object.fromEntries(
+            selected.map((target) => [target, prompts[target]]),
+          ),
+        });
 
-    humanStream(output).write(`${sections.join("\n\n")}\n`);
-  });
+        return;
+      }
+
+      const sections = selected.map((target) =>
+        selected.length > 1
+          ? `## ${TARGET_LABELS[target]}\n\n${prompts[target]}`
+          : prompts[target],
+      );
+
+      humanStream(output).write(`${sections.join("\n\n")}\n`);
+    },
+  );
 
   const migrate = configureOutput(
     program.command("migrate", { hidden: true }),

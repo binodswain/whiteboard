@@ -7,6 +7,7 @@ import {
   type ReviewApiSummary,
   SCRATCHPAD_REVIEW_ID,
 } from "@dev.fast/review-protocol";
+import { AskQueue } from "@review/ask/runner/queue.js";
 import { sourceAnchors } from "@review/lens-selection.js";
 import {
   liftFileLenses,
@@ -274,6 +275,7 @@ export class ReviewStore {
   readonly activity: ReviewActivity;
   readonly askHistory: AskHistory;
   readonly comments: ReviewComments;
+  readonly askQueue: AskQueue;
   private readonly meta: MetadataStore;
   metadataStore(): MetadataStore {
     return this.meta;
@@ -437,6 +439,7 @@ export class ReviewStore {
     this.activity = new ReviewActivity(meta, (id) => this.assertExists(id));
     this.askHistory = new AskHistory(meta);
     this.comments = new ReviewComments(meta);
+    this.askQueue = new AskQueue(meta);
   }
 
   /** A store over an existing metadata backend or a SQLite file path. */

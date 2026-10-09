@@ -87,4 +87,16 @@ export const POSTGRES_MIGRATIONS: {
       CREATE TABLE review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL, PRIMARY KEY(review_id,tag));
       CREATE INDEX review_tags_tag ON review_tags(tag);`,
   },
+  {
+    version: 6,
+    name: "hosted_ask_queue",
+    sql: `
+      CREATE TABLE asks(
+        id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
+        claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
+        result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+      CREATE INDEX asks_pending ON asks(status, created_at);`,
+  },
 ];
