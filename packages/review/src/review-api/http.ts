@@ -28,6 +28,7 @@ import {
 import type { AskThreads } from "@review/ask/threads.js";
 import { watchAskThreads } from "@review/ask/watch.js";
 import { fuzzyRank } from "@review/fuzzy-match.js";
+import type { JobRunner } from "@review/jobs/job-runner.js";
 import { resolveReviewStackLayers } from "@review/review-stack.js";
 import { readBoundedRequestJson } from "@review/server/hono-http.js";
 import { HttpJsonError } from "@review/server/http-json.js";
@@ -216,6 +217,7 @@ export function createReviewApi(
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   },
   headlessOpenUrl?: (reviewId: string) => string,
+  jobs?: JobRunner,
 ) {
   const app = new Hono();
   app.onError((error, context) => {
@@ -379,9 +381,57 @@ export function createReviewApi(
       authoringTools(
         scratchpadAvailable(instructions),
         instructions.traceEnabled,
+      ).filter(
+        ({ name }) =>
+          jobs || !["generate_review", "review_job_status"].includes(name),
       ),
     );
   });
+
+  if (jobs) {
+    app.post("/jobs", async (context) => {
+      const input = z
+        .strictObject({
+          repository: z.string().trim().min(1),
+          base: z.string().trim().min(1),
+          head: z.string().trim().min(1),
+        })
+        .parse(await readBoundedRequestJson(context.req.raw));
+
+      const job = await jobs.submit({
+        repo: input.repository,
+        baseSha: input.base,
+        headSha: input.head,
+      });
+
+      const status = {
+        status: job.status,
+        ...(job.id && { jobId: job.id }),
+        ...(job.reviewId && { reviewId: job.reviewId }),
+        ...(job.url && { url: job.url }),
+        ...(job.error && { error: job.error }),
+      };
+
+      return context.json(
+        status,
+        job.status === "succeeded" || job.status === "failed" ? 200 : 202,
+      );
+    });
+    app.get("/jobs/:jobId", async (context) => {
+      const job = await jobs.get(context.req.param("jobId"));
+
+      if (!job) return context.json({ error: "Review job not found." }, 404);
+
+      return context.json({
+        status: job.status,
+        ...(job.id && { jobId: job.id }),
+        ...(job.reviewId && { reviewId: job.reviewId }),
+        ...(job.url && { url: job.url }),
+        ...(job.error && { error: job.error }),
+      });
+    });
+  }
+
   app.get("/instructions", async (context) => {
     const { topic } = instructionsQuerySchema.parse(context.req.query());
 

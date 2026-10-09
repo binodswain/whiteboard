@@ -255,6 +255,9 @@ export class ReviewStore {
   readonly activity: ReviewActivity;
   readonly askHistory: AskHistory;
   private readonly meta: MetadataStore;
+  metadataStore(): MetadataStore {
+    return this.meta;
+  }
   private pending: Promise<unknown> = Promise.resolve();
   private closing = false;
   private readonly liveSources = new Map<string, Snapshot>();
