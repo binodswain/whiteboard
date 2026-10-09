@@ -6,7 +6,7 @@ import type {
 } from "@dev.fast/review-protocol";
 import { ReviewApiClient } from "@dev.fast/review-protocol";
 
-import { createWebBridge, webNotify } from "./web-bridge";
+import { createWebBridge, loadWebSettings, webNotify } from "./web-bridge";
 
 const TOKEN_KEY = "review-token";
 
@@ -130,6 +130,13 @@ export function startWebCanvas(
 
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
+  const settingsButton = document.createElement("button");
+  settingsButton.type = "button";
+  settingsButton.textContent = "Settings";
+  settingsButton.setAttribute("aria-label", "Open Settings");
+  settingsButton.style.cssText =
+    "position:fixed;top:12px;right:16px;z-index:20;padding:7px 12px;border:1px solid #39404d;border-radius:6px;background:#1a1f29;color:#eef0f4;font:13px system-ui;cursor:pointer";
+  container.append(settingsButton);
 
   let reviews: ReviewApiSummary[] = [];
   let catalog: AbortController | undefined;
@@ -150,6 +157,10 @@ export function startWebCanvas(
     openReview,
   };
 
+  void loadWebSettings(bridgeOptions).catch((error) =>
+    console.error("Could not apply saved web settings.", error),
+  );
+
   const homeContent = (): ReviewCanvasContent => ({
     kind: "home",
     reviews,
@@ -169,6 +180,9 @@ export function startWebCanvas(
         document.title = title || "Whiteboard Review";
       },
     });
+    void loadWebSettings(bridgeOptions).catch((error) =>
+      console.error("Could not apply saved web settings.", error),
+    );
   }
 
   async function showHome() {
@@ -197,6 +211,9 @@ export function startWebCanvas(
     if (signal.aborted || disposed) return;
 
     canvas.update(homeContent());
+    void loadWebSettings(bridgeOptions).catch((error) =>
+      console.error("Could not apply saved web settings.", error),
+    );
 
     void client.follow<ReviewApiSummary[]>(
       null,
@@ -211,6 +228,33 @@ export function startWebCanvas(
   }
 
   function route() {
+    if (location.pathname === "/settings") {
+      settingsButton.textContent = "Home";
+      settingsButton.setAttribute("aria-label", "Return to Home");
+      catalog?.abort();
+      document.title = "Settings - Whiteboard";
+      void loadWebSettings(bridgeOptions)
+        .then((settings) => {
+          if (!disposed && location.pathname === "/settings") {
+            canvas.update({ kind: "settings", settings });
+            void loadWebSettings(bridgeOptions).catch((error) =>
+              console.error("Could not apply saved web settings.", error),
+            );
+          }
+        })
+        .catch((error) =>
+          canvas.update({
+            kind: "error",
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+
+      return;
+    }
+
+    settingsButton.textContent = "Settings";
+    settingsButton.setAttribute("aria-label", "Open Settings");
+
     const reviewId = routeReviewId(location.pathname);
 
     if (reviewId) {
@@ -220,6 +264,10 @@ export function startWebCanvas(
     }
   }
 
+  settingsButton.addEventListener("click", () => {
+    navigate(location.pathname === "/settings" ? "/" : "/settings");
+  });
+
   window.addEventListener("popstate", route);
   route();
 
@@ -228,6 +276,7 @@ export function startWebCanvas(
       disposed = true;
       catalog?.abort();
       window.removeEventListener("popstate", route);
+      settingsButton.remove();
       canvas.dispose();
     },
   };

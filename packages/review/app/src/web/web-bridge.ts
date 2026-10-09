@@ -9,12 +9,25 @@ import {
   type ReviewVerbRequest,
   type ReviewVerbResponse,
 } from "@dev.fast/review-protocol";
+import type { ReviewCanvasSettingsContent } from "@dev.fast/review-protocol";
 import wasmAssetUrl from "@mr_mint/elkjs-libavoid/dist/libavoid.wasm?url";
+import { z } from "zod";
 
 const BROWSER_ONLY_MESSAGE =
   "This action opens an editor, which is unavailable in the browser review canvas.";
 
 const DIFF_LAYOUT_KEY = "review-diff-layout";
+
+const WEB_THEME_KEY = "review-web-theme";
+
+const webSettingsSchema = z.object({
+  theme: z.enum(["system", "light", "dark"]),
+  documentWidth: z.enum(["standard", "wide", "full"]),
+  codeFontSize: z.number().int().min(8).max(32),
+  scratchpadEnabled: z.boolean(),
+});
+
+type WebSettingsValues = z.infer<typeof webSettingsSchema>;
 
 export interface WebBridgeOptions {
   /** The review this bridge serves; empty while the canvas shows Home. */
@@ -30,6 +43,134 @@ export interface WebBridgeOptions {
   openReview?: (reviewId: string) => void;
   /** Test seam: the host request the canvas's API client shares. */
   request?: (url: string, init?: RequestInit) => Promise<Response>;
+}
+
+export async function loadWebSettings(
+  options: Pick<WebBridgeOptions, "serverUrl" | "token" | "request">,
+): Promise<ReviewCanvasSettingsContent> {
+  const config = {
+    serverUrl: options.serverUrl ?? location.origin,
+    token: options.token ?? "",
+  };
+
+  const request =
+    options.request ??
+    ((url: string, init?: RequestInit) => reviewFetchUrl(config, url, init));
+
+  const url = `${config.serverUrl}/reviews-api/settings`;
+
+  const read = async () => {
+    const response = await request(url);
+
+    if (!response.ok)
+      throw new Error(`Could not read settings (${response.status}).`);
+
+    return webSettingsSchema.parse(await response.json());
+  };
+
+  const apply = (settings: Awaited<ReturnType<typeof read>>) => {
+    globalThis.localStorage?.setItem(WEB_THEME_KEY, settings.theme);
+
+    const themeHost = document.querySelector<HTMLElement>(
+      ".review-canvas-root > :first-child",
+    );
+
+    const resolvedTheme =
+      settings.theme === "system"
+        ? matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light"
+        : settings.theme;
+
+    const canvasRoot = themeHost?.parentElement;
+
+    if (canvasRoot) {
+      canvasRoot.dataset.reviewTheme = resolvedTheme;
+      themeHost?.classList.toggle(
+        "review-app--theme-light",
+        resolvedTheme === "light",
+      );
+    }
+
+    const app = document.querySelector<HTMLElement>(".review-app");
+
+    if (app) {
+      app.className = app.className.replace(
+        /review-app--theme-(?:light|dark)/,
+        `review-app--theme-${resolvedTheme}`,
+      );
+      app.dataset.documentWidth = settings.documentWidth;
+    }
+
+    document.documentElement.style.setProperty(
+      "--code-font-size",
+      `${settings.codeFontSize}px`,
+    );
+
+    if (!document.getElementById("web-code-font-size")) {
+      const style = document.createElement("style");
+      style.id = "web-code-font-size";
+      style.textContent =
+        ".review-app .monaco-editor,.review-app pre{font-size:var(--code-font-size,14px)!important}";
+      document.head.append(style);
+    }
+  };
+
+  let values = await read();
+  apply(values);
+
+  const update = async (patch: Partial<WebSettingsValues>) => {
+    const response = await request(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+
+    if (!response.ok)
+      throw new Error(`Could not save settings (${response.status}).`);
+    values = webSettingsSchema.parse(await response.json());
+    apply(values);
+
+    return values;
+  };
+
+  const unavailable = async <T>(value: T) => value;
+
+  return {
+    telemetryEnabled: false,
+    setTelemetryEnabled: (enabled) => unavailable(enabled),
+    theme: values.theme,
+    setTheme: async (theme) => (await update({ theme })).theme,
+    keymap: "none",
+    setKeymap: (choice) => unavailable(choice),
+    ctrlTab: "recent",
+    setCtrlTab: (choice) => unavailable(choice),
+    documentWidth: values.documentWidth,
+    setDocumentWidth: async (documentWidth) =>
+      (await update({ documentWidth })).documentWidth,
+    codeFontSize: values.codeFontSize,
+    setCodeFontSize: async (codeFontSize) =>
+      (await update({ codeFontSize })).codeFontSize,
+    readyNotification: "off",
+    setReadyNotification: (choice) => unavailable(choice),
+    softwareMapEnabled: false,
+    setSoftwareMapEnabled: (enabled) => unavailable(enabled),
+    structuralDiffEnabled: false,
+    setStructuralDiffEnabled: (enabled) => unavailable(enabled),
+    scratchpadEnabled: values.scratchpadEnabled,
+    setScratchpadEnabled: async (scratchpadEnabled) =>
+      (await update({ scratchpadEnabled })).scratchpadEnabled,
+    diffrConfig: {
+      read: async () => ({ values: {}, credentialSource: "missing" }),
+      set: async () => ({ values: {}, credentialSource: "missing" }),
+      saveSummarizer: async () => ({ values: {}, credentialSource: "missing" }),
+      testSummarizer: async () => "Unavailable in the web canvas.",
+    },
+    reloadWindow: async () => {},
+    manageExtensions: () => {},
+    importVsCodeSettings: () => {},
+    web: true,
+  } satisfies ReviewCanvasSettingsContent;
 }
 
 function reviewPageUrl(reviewId: string): string {
@@ -81,7 +222,13 @@ export function createWebBridge(
       ? null
       : matchMedia("(prefers-color-scheme: dark)");
 
-  const theme = (): ReviewTheme => (media?.matches ? "dark" : "light");
+  const theme = (): ReviewTheme => {
+    const stored = globalThis.localStorage?.getItem(WEB_THEME_KEY);
+
+    if (stored === "dark" || stored === "light") return stored;
+
+    return media?.matches ? "dark" : "light";
+  };
 
   const config: ReviewRuntimeConfig = {
     serverUrl: options.serverUrl ?? location.origin,

@@ -38,6 +38,7 @@ import {
   readBoundedRequestJson,
 } from "./hono-http";
 import { HttpJsonError, ReviewServerError } from "./http-json";
+import type { WebSettings } from "./web-settings.js";
 
 const version = readReviewPackageVersion(import.meta.url);
 
@@ -128,6 +129,10 @@ export interface WhiteboardCoreInput {
   status: () => JsonObject;
   hooks?: ReviewApiHooks;
   ask?: { tools: AskTools };
+  webSettings?: {
+    read(): Promise<WebSettings>;
+    update(patch: Partial<WebSettings>): Promise<WebSettings>;
+  };
 }
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
@@ -156,6 +161,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     input.status,
     input.hooks,
     askThreads && { threads: askThreads, agents: () => detectAskAgents() },
+    input.webSettings,
   );
 
   // A shared store mounts the publisher with the rest of sharing.

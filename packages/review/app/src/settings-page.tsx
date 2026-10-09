@@ -72,8 +72,10 @@ const READY_NOTIFICATION_LABELS: Record<ReviewReadyNotificationChoice, string> =
  */
 export function SettingsPage({
   settings,
+  web = false,
 }: {
   settings: ReviewCanvasSettingsContent;
+  web?: boolean;
 }) {
   const [telemetryEnabled, setTelemetryEnabled] = useState(
     settings.telemetryEnabled,
@@ -146,7 +148,7 @@ export function SettingsPage({
             Settings apply to Whiteboard on this machine.
           </p>
 
-          {install ? (
+          {!web && install ? (
             <Section label="Agents">
               <LegacySkillsRow
                 install={install}
@@ -156,7 +158,7 @@ export function SettingsPage({
             </Section>
           ) : null}
 
-          {install?.status.cli ? (
+          {!web && install?.status.cli ? (
             <Section label="Command line">
               <Row
                 label="whiteboard command"
@@ -187,32 +189,34 @@ export function SettingsPage({
             </Section>
           ) : null}
 
-          <Section label="Privacy">
-            <Row
-              label="Share anonymous usage data"
-              description="Counts and timings only. Never code, file paths, or repository names."
-            >
-              <label
-                {...stylex.props(styles.toggle)}
-                aria-label="Share anonymous usage data"
+          {!web ? (
+            <Section label="Privacy">
+              <Row
+                label="Share anonymous usage data"
+                description="Counts and timings only. Never code, file paths, or repository names."
               >
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
-                  checked={telemetryEnabled}
-                  disabled={busy !== null}
-                  onChange={(event) => {
-                    const enabled = event.target.checked;
-                    void run(
-                      "telemetry",
-                      () => settings.setTelemetryEnabled(enabled),
-                      setTelemetryEnabled,
-                    );
-                  }}
-                />
-              </label>
-            </Row>
-          </Section>
+                <label
+                  {...stylex.props(styles.toggle)}
+                  aria-label="Share anonymous usage data"
+                >
+                  <input
+                    {...stylex.props(styles.checkbox)}
+                    type="checkbox"
+                    checked={telemetryEnabled}
+                    disabled={busy !== null}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      void run(
+                        "telemetry",
+                        () => settings.setTelemetryEnabled(enabled),
+                        setTelemetryEnabled,
+                      );
+                    }}
+                  />
+                </label>
+              </Row>
+            </Section>
+          ) : null}
 
           <Section label="Editor">
             <Row label="Theme" description="How Whiteboard looks.">
@@ -262,160 +266,205 @@ export function SettingsPage({
                 }
               />
             </Row>
-            <Row
-              label="Keymap"
-              description="Vim, Emacs, and Sublime Text keys come from a bundled extension. A change needs a reload."
-            >
-              <Choice
+            {!web ? (
+              <Row
                 label="Keymap"
-                value={keymap}
-                labels={KEYMAP_LABELS}
-                disabled={busy !== null}
-                onChange={(choice) => {
-                  void run(
-                    "keymap",
-                    () => settings.setKeymap(choice),
-                    setKeymap,
-                  );
-                }}
-              />
-            </Row>
-            <Row
-              label="Ctrl+Tab"
-              description="Jump back to the last used tab, or step through the tab bar."
-            >
-              <Choice
+                description="Vim, Emacs, and Sublime Text keys come from a bundled extension. A change needs a reload."
+              >
+                <Choice
+                  label="Keymap"
+                  value={keymap}
+                  labels={KEYMAP_LABELS}
+                  disabled={busy !== null}
+                  onChange={(choice) => {
+                    void run(
+                      "keymap",
+                      () => settings.setKeymap(choice),
+                      setKeymap,
+                    );
+                  }}
+                />
+              </Row>
+            ) : null}
+            {!web ? (
+              <Row
                 label="Ctrl+Tab"
-                value={ctrlTab}
-                labels={CTRL_TAB_LABELS}
-                disabled={busy !== null}
-                onChange={(choice) =>
-                  void run(
-                    "ctrl-tab",
-                    () => settings.setCtrlTab(choice),
-                    setCtrlTab,
-                  )
-                }
-              />
-            </Row>
+                description="Jump back to the last used tab, or step through the tab bar."
+              >
+                <Choice
+                  label="Ctrl+Tab"
+                  value={ctrlTab}
+                  labels={CTRL_TAB_LABELS}
+                  disabled={busy !== null}
+                  onChange={(choice) =>
+                    void run(
+                      "ctrl-tab",
+                      () => settings.setCtrlTab(choice),
+                      setCtrlTab,
+                    )
+                  }
+                />
+              </Row>
+            ) : null}
           </Section>
 
-          <Section label="Notifications">
-            <Row
-              label="Review ready"
-              description="When an agent finishes a review you aren't looking at."
-            >
-              <Choice
+          {!web ? (
+            <Section label="Notifications">
+              <Row
                 label="Review ready"
-                value={readyNotification}
-                labels={READY_NOTIFICATION_LABELS}
-                disabled={busy !== null}
-                onChange={(choice) =>
-                  void run(
-                    "ready-notification",
-                    () => settings.setReadyNotification(choice),
-                    setReadyNotification,
-                  )
-                }
-              />
-            </Row>
-          </Section>
+                description="When an agent finishes a review you aren't looking at."
+              >
+                <Choice
+                  label="Review ready"
+                  value={readyNotification}
+                  labels={READY_NOTIFICATION_LABELS}
+                  disabled={busy !== null}
+                  onChange={(choice) =>
+                    void run(
+                      "ready-notification",
+                      () => settings.setReadyNotification(choice),
+                      setReadyNotification,
+                    )
+                  }
+                />
+              </Row>
+            </Section>
+          ) : null}
 
-          <Section label="Tools">
-            <Row
-              label="Extensions"
-              description="Install or turn on language extensions."
-            >
-              <Button onClick={settings.manageExtensions}>Manage…</Button>
-            </Row>
-            <Row
-              label="VS Code settings"
-              description="Copy settings and keybindings from VS Code or Cursor again. Replaces Whiteboard's."
-            >
-              <Button onClick={settings.importVsCodeSettings}>Import…</Button>
-            </Row>
-          </Section>
+          {!web ? (
+            <Section label="Tools">
+              <Row
+                label="Extensions"
+                description="Install or turn on language extensions."
+              >
+                <Button onClick={settings.manageExtensions}>Manage…</Button>
+              </Row>
+              <Row
+                label="VS Code settings"
+                description="Copy settings and keybindings from VS Code or Cursor again. Replaces Whiteboard's."
+              >
+                <Button onClick={settings.importVsCodeSettings}>Import…</Button>
+              </Row>
+            </Section>
+          ) : null}
 
-          <Section label="Experimental Features">
-            <Row
-              label="Structural Diffs"
-              description="Replace the standard diff view with syntax-aware diffs and linked folds."
-            >
-              <label {...stylex.props(styles.toggle)}>
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
-                  aria-label="Structural Diffs"
-                  checked={structuralDiffEnabled}
-                  disabled={busy !== null}
-                  onChange={(event) => {
-                    const enabled = event.target.checked;
-                    void run(
-                      "structural-diff",
-                      () => settings.setStructuralDiffEnabled(enabled),
-                      setStructuralDiffEnabled,
-                    );
-                  }}
-                />
-              </label>
-            </Row>
-            {structuralDiffEnabled ? (
-              <DiffrConfigSection
-                actions={settings.diffrConfig}
-                reloadWindow={settings.reloadWindow}
-              />
-            ) : null}
-            <Row
-              label="Software Map"
-              description="Show the experimental Software Map view in sessions."
-            >
-              <label {...stylex.props(styles.toggle)}>
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
-                  aria-label="Software Map"
-                  checked={softwareMapEnabled}
-                  disabled={busy !== null}
-                  onChange={(event) => {
-                    const enabled = event.target.checked;
-                    void run(
-                      "software-map",
-                      () => settings.setSoftwareMapEnabled(enabled),
-                      setSoftwareMapEnabled,
-                    );
-                  }}
-                />
-              </label>
-            </Row>
-            <Row
-              label="Scratchpad"
-              description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
-            >
-              <label {...stylex.props(styles.toggle)}>
-                <input
-                  {...stylex.props(styles.checkbox)}
-                  type="checkbox"
-                  aria-label="Scratchpad"
-                  checked={scratchpadEnabled}
-                  disabled={busy !== null}
-                  onChange={(event) => {
-                    const enabled = event.target.checked;
-                    void run(
-                      "scratchpad",
-                      () => settings.setScratchpadEnabled(enabled),
-                      setScratchpadEnabled,
-                    );
-                  }}
-                />
-              </label>
-            </Row>
-            {install ? (
-              <TraceCaptureSection
-                install={install}
-                onStatusChange={setInstallStatus}
-              />
-            ) : null}
+          <Section label={web ? "Desktop only" : "Experimental Features"}>
+            {!web ? (
+              <>
+                <Row
+                  label="Structural Diffs"
+                  description="Replace the standard diff view with syntax-aware diffs and linked folds."
+                >
+                  <label {...stylex.props(styles.toggle)}>
+                    <input
+                      {...stylex.props(styles.checkbox)}
+                      type="checkbox"
+                      aria-label="Structural Diffs"
+                      checked={structuralDiffEnabled}
+                      disabled={busy !== null}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        void run(
+                          "structural-diff",
+                          () => settings.setStructuralDiffEnabled(enabled),
+                          setStructuralDiffEnabled,
+                        );
+                      }}
+                    />
+                  </label>
+                </Row>
+                {structuralDiffEnabled ? (
+                  <DiffrConfigSection
+                    actions={settings.diffrConfig}
+                    reloadWindow={settings.reloadWindow}
+                  />
+                ) : null}
+                <Row
+                  label="Software Map"
+                  description="Show the experimental Software Map view in sessions."
+                >
+                  <label {...stylex.props(styles.toggle)}>
+                    <input
+                      {...stylex.props(styles.checkbox)}
+                      type="checkbox"
+                      aria-label="Software Map"
+                      checked={softwareMapEnabled}
+                      disabled={busy !== null}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        void run(
+                          "software-map",
+                          () => settings.setSoftwareMapEnabled(enabled),
+                          setSoftwareMapEnabled,
+                        );
+                      }}
+                    />
+                  </label>
+                </Row>
+                <Row
+                  label="Scratchpad"
+                  description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
+                >
+                  <label {...stylex.props(styles.toggle)}>
+                    <input
+                      {...stylex.props(styles.checkbox)}
+                      type="checkbox"
+                      aria-label="Scratchpad"
+                      checked={scratchpadEnabled}
+                      disabled={busy !== null}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        void run(
+                          "scratchpad",
+                          () => settings.setScratchpadEnabled(enabled),
+                          setScratchpadEnabled,
+                        );
+                      }}
+                    />
+                  </label>
+                </Row>
+                {install ? (
+                  <TraceCaptureSection
+                    install={install}
+                    onStatusChange={setInstallStatus}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <Row
+                label="Machine-local controls"
+                description="Keymaps, extensions, agent installation, notifications, and experimental tools are available in Whiteboard Desktop Settings on this machine."
+              >
+                <span aria-label="Unavailable in web canvas">Unavailable</span>
+              </Row>
+            )}
           </Section>
+          {web ? (
+            <Section label="Experimental Features">
+              <Row
+                label="Scratchpad"
+                description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
+              >
+                <label {...stylex.props(styles.toggle)}>
+                  <input
+                    {...stylex.props(styles.checkbox)}
+                    type="checkbox"
+                    aria-label="Scratchpad"
+                    checked={scratchpadEnabled}
+                    disabled={busy !== null}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      void run(
+                        "scratchpad",
+                        () => settings.setScratchpadEnabled(enabled),
+                        setScratchpadEnabled,
+                      );
+                    }}
+                  />
+                </label>
+              </Row>
+            </Section>
+          ) : null}
 
           {error ? <p {...stylex.props(styles.error)}>{error}</p> : null}
         </div>

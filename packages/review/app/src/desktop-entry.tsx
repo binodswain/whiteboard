@@ -77,7 +77,12 @@ function ReviewCanvas({
   }
 
   if (content.kind === "settings") {
-    return <SettingsPage settings={content.settings} />;
+    return (
+      <SettingsPage
+        settings={content.settings}
+        web={content.settings.web === true}
+      />
+    );
   }
 
   if (content.kind === "error") {

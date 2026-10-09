@@ -537,6 +537,8 @@ export interface ReviewDiffrConfigActions {
 }
 
 export interface ReviewCanvasSettingsContent {
+  /** True when rendered by the authenticated headless web canvas. */
+  web?: boolean;
   // Backed by the `review.telemetry.enabled` workbench setting, which the
   // review server and the CLI both read.
   telemetryEnabled: boolean;

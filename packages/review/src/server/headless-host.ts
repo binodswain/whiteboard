@@ -30,6 +30,7 @@ import {
 } from "./process-error-telemetry.js";
 import { createWhiteboardCore, serveWebCanvas } from "./review-server-core.js";
 import type { ReviewTelemetryCapture } from "./ui-telemetry.js";
+import { createWebSettings } from "./web-settings.js";
 
 interface HeadlessServerInput {
   stateDir: string;
@@ -111,6 +112,8 @@ async function serve(input: HeadlessServerInput) {
   };
 
   const relay = new GlobalReviewDesktopVerbRelay();
+  const settings = createWebSettings(input.stateDir);
+  let persistedSettings = await settings.read();
 
   const ask =
     input.ask ?? (await detectAskAgents()).some((agent) => agent.available);
@@ -122,7 +125,15 @@ async function serve(input: HeadlessServerInput) {
     instanceId: discovery.instanceId,
     softwareMapEnabled: input.softwareMapEnabled,
     // The scratchpad is the laptop's alone, even with a Desktop attached.
-    scratchpad: () => false,
+    scratchpad: () => persistedSettings.scratchpadEnabled,
+    webSettings: {
+      read: settings.read,
+      async update(patch) {
+        persistedSettings = await settings.update(patch);
+
+        return persistedSettings;
+      },
+    },
     status: () => ({ key: "headless", home: input.stateDir }),
     ask: ask ? { tools: headlessAskTools(input.stateDir) } : undefined,
   });
