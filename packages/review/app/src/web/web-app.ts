@@ -1,6 +1,7 @@
 import { mountReviewCanvas } from "@canvas/desktop-entry";
 import { reviewFetchUrl } from "@canvas/host/review-client";
 import type {
+  ReviewApiRepository,
   ReviewApiSummary,
   ReviewCanvasContent,
   ReviewCanvasSettingsContent,
@@ -121,23 +122,63 @@ export function startWebCanvas(
   const token =
     options.token || fragmentToken || sessionStorage.getItem(TOKEN_KEY) || "";
 
-  if (!token) {
-    renderTokenPrompt(container);
-
-    return { dispose: () => container.replaceChildren() };
-  }
-
   const serverUrl = options.serverUrl ?? location.origin;
 
-  const request =
-    options.request ??
-    ((url: string, init?: RequestInit) =>
-      reviewFetchUrl({ serverUrl, token }, url, init));
+  const request = (url: string, init?: RequestInit) => {
+    const requestInit = token
+      ? init
+      : { ...init, credentials: "omit" as const };
 
+    return options.request
+      ? options.request(url, requestInit)
+      : reviewFetchUrl({ serverUrl, token }, url, requestInit);
+  };
+
+  if (token) return mountWebCanvas(container, serverUrl, token, request);
+
+  let disposed = false;
+  let mounted: WebAppHandle | undefined;
+
+  const showPrompt = () => {
+    if (!disposed) renderTokenPrompt(container);
+  };
+
+  void request(`${serverUrl}/reviews-api/capabilities`)
+    .then(async (response) => {
+      if (!response.ok || (await response.json()).localBrowserAuth !== true) {
+        showPrompt();
+
+        return;
+      }
+
+      if (!disposed)
+        mounted = mountWebCanvas(container, serverUrl, token, request);
+    })
+    .catch(showPrompt);
+
+  return {
+    dispose() {
+      disposed = true;
+      mounted?.dispose();
+
+      if (!mounted) container.replaceChildren();
+    },
+  };
+}
+
+function mountWebCanvas(
+  container: HTMLElement,
+  serverUrl: string,
+  token: string,
+  request: (url: string, init?: RequestInit) => Promise<Response>,
+): WebAppHandle {
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
 
   let reviews: ReviewApiSummary[] = [];
+  let repositories: ReviewApiRepository[] = [];
+  let searchQuery = "";
+  let catalogError: string | undefined;
   let catalog: AbortController | undefined;
   let disposed = false;
   let webValues: WebSettingsValues | undefined;
@@ -218,6 +259,30 @@ export function startWebCanvas(
   const homeContent = (): ReviewCanvasContent => ({
     kind: "home",
     reviews,
+    repositories,
+    searchQuery,
+    setSearchQuery(query) {
+      searchQuery = query;
+    },
+    catalogError,
+    refreshCatalog() {
+      void showHome();
+    },
+    createSession: async ({ title, repositoryId }) => {
+      const result = await client.post<{ review: ReviewApiSummary }>(
+        "/commands",
+        {
+          operation: {
+            type: "create",
+            title,
+            target: { kind: "worktree", repositoryId },
+            open: false,
+          },
+        },
+      );
+
+      return result.review;
+    },
     theme: canvasTheme(),
     openReview,
     openSettings: bridgeOptions.openSettings,
@@ -278,14 +343,18 @@ export function startWebCanvas(
     const signal = catalog.signal;
 
     document.title = "Whiteboard Reviews";
+    canvas.update({ kind: "loading" });
 
     try {
-      const [nextReviews] = await Promise.all([
+      const [nextReviews, nextRepositories] = await Promise.all([
         client.read<ReviewApiSummary[]>("", signal),
+        client.read<ReviewApiRepository[]>("/repositories", signal),
         ensureSettings(),
       ]);
 
       reviews = nextReviews;
+      repositories = nextRepositories;
+      catalogError = undefined;
     } catch (error) {
       if (!signal.aborted && !disposed) {
         canvas.update({
@@ -294,6 +363,9 @@ export function startWebCanvas(
             error instanceof Error
               ? error.message
               : "Could not load the review catalog.",
+          retry() {
+            void showHome();
+          },
         });
       }
 
@@ -309,10 +381,18 @@ export function startWebCanvas(
       signal,
       (catalogUpdate) => {
         reviews = catalogUpdate;
+        catalogError = undefined;
 
         if (!signal.aborted && !disposed) canvas.update(homeContent());
       },
-      (cause) => console.error("Review catalog connection lost.", cause),
+      (cause) => {
+        catalogError =
+          cause instanceof Error
+            ? cause.message
+            : "The live catalog connection was interrupted.";
+
+        if (!signal.aborted && !disposed) canvas.update(homeContent());
+      },
     );
   }
 

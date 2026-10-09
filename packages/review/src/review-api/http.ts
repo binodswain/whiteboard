@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import { type JsonObject, isJsonObject } from "@dev.fast/json";
 import {
@@ -163,6 +164,27 @@ export interface ReviewApiHooks {
 const remoteCaller = (context: Context) =>
   context.req.header(REVIEW_CLIENT_HEADER) === REVIEW_CLIENT_REMOTE;
 
+const LOCAL_BROWSER_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+export function isLocalBrowserRequest(
+  request: Request,
+  port: number | undefined,
+): boolean {
+  if (port === undefined) return false;
+
+  const host = request.headers.get("host");
+
+  if (!host || !LOCAL_BROWSER_HOSTS.some((name) => host === `${name}:${port}`))
+    return false;
+
+  const origin = request.headers.get("origin");
+
+  if (origin === null)
+    return request.method === "GET" || request.method === "HEAD";
+
+  return origin === `http://${host}`;
+}
+
 /** Both hosts mount this behind their token authentication. */
 export function createReviewApi(
   store: ReviewStore,
@@ -188,6 +210,7 @@ export function createReviewApi(
   hooks: ReviewApiHooks = {},
   /** Desktop's Ask: local agents answering questions about a selection. */
   ask?: AskHost,
+  localBrowserAuth = false,
   webSettings?: {
     read(): Promise<WebSettings>;
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
@@ -327,6 +350,15 @@ export function createReviewApi(
       catalog(coverageModeSchema.parse(context.req.query("mode"))),
     );
   });
+
+  app.get("/repositories", (context) =>
+    context.json(
+      store.repositories().map(({ id, path: root }) => ({
+        id,
+        name: path.basename(root),
+      })),
+    ),
+  );
 
   // Server-owned state only: asking the Desktop canvas would let a stalled
   // renderer block tool listing and the first instructions call.
@@ -480,6 +512,7 @@ export function createReviewApi(
     context.json({
       ...(await capabilities()),
       scratchpadEnabled: scratchpadEnabled(),
+      localBrowserAuth,
     }),
   );
 
@@ -1725,6 +1758,18 @@ export function createReviewApi(
     });
 
     const input = commandSchema.parse(request);
+
+    const targetRepositoryId =
+      input.operation.type === "create" &&
+      input.operation.target?.kind === "worktree"
+        ? input.operation.target.repositoryId
+        : undefined;
+
+    if (
+      targetRepositoryId &&
+      !store.repositories().some(({ id }) => id === targetRepositoryId)
+    )
+      throw new ReviewInputError("Select a registered repository.", 400);
 
     const command = sharedCommandSchema.safeParse(input);
 

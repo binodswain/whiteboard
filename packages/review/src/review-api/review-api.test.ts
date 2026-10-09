@@ -112,6 +112,53 @@ it("guides missing-review reads and opens to an agent while keeping missing vers
   expect(await response.json()).toEqual({ error: "Review version not found." });
 });
 
+it("lists registered repositories without paths and rejects unregistered create targets", async () => {
+  const { id, name } = store.registerRepository(path.join(directory, "source"));
+
+  providers.resolveTarget = async (target) => ({
+    target,
+    pins: { repositoryId: target.repositoryId, base: "base", head: "head" },
+  });
+
+  const api = createReviewApi(store);
+  const repositories = await api.request("/repositories");
+
+  expect(repositories.status).toBe(200);
+  const listed = await repositories.json();
+  expect(listed).toEqual([{ id, name }]);
+  expect(JSON.stringify(listed)).not.toContain(directory);
+
+  const create = (repositoryId: string) =>
+    api.request("/commands", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        operation: {
+          type: "create",
+          title: "Web session",
+          target: { kind: "worktree", repositoryId },
+          open: false,
+        },
+      }),
+    });
+
+  const rejected = await create("not-registered");
+
+  expect(rejected.status).toBe(400);
+  expect(await rejected.json()).toMatchObject({
+    error: "Select a registered repository.",
+  });
+
+  const accepted = await create(id);
+
+  expect(accepted.status).toBe(200);
+  expect(await accepted.json()).toMatchObject({
+    created: true,
+    review: { title: "Web session", target: { repositoryId: id } },
+    opened: false,
+  });
+});
+
 describe("snapshot authoring", () => {
   it("binds PR identity without erasing content, versions changes, and clears stale identity across repositories", async () => {
     const url = "https://github.com/devdotfast/review/pull/310";

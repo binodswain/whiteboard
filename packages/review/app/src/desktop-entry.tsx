@@ -1,4 +1,5 @@
 import { fontSize } from "@canvas/scale.stylex";
+import { Button } from "@canvas/ui/button";
 import { EmptyState } from "@canvas/ui/empty-state";
 import { textStyles } from "@canvas/ui/text";
 import type {
@@ -31,6 +32,15 @@ function ReviewCanvas({
   content: ReviewCanvasContent;
   findHost: ReviewFindHost;
 }) {
+  if (content.kind === "loading")
+    return (
+      <CanvasShell title="Loading sessions">
+        <p role="status" {...stylex.props(styles.shellText)}>
+          Loading sessions…
+        </p>
+      </CanvasShell>
+    );
+
   if (content.kind === "api")
     return (
       <div data-review-api="" {...stylex.props(shellStyles.apiCanvas)}>
@@ -89,7 +99,10 @@ function ReviewCanvas({
   if (content.kind === "error") {
     return (
       <CanvasShell title="Session unavailable">
-        <p {...stylex.props(styles.shellText)}>{content.message}</p>
+        <p role="alert" {...stylex.props(styles.shellText)}>
+          {content.message}
+        </p>
+        {content.retry ? <Button onClick={content.retry}>Retry</Button> : null}
       </CanvasShell>
     );
   }
@@ -109,6 +122,12 @@ function Home({
   return (
     <ReviewHome
       reviews={content.reviews}
+      repositories={content.repositories}
+      onCreateSession={content.createSession}
+      searchQuery={content.searchQuery}
+      onSearchQueryChange={content.setSearchQuery}
+      catalogError={content.catalogError}
+      onRefreshCatalog={content.refreshCatalog}
       onOpen={(review) => content.openReview(review.reviewId)}
       onDelete={
         deleteReview ? (review) => deleteReview(review.reviewId) : undefined

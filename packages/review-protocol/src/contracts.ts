@@ -5,7 +5,11 @@ import {
 } from "@dev.fast/trace-protocol";
 import { z } from "zod";
 
-import type { ReviewApiSummary } from "./review-api-client.js";
+import type {
+  ReviewApiRepository,
+  ReviewApiSummary,
+  ReviewSessionCreateInput,
+} from "./review-api-client.js";
 
 // Version 3: the desktop serves prebuilt revisions instead of building them.
 // (Version 2 added the bundled-CLI discovery fields.)
@@ -709,6 +713,7 @@ export type ReviewCanvasContent =
   | {
       kind: "error";
       message: string;
+      retry?(): void;
     }
   // The Source tab: an empty state beside the read-only file tree. Static —
   // the tree and the file tabs it opens are native surfaces. `error` is set
@@ -718,6 +723,14 @@ export type ReviewCanvasContent =
   | {
       kind: "home";
       reviews: readonly ReviewApiSummary[];
+      repositories?: readonly ReviewApiRepository[];
+      createSession?(
+        input: ReviewSessionCreateInput,
+      ): Promise<ReviewApiSummary>;
+      searchQuery?: string;
+      setSearchQuery?(query: string): void;
+      catalogError?: string;
+      refreshCatalog?(): void;
       theme?: ReviewTheme;
       openReview(uuid: string): void;
       openSettings?(): void;

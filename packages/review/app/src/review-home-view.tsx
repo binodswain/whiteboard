@@ -1,7 +1,9 @@
 import { documentType } from "@canvas/document-type.stylex";
 import {
+  elevation,
   fontSize,
   fontWeight,
+  layer,
   motion,
   radius,
   tracking,
@@ -10,14 +12,17 @@ import { Button, IconButton, buttonStyles } from "@canvas/ui/button";
 import { EmptyState } from "@canvas/ui/empty-state";
 import { textStyles } from "@canvas/ui/text";
 import type {
+  ReviewApiRepository,
   ReviewApiSummary,
   ReviewCanvasInstallContent,
   ReviewCanvasOnboarding,
   ReviewCanvasSetupActions,
+  ReviewSessionCreateInput,
 } from "@dev.fast/review-protocol";
 import { fuzzyMatches, fuzzySegments } from "@review/fuzzy-match";
 import * as stylex from "@stylexjs/stylex";
 import {
+  type FormEvent,
   Fragment,
   createContext,
   useCallback,
@@ -38,6 +43,12 @@ import { WelcomePage } from "./welcome-page";
 
 interface ReviewHomeProps {
   reviews: readonly ReviewApiSummary[];
+  repositories?: readonly ReviewApiRepository[];
+  onCreateSession?(input: ReviewSessionCreateInput): Promise<ReviewApiSummary>;
+  searchQuery?: string;
+  onSearchQueryChange?(query: string): void;
+  catalogError?: string;
+  onRefreshCatalog?(): void;
   onOpen(review: ReviewApiSummary): void;
   // Deletion requires host confirmation.
   // Absent when the host does not support deletion.
@@ -97,6 +108,12 @@ function MatchedText({ text }: { text: string }) {
 
 export function ReviewHome({
   reviews,
+  repositories,
+  onCreateSession,
+  searchQuery,
+  onSearchQueryChange,
+  catalogError,
+  onRefreshCatalog,
   onOpen,
   onDelete,
   onDismiss,
@@ -111,7 +128,10 @@ export function ReviewHome({
   const deleting = useRef(new Set<string>());
   const [showDismissed, setShowDismissed] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(searchQuery ?? "");
+  const [creationOpen, setCreationOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [creationError, setCreationError] = useState<string>();
   const [, setNow] = useState(Date.now);
 
   const [deletions, setDeletions] = useState(
@@ -119,6 +139,64 @@ export function ReviewHome({
   );
 
   const [deleteError, setDeleteError] = useState<string>();
+
+  useEffect(() => {
+    if (searchQuery !== undefined) setQuery(searchQuery);
+  }, [searchQuery]);
+
+  const changeQuery = (value: string) => {
+    setQuery(value);
+    onSearchQueryChange?.(value);
+  };
+
+  useEffect(() => {
+    if (!creationOpen) return;
+
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !creating) setCreationOpen(false);
+    };
+
+    window.addEventListener("keydown", dismiss);
+
+    return () => window.removeEventListener("keydown", dismiss);
+  }, [creationOpen, creating]);
+
+  const createSession = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get("title") ?? "").trim();
+    const repositoryId = String(form.get("repositoryId") ?? "");
+
+    if (
+      !title ||
+      !repositories?.some((repository) => repository.id === repositoryId)
+    ) {
+      setCreationError("Choose a title and a registered repository.");
+
+      return;
+    }
+
+    setCreating(true);
+    setCreationError(undefined);
+
+    try {
+      const review = await onCreateSession?.({ title, repositoryId });
+
+      if (review) {
+        setCreationOpen(false);
+        onOpen(review);
+      }
+    } catch (error) {
+      setCreationError(
+        error instanceof Error
+          ? error.message
+          : "Could not create the session.",
+      );
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // Keep successful deletions hidden until the catalog acknowledges removal.
   useEffect(() => {
@@ -228,7 +306,8 @@ export function ReviewHome({
     !onboardingDismissed &&
     listed.length === 0 &&
     deletions.size === 0 &&
-    !deleteError
+    !deleteError &&
+    !onCreateSession
   ) {
     return (
       <WelcomePage
@@ -243,59 +322,162 @@ export function ReviewHome({
   }
 
   return (
-    <main {...withClass("review-home", homeStyles.page)}>
-      <div {...stylex.props(homeStyles.scroll)}>
-        <div {...stylex.props(homeStyles.content)}>
-          <div {...stylex.props(homeStyles.header)}>
-            <h1 {...stylex.props(homeStyles.heading)}>Sessions</h1>
-            <div {...stylex.props(styles.headerTools)}>
-              {onOpenSettings ? (
-                <Button
-                  variant="ghost"
-                  onClick={onOpenSettings}
-                  aria-label="Open Settings"
-                >
-                  Settings
-                </Button>
-              ) : null}
-              <SearchBox query={query} onChange={setQuery} />
+    <>
+      <main {...withClass("review-home", homeStyles.page)}>
+        <div {...stylex.props(homeStyles.scroll)}>
+          <div {...stylex.props(homeStyles.content)}>
+            <div {...stylex.props(homeStyles.header)}>
+              <h1 {...stylex.props(homeStyles.heading)}>Sessions</h1>
+              <div {...stylex.props(styles.headerTools)}>
+                {onOpenSettings ? (
+                  <Button
+                    variant="ghost"
+                    onClick={onOpenSettings}
+                    aria-label="Open Settings"
+                  >
+                    Settings
+                  </Button>
+                ) : null}
+                <SearchBox query={query} onChange={changeQuery} />
+                {onCreateSession ? (
+                  <Button
+                    disabled={!repositories?.length}
+                    onClick={() => {
+                      setCreationError(undefined);
+                      setCreationOpen(true);
+                    }}
+                  >
+                    New session
+                  </Button>
+                ) : null}
+              </div>
             </div>
-          </div>
-          {deleteError ? <p role="alert">{deleteError}</p> : null}
-          {/* Keyed off the active list, not the whole result: a query that hits
+            {catalogError ? (
+              <EmptyState
+                role="alert"
+                title="Live session updates unavailable"
+                message={catalogError}
+                action={
+                  onRefreshCatalog ? (
+                    <Button onClick={onRefreshCatalog}>Refresh sessions</Button>
+                  ) : null
+                }
+              />
+            ) : null}
+            {creationError && !creationOpen ? (
+              <p role="alert">{creationError}</p>
+            ) : null}
+            {deleteError ? <p role="alert">{deleteError}</p> : null}
+            {/* Keyed off the active list, not the whole result: a query that hits
               only dismissed reviews empties the main area, and the collapsed
               Dismissed count alone does not explain why. */}
-          {needle && active.length === 0 && !scratchpadShown ? (
-            <EmptyState
-              message={
-                dismissed.length > 0
-                  ? `No active reviews match “${needle}”. Look in Dismissed below.`
-                  : `No reviews match “${needle}”.`
-              }
-            />
-          ) : null}
-          <SearchQueryContext.Provider value={needle}>
-            <AttentionActionsContext.Provider value={actions}>
-              {scratchpadShown ? (
-                <ScratchpadGroup review={scratchpad} onOpen={onOpen} />
-              ) : null}
-              {active.length > 0 ? (
-                <ReviewTable reviews={active} onOpen={onOpen} />
-              ) : null}
-              {dismissed.length > 0 ? (
-                <DismissedSection
-                  reviews={dismissed}
-                  expanded={showDismissed}
-                  onToggle={() => setShowDismissed((open) => !open)}
-                  onOpen={onOpen}
-                  onDelete={actions.onDelete}
-                />
-              ) : null}
-            </AttentionActionsContext.Provider>
-          </SearchQueryContext.Provider>
+            {needle && active.length === 0 && !scratchpadShown ? (
+              <EmptyState
+                message={
+                  dismissed.length > 0
+                    ? `No active reviews match “${needle}”. Look in Dismissed below.`
+                    : `No reviews match “${needle}”.`
+                }
+              />
+            ) : null}
+            {onCreateSession &&
+            !needle &&
+            listed.length === 0 &&
+            !scratchpadShown ? (
+              <EmptyState
+                title="No sessions yet"
+                message={
+                  repositories?.length
+                    ? "Sessions start empty. An agent will populate the session; the browser is read-only for board authoring."
+                    : "Register a repository with Whiteboard before creating a session. Sessions are populated by agents."
+                }
+              />
+            ) : null}
+            <SearchQueryContext.Provider value={needle}>
+              <AttentionActionsContext.Provider value={actions}>
+                {scratchpadShown ? (
+                  <ScratchpadGroup review={scratchpad} onOpen={onOpen} />
+                ) : null}
+                {active.length > 0 ? (
+                  <ReviewTable reviews={active} onOpen={onOpen} />
+                ) : null}
+                {dismissed.length > 0 ? (
+                  <DismissedSection
+                    reviews={dismissed}
+                    expanded={showDismissed}
+                    onToggle={() => setShowDismissed((open) => !open)}
+                    onOpen={onOpen}
+                    onDelete={actions.onDelete}
+                  />
+                ) : null}
+              </AttentionActionsContext.Provider>
+            </SearchQueryContext.Provider>
+          </div>
         </div>
-      </div>
-    </main>
+      </main>
+      {creationOpen && onCreateSession && repositories?.length ? (
+        <div {...stylex.props(styles.creationBackdrop)}>
+          <section
+            {...stylex.props(styles.creationDialog)}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-session-title"
+          >
+            <h2 id="new-session-title" {...stylex.props(styles.dialogTitle)}>
+              New session
+            </h2>
+            <p {...stylex.props(styles.dialogNote)}>
+              An agent will populate this session. The browser is read-only for
+              board authoring.
+            </p>
+            <form onSubmit={createSession}>
+              <label {...stylex.props(styles.dialogField)}>
+                Session title
+                <input
+                  {...stylex.props(styles.fieldControl)}
+                  name="title"
+                  autoFocus
+                  required
+                  maxLength={120}
+                  placeholder="e.g. Review checkout flow"
+                />
+              </label>
+              <label {...stylex.props(styles.dialogField)}>
+                Repository
+                <select
+                  {...stylex.props(styles.fieldControl)}
+                  name="repositoryId"
+                  required
+                  defaultValue=""
+                >
+                  <option value="" disabled>
+                    Select a registered repository
+                  </option>
+                  {repositories.map((repository) => (
+                    <option key={repository.id} value={repository.id}>
+                      {repository.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {creationError ? <p role="alert">{creationError}</p> : null}
+              <div {...stylex.props(styles.dialogActions)}>
+                <Button
+                  type="button"
+                  disabled={creating}
+                  onClick={() => setCreationOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={creating}>
+                  {creating ? "Creating…" : "Create session"}
+                </Button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1060,6 +1242,61 @@ const styles = stylex.create({
     minWidth: 0,
     alignItems: "center",
     gap: "8px",
+  },
+  creationBackdrop: {
+    position: "fixed",
+    inset: 0,
+    zIndex: layer.dialog,
+    display: "grid",
+    placeItems: "center",
+    padding: "16px",
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
+  },
+  creationDialog: {
+    boxSizing: "border-box",
+    width: "min(480px, 100%)",
+    padding: "24px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.rule,
+    borderRadius: radius.surface,
+    backgroundColor: tokens.surface,
+    color: tokens.ink,
+    boxShadow: elevation.dialog,
+  },
+  dialogTitle: {
+    margin: 0,
+    fontSize: fontSize.display,
+  },
+  dialogNote: {
+    color: tokens.inkMuted,
+    lineHeight: 1.5,
+  },
+  dialogField: {
+    display: "grid",
+    gap: "6px",
+    marginBlock: "16px",
+    color: tokens.inkMuted,
+    fontSize: fontSize.ui,
+  },
+  fieldControl: {
+    boxSizing: "border-box",
+    width: "100%",
+    minHeight: "40px",
+    padding: "8px 10px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.rule,
+    borderRadius: radius.control,
+    backgroundColor: tokens.tray,
+    color: tokens.ink,
+    font: "inherit",
+  },
+  dialogActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: "8px",
+    marginTop: "24px",
   },
   // Fixed width, so the clear button appearing does not resize the field.
   search: {
