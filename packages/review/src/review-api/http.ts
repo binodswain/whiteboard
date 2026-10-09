@@ -1712,6 +1712,18 @@ export function createReviewApi(
 
     const input = commandSchema.parse(request);
 
+    const targetRepositoryId =
+      input.operation.type === "create" &&
+      input.operation.target?.kind === "worktree"
+        ? input.operation.target.repositoryId
+        : undefined;
+
+    if (
+      targetRepositoryId &&
+      !store.repositories().some(({ id }) => id === targetRepositoryId)
+    )
+      throw new ReviewInputError("Select a registered repository.", 400);
+
     const command = sharedCommandSchema.safeParse(input);
 
     if (command.success) {
