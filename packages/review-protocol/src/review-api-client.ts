@@ -47,6 +47,16 @@ export interface ReviewApiSummary {
   working?: boolean;
 }
 
+export interface ReviewApiRepository {
+  id: string;
+  name: string;
+}
+
+export interface ReviewSessionCreateInput {
+  title: string;
+  repositoryId: string;
+}
+
 export interface ReviewSourceEntry {
   path: string;
   kind: "file" | "directory";

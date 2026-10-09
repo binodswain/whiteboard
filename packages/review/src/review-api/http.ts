@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import { type JsonObject, isJsonObject } from "@dev.fast/json";
 import {
@@ -303,6 +304,15 @@ export function createReviewApi(
       catalog(coverageModeSchema.parse(context.req.query("mode"))),
     );
   });
+
+  app.get("/repositories", (context) =>
+    context.json(
+      store.repositories().map(({ id, path: root }) => ({
+        id,
+        name: path.basename(root),
+      })),
+    ),
+  );
 
   // Server-owned state only: asking the Desktop canvas would let a stalled
   // renderer block tool listing and the first instructions call.
