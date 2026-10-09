@@ -25,6 +25,8 @@ import type { ReviewTelemetryCapture } from "./ui-telemetry.js";
 interface HeadlessServerInput {
   stateDir: string;
   port?: number;
+  /** Bind address; a non-loopback one makes the API reachable from other machines. */
+  host?: string;
   softwareMapEnabled?: boolean;
   signal: AbortSignal;
   /** The CLI's instance, already on the `headless` surface. */
@@ -109,13 +111,20 @@ async function serve(input: HeadlessServerInput) {
 
   try {
     const listening = once(server, "listening");
-    server.listen(input.port ?? 0, "127.0.0.1");
+    server.listen(input.port ?? 0, input.host || "127.0.0.1");
     await listening;
     const address = server.address();
 
     if (!isObjectValue(address))
       throw new Error("Whiteboard server did not bind a TCP port.");
-    discovery.url = `http://127.0.0.1:${address.port}`;
+    // Same-machine clients dial the discovery URL: a wildcard bind still gets
+    // loopback, while a specific interface is only reachable by its own address.
+    discovery.url = `http://${discoveryHost(address.address)}:${address.port}`;
+
+    if (!isLoopbackAddress(address.address))
+      process.stderr.write(
+        `Whiteboard server is listening on ${address.address}, reachable from other machines; the token is the only protection.\n`,
+      );
     await writePrivateJsonAtomic(
       reviewServerDiscoveryPath(input.stateDir),
       discovery,
@@ -149,4 +158,16 @@ async function serve(input: HeadlessServerInput) {
       }
     }
   }
+}
+
+function discoveryHost(bound: string) {
+  if (bound === "0.0.0.0" || bound === "::") return "127.0.0.1";
+
+  return bound.includes(":") ? `[${bound}]` : bound;
+}
+
+function isLoopbackAddress(bound: string) {
+  const ipv4 = bound.startsWith("::ffff:") ? bound.slice(7) : bound;
+
+  return ipv4 === "::1" || ipv4.startsWith("127.");
 }
