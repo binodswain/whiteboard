@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createGlobalReviewServer } from "./desktop-server.js";
 import { runHeadlessServer } from "./headless-host.js";
+import { createWhiteboardCore } from "./review-server-core.js";
+import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -21,6 +23,40 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 let root: string;
 
 const stops: (() => Promise<void>)[] = [];
+
+it("constructs the configured S3 blob store on the Whiteboard core", async () => {
+  const profile = await openLocalReviewStore(path.join(root, "review-api.db"));
+  const core = createWhiteboardCore({
+    profile,
+    relay: new GlobalReviewDesktopVerbRelay(),
+    token: "test-token-0000000000000000000000000000",
+    instanceId: "test-instance",
+    scratchpad: () => false,
+    status: () => ({}),
+    deploymentConfig: {
+      mode: "remote",
+      db: "postgres",
+      blobs: "s3",
+      repoSource: "github",
+      jobs: "queue",
+      auth: "oauth",
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+      s3: {
+        bucket: "whiteboard",
+        endpoint: "https://objects.example.invalid",
+        region: "us-east-1",
+        key: "access-key",
+        secret: "secret-key",
+      },
+    },
+  });
+
+  expect(core.blobStore.signedReadUrl).toBeTypeOf("function");
+  stops.push(async () => {
+    await profile.data.close();
+    await profile.store.close();
+  });
+});
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), "review-server-core-"));

@@ -21,6 +21,7 @@ import {
   isLocalAuthRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
+import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
@@ -193,6 +194,19 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const { store, data, shared } = input.profile;
   const deploymentConfig = input.deploymentConfig ?? loadDeploymentConfig();
   const deployment = publicDeploymentConfig(deploymentConfig);
+  const blobStore =
+    deploymentConfig.blobs === "s3" && deploymentConfig.s3
+      ? createBlobStore({
+          driver: "s3",
+          bucket: deploymentConfig.s3.bucket,
+          endpoint:
+            deploymentConfig.s3.endpoint ??
+            `https://s3.${deploymentConfig.s3.region}.amazonaws.com`,
+          region: deploymentConfig.s3.region,
+          accessKeyId: deploymentConfig.s3.key,
+          secretAccessKey: deploymentConfig.s3.secret,
+        })
+      : createBlobStore({ driver: "fs" });
 
   const app = createReviewServerApp({
     token: input.token,
@@ -231,6 +245,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   return {
     app,
     api,
+    blobStore,
     deployment: deploymentConfig,
     close: () => askThreads?.closeAll(),
   };
