@@ -46,7 +46,7 @@ export interface WebSetupHandle {
 }
 
 /** The MCP reads the server's own URL; only a non-default one is spelled out. */
-const DEFAULT_SERVER_URL = "http://localhost:3000";
+const DEFAULT_SERVER_URL = "http://localhost:7421";
 
 const COPIED_RESET_MS = 2000;
 

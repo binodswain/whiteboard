@@ -49,7 +49,7 @@ pnpm docker:up
 ```
 
 This builds the image, waits for health, and opens
-`http://localhost:3000/setup`. From a repo under `CODE_ROOT`, connect Claude
+`http://localhost:7421/setup`. From a repo under `CODE_ROOT`, connect Claude
 Code:
 
 ```sh
@@ -64,7 +64,7 @@ command = "npx"
 args = ["-y", "@dev.fast/whiteboard", "mcp"]
 ```
 
-Local setup needs no token and finds `localhost:3000` automatically. For
+Local setup needs no token and finds `localhost:7421` automatically. For
 another port, set `WHITEBOARD_URL` to `http://localhost:<port>` in the MCP
 server environment or pass `--url`. Reviews use the repo where the agent runs.
 Data persists in `~/.whiteboard/docker` (`WHITEBOARD_DATA_DIR`); `docker compose

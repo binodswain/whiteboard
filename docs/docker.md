@@ -1,6 +1,6 @@
 # Docker
 
-Docker Compose runs Whiteboard on `http://localhost:${WHITEBOARD_PORT:-3000}`, bound to host loopback by default. Reviews, configuration, and the generated server token persist in the host directory `${WHITEBOARD_DATA_DIR:-$HOME/.whiteboard/docker}`. Compose uses the stable project name `whiteboard`, independent of the checkout directory.
+Docker Compose runs Whiteboard on `http://localhost:${WHITEBOARD_PORT:-7421}`, bound to host loopback by default. Reviews, configuration, and the generated server token persist in the host directory `${WHITEBOARD_DATA_DIR:-$HOME/.whiteboard/docker}`. Compose uses the stable project name `whiteboard`, independent of the checkout directory.
 
 ## Start
 

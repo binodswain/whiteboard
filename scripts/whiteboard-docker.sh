@@ -171,10 +171,10 @@ fi
 # the compose default cover builds that do not report one.
 PORT="$WHITEBOARD_PORT_VALUE"
 if [ -z "$PORT" ]; then
-  PUBLISHED="$("${COMPOSE[@]}" port whiteboard 3000 2>/dev/null || true)"
+  PUBLISHED="$("${COMPOSE[@]}" port whiteboard 7421 2>/dev/null || true)"
   PORT="${PUBLISHED##*:}"
 fi
-PORT="${PORT:-3000}"
+PORT="${PORT:-7421}"
 
 BASE_URL="http://localhost:${PORT}"
 

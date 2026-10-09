@@ -11,13 +11,13 @@ services:
     init: true
     stop_grace_period: 30s
     ports:
-      - "127.0.0.1:${WHITEBOARD_PORT:-3000}:${WHITEBOARD_PORT:-3000}"
+      - "127.0.0.1:${WHITEBOARD_PORT:-7421}:${WHITEBOARD_PORT:-7421}"
     volumes:
       - "${WHITEBOARD_DATA_DIR:-${HOME}/.whiteboard/docker}:/data"
       - "${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}"
     environment:
       HOME: /tmp
-      WHITEBOARD_PORT: ${WHITEBOARD_PORT:-3000}
+      WHITEBOARD_PORT: ${WHITEBOARD_PORT:-7421}
       WHITEBOARD_TOKEN: ${WHITEBOARD_TOKEN:-}
       WHITEBOARD_LOCAL_BROWSER_AUTH: ${WHITEBOARD_LOCAL_BROWSER_AUTH:-1}
       CODE_ROOT: ${CODE_ROOT:?set CODE_ROOT}
@@ -33,7 +33,7 @@ services:
       - --host
       - 0.0.0.0
       - --port
-      - "${WHITEBOARD_PORT:-3000}"
+      - "${WHITEBOARD_PORT:-7421}"
       - --web
       - /app/web
     restart: unless-stopped

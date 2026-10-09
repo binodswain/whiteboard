@@ -83,13 +83,13 @@ export async function connectReviewInstance(
   const discovery = healthyReviewInstance(selection);
 
   if (!discovery) {
-    const fallbackUrl = "http://localhost:3000";
+    const fallbackUrl = "http://localhost:7421";
 
     if (await reviewUrlIsHealthy(fallbackUrl))
       return connectHeadlessUrl(fallbackUrl, undefined, request, false);
 
     const unavailable = reviewInstanceUnavailable(selection);
-    const message = `${unavailable.message} Tried ${fallbackUrl}/health. Start the server with docker compose up, then open http://localhost:3000/setup.`;
+    const message = `${unavailable.message} Tried ${fallbackUrl}/health. Start the server with docker compose up, then open ${fallbackUrl}/setup.`;
 
     if (unavailable instanceof ReviewInstanceUnavailableError)
       throw new ReviewInstanceUnavailableError(message);
@@ -136,7 +136,7 @@ async function connectHeadlessUrl(
 
   if (checkHealth && !(await reviewUrlIsHealthy(normalizedUrl)))
     throw new Error(
-      `Whiteboard server at ${normalizedUrl} is unavailable (tried ${normalizedUrl}/health). Start it with docker compose up and open http://localhost:3000/setup.`,
+      `Whiteboard server at ${normalizedUrl} is unavailable (tried ${normalizedUrl}/health). Start it with docker compose up and open http://localhost:7421/setup.`,
     );
 
   return {

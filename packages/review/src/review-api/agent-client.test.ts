@@ -202,17 +202,17 @@ it("uses WHITEBOARD_TOKEN when connecting to WHITEBOARD_URL", async () => {
   expect(new Headers(request?.headers).get("x-review-token")).toBe("secret");
 });
 
-it("probes localhost:3000 when Desktop discovery finds nothing", async () => {
+it("probes localhost:7421 when Desktop discovery finds nothing", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn<typeof fetch>(async (input) =>
-      String(input) === "http://localhost:3000/health"
+      String(input) === "http://localhost:7421/health"
         ? Response.json({ ok: true, instanceId: "server" })
         : Promise.reject(new Error("unexpected request")),
     ),
   );
   const connected = await agentClient.connectReviewInstance({});
-  expect(connected.client.connection.serverUrl).toBe("http://localhost:3000");
+  expect(connected.client.connection.serverUrl).toBe("http://localhost:7421");
 });
 
 it("does not accept an unrelated 200 response as localhost Whiteboard health", async () => {
@@ -222,7 +222,7 @@ it("does not accept an unrelated 200 response as localhost Whiteboard health", a
   );
 
   await expect(agentClient.connectReviewInstance({})).rejects.toThrow(
-    /localhost:3000\/health.*docker compose up.*localhost:3000\/setup/i,
+    /localhost:7421\/health.*docker compose up.*localhost:7421\/setup/i,
   );
 });
 
@@ -238,7 +238,7 @@ it("rejects an explicit URL whose 200 health response is not Whiteboard JSON", a
       WHITEBOARD_URL: "http://localhost:3000",
     }),
   ).rejects.toThrow(
-    /localhost:3000\/health.*docker compose up.*localhost:3000\/setup/i,
+    /localhost:3000\/health.*docker compose up.*localhost:7421\/setup/i,
   );
   expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 });

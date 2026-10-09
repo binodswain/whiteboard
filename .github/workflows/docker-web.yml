@@ -66,18 +66,18 @@ jobs:
           git -C scripts/docker-smoke/repository commit -m "Fixture"
           docker run --detach --name whiteboard-ci-smoke \
             --init \
-            --publish 3000:3000 \
+            --publish 7421:7421 \
             --env WHITEBOARD_TOKEN="$WHITEBOARD_TOKEN" \
             --volume "$CODE_ROOT:$CODE_ROOT" \
             whiteboard:ci-smoke
-          health_url=http://127.0.0.1:3000/health
+          health_url=http://127.0.0.1:7421/health
           for _ in $(seq 1 60); do
             if curl --fail --silent "$health_url" >/dev/null; then
               break
             fi
             sleep 2
           done
-          curl --fail --silent http://127.0.0.1:3000/health >/dev/null
+          curl --fail --silent http://127.0.0.1:7421/health >/dev/null
           scripts/docker-smoke/seed.sh whiteboard-ci-smoke "$CODE_ROOT"
           SMOKE_SCREENSHOT="$PWD/artifacts/docker-smoke-failure.png" \
             WHITEBOARD_TOKEN="$WHITEBOARD_TOKEN" \
