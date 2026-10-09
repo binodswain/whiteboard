@@ -25,6 +25,10 @@ import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
+import {
+  createGitHubRepoSource,
+  createLocalRepoSource,
+} from "@review/repo-source/index.js";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -207,6 +211,12 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           secretAccessKey: deploymentConfig.s3.secret,
         })
       : createBlobStore({ driver: "fs" });
+  const repoSource =
+    deploymentConfig.repoSource === "github"
+      ? createGitHubRepoSource({
+          tokenProvider: () => process.env.GITHUB_TOKEN,
+        })
+      : createLocalRepoSource();
 
   const app = createReviewServerApp({
     token: input.token,
@@ -246,6 +256,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     app,
     api,
     blobStore,
+    repoSource,
     deployment: deploymentConfig,
     close: () => askThreads?.closeAll(),
   };

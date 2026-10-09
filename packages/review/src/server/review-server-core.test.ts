@@ -58,6 +58,39 @@ it("constructs the configured S3 blob store on the Whiteboard core", async () =>
   });
 });
 
+it("constructs the configured GitHub repo source on the Whiteboard core", async () => {
+  const profile = await openLocalReviewStore(path.join(root, "repo-source.db"));
+  const core = createWhiteboardCore({
+    profile,
+    relay: new GlobalReviewDesktopVerbRelay(),
+    token: "test-token-0000000000000000000000000000",
+    instanceId: "test-instance",
+    scratchpad: () => false,
+    status: () => ({}),
+    deploymentConfig: {
+      mode: "remote",
+      db: "postgres",
+      blobs: "fs",
+      repoSource: "github",
+      jobs: "queue",
+      auth: "oauth",
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+    },
+  });
+
+  await expect(
+    core.repoSource.checkout({
+      repo: "/not/a/github/repository",
+      baseSha: "base",
+      headSha: "head",
+    }),
+  ).rejects.toThrow("Repository must identify a GitHub repository.");
+  stops.push(async () => {
+    await profile.data.close();
+    await profile.store.close();
+  });
+});
+
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), "review-server-core-"));
   vi.stubEnv("DEV_REVIEW_HOME", root);
