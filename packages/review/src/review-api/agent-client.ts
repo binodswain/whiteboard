@@ -136,7 +136,7 @@ async function connectHeadlessUrl(
 
   if (checkHealth && !(await reviewUrlIsHealthy(normalizedUrl)))
     throw new Error(
-      `Whiteboard server at ${normalizedUrl} is unavailable (tried ${normalizedUrl}/health). Start it with docker compose up and open http://localhost:7421/setup.`,
+      `Whiteboard server at ${normalizedUrl} is unavailable (tried ${normalizedUrl}/health). Start it with docker compose up and open ${normalizedUrl}/setup.`,
     );
 
   return {

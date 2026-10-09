@@ -238,7 +238,7 @@ it("rejects an explicit URL whose 200 health response is not Whiteboard JSON", a
       WHITEBOARD_URL: "http://localhost:3000",
     }),
   ).rejects.toThrow(
-    /localhost:3000\/health.*docker compose up.*localhost:7421\/setup/i,
+    /localhost:3000\/health.*docker compose up.*localhost:3000\/setup/i,
   );
   expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 });
