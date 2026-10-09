@@ -8,6 +8,8 @@ export type RepoCheckoutRequest = {
   repo: string;
   baseSha: string;
   headSha: string;
+  /** Keep the fetched checkout at this path for reviews that persist pins there. */
+  persistentDir?: string;
 };
 
 export interface RepoSource {

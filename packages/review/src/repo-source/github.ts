@@ -1,5 +1,5 @@
 import { type ExecFileException, execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -23,7 +23,7 @@ export function createGitHubRepoSource(
   options: GitHubRepoSourceOptions = {},
 ): RepoSource {
   return {
-    async checkout({ repo, baseSha, headSha }) {
+    async checkout({ repo, baseSha, headSha, persistentDir }) {
       let canonicalRepo: string;
 
       try {
@@ -47,7 +47,15 @@ export function createGitHubRepoSource(
 
       const tempRoot = options.cacheDir ?? os.tmpdir();
       await mkdir(tempRoot, { recursive: true });
-      const directory = await mkdtemp(path.join(tempRoot, "whiteboard-repo-"));
+      const directory = persistentDir
+        ? path.resolve(persistentDir)
+        : await mkdtemp(path.join(tempRoot, "whiteboard-repo-"));
+      const persistent = Boolean(persistentDir);
+      await mkdir(directory, { recursive: true });
+      const isInitialized = await stat(path.join(directory, ".git")).then(
+        () => true,
+        () => false,
+      );
 
       try {
         let token: string | undefined;
@@ -90,13 +98,10 @@ export function createGitHubRepoSource(
           }
         };
 
-        await git("init", "--quiet");
-        await git(
-          "remote",
-          "add",
-          "origin",
-          options.remoteUrl?.(canonicalRepo) ?? canonicalRepo,
-        );
+        if (!isInitialized) await git("init", "--quiet");
+        const remote = options.remoteUrl?.(canonicalRepo) ?? canonicalRepo;
+        if (isInitialized) await git("remote", "set-url", "origin", remote);
+        else await git("remote", "add", "origin", remote);
 
         try {
           await exec(
@@ -138,11 +143,12 @@ export function createGitHubRepoSource(
         return {
           dir: directory,
           async dispose() {
-            await rm(directory, { recursive: true, force: true });
+            if (!persistent)
+              await rm(directory, { recursive: true, force: true });
           },
         };
       } catch (error) {
-        await rm(directory, { recursive: true, force: true });
+        if (!persistent) await rm(directory, { recursive: true, force: true });
         throw error;
       }
     },

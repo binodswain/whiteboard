@@ -49,4 +49,13 @@ export const POSTGRES_MIGRATIONS: {
       CREATE TABLE pinned_environments(id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE workspace_leases(review_id TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`,
   },
+  {
+    version: 2,
+    name: "review_jobs",
+    sql: `CREATE TABLE jobs_jobs(
+      id TEXT PRIMARY KEY, job_key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, input TEXT NOT NULL,
+      status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease_until BIGINT,
+      review_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE INDEX jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);`,
+  },
 ];
