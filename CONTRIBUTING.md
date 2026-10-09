@@ -28,6 +28,14 @@ pnpm install
 pnpm dev
 ```
 
+If pnpm rejects the current toolchain, use the pinned versions for either
+command:
+
+```sh
+npm exec --yes --package=node@24 --package=pnpm@11.1.2 -- pnpm install
+npm exec --yes --package=node@24 --package=pnpm@11.1.2 -- pnpm dev
+```
+
 A dev build can run alongside an installed Whiteboard. They share the same
 data, so commands and your agent's `whiteboard` MCP server talk to one selected
 app. Run `whiteboard instances` to see which one, `whiteboard instances use
