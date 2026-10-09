@@ -46,6 +46,7 @@ import {
   createReviewSession,
   useReviewSession,
 } from "./host/review-session";
+import { ReviewCommentsProvider } from "./review-comments";
 import { ReviewDocumentBoundary } from "./review-document-boundary";
 import { reportReviewDocumentRenderError } from "./review-document-error-report";
 import type { ReviewFindHost } from "./review-find";
@@ -415,52 +416,56 @@ export function ApiCanvas({
             })}
           >
             <DocumentData.Provider value={data}>
-              <ReviewLensesProvider
-                client={client}
-                snapshot={data.snapshot}
-                coverageRevision={coverageRevision}
-                structuralDiffEnabled={content.structuralDiffEnabled}
-              >
-                <TutorialProvider tutorial={content.tutorial}>
-                  {error && (
-                    <p {...stylex.props(styles.error)} role="status">
-                      {error}
-                    </p>
-                  )}
-                  <AuthoringActivityContext.Provider
-                    value={version === undefined ? activity : undefined}
-                  >
-                    <DrawQueueProvider
-                      cursor={version === undefined ? cursor : undefined}
+              <ReviewCommentsProvider version={data.snapshot.version}>
+                <ReviewLensesProvider
+                  client={client}
+                  snapshot={data.snapshot}
+                  coverageRevision={coverageRevision}
+                  structuralDiffEnabled={content.structuralDiffEnabled}
+                >
+                  <TutorialProvider tutorial={content.tutorial}>
+                    {error && (
+                      <p {...stylex.props(styles.error)} role="status">
+                        {error}
+                      </p>
+                    )}
+                    <AuthoringActivityContext.Provider
+                      value={version === undefined ? activity : undefined}
                     >
                       <DrawQueueProvider
-                        scope="lenses"
-                        cursor={version === undefined ? lensCursor : undefined}
+                        cursor={version === undefined ? cursor : undefined}
                       >
-                        <DisplayedReviewVersionContext.Provider
-                          value={data.snapshot.version}
+                        <DrawQueueProvider
+                          scope="lenses"
+                          cursor={
+                            version === undefined ? lensCursor : undefined
+                          }
                         >
-                          <MapEnabled.Provider
-                            value={content.softwareMapEnabled === true}
+                          <DisplayedReviewVersionContext.Provider
+                            value={data.snapshot.version}
                           >
-                            <SaveMarkdown.Provider value={saveMarkdown}>
-                              <CanvasDocument
-                                data={data}
-                                findHost={findHost}
-                                softwareMapEnabled={
-                                  content.softwareMapEnabled === true
-                                }
-                                documentWidth={content.documentWidth}
-                                codeFontSize={content.codeFontSize}
-                              />
-                            </SaveMarkdown.Provider>
-                          </MapEnabled.Provider>
-                        </DisplayedReviewVersionContext.Provider>
+                            <MapEnabled.Provider
+                              value={content.softwareMapEnabled === true}
+                            >
+                              <SaveMarkdown.Provider value={saveMarkdown}>
+                                <CanvasDocument
+                                  data={data}
+                                  findHost={findHost}
+                                  softwareMapEnabled={
+                                    content.softwareMapEnabled === true
+                                  }
+                                  documentWidth={content.documentWidth}
+                                  codeFontSize={content.codeFontSize}
+                                />
+                              </SaveMarkdown.Provider>
+                            </MapEnabled.Provider>
+                          </DisplayedReviewVersionContext.Provider>
+                        </DrawQueueProvider>
                       </DrawQueueProvider>
-                    </DrawQueueProvider>
-                  </AuthoringActivityContext.Provider>
-                </TutorialProvider>
-              </ReviewLensesProvider>
+                    </AuthoringActivityContext.Provider>
+                  </TutorialProvider>
+                </ReviewLensesProvider>
+              </ReviewCommentsProvider>
             </DocumentData.Provider>
           </ReviewPanelProvider>
         </ReviewSessionProvider>
