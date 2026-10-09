@@ -33,6 +33,7 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 USER node
 ENV HOME=/tmp
+ENV WHITEBOARD_LOCAL_BROWSER_AUTH=0
 CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web"]
 
 FROM runtime-base AS runtime

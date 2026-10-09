@@ -376,6 +376,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         host: options.host?.trim() || undefined,
         webDir,
         token,
+        localBrowserAuth: env.WHITEBOARD_LOCAL_BROWSER_AUTH?.trim() === "1",
         softwareMapEnabled: options.softwareMaps,
         ask,
         signal: controller.signal,
