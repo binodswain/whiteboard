@@ -47,6 +47,14 @@ describe("GET /setup-info", () => {
       localAuth: false,
       version: expect.any(String),
       healthy: true,
+      deployment: {
+        mode: "local",
+        db: "sqlite",
+        blobs: "fs",
+        repoSource: "local",
+        jobs: "inline",
+        auth: "local-token",
+      },
       // A local same-origin GET counts as a local browser request.
       token: TOKEN,
     });

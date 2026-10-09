@@ -3,7 +3,7 @@
 export const REVIEW_STATUS_TOOL = {
   name: "whiteboard_status",
   description:
-    "Name the Whiteboard instance this session talks to: key (stable, preview or dev-<checkout>), channel, checkout, appVersion, cliVersion, instanceId, url, home and desktopAvailable. Call it before changing anything when the user mentions Preview, a checkout or a dev build.",
+    "Name the Whiteboard instance and deployment drivers this session talks to, including mode, db, blobs, repoSource, jobs and auth. Call it before changing anything when the user mentions Preview, a checkout or a dev build.",
   inputSchema: { type: "object" as const, properties: {} },
   method: "GET" as const,
   path: "/status",

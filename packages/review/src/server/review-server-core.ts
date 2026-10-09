@@ -29,6 +29,10 @@ import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 
+import {
+  loadDeploymentConfig,
+  publicDeploymentConfig,
+} from "./deployment-config.js";
 import type { ReviewDesktopVerbRelay } from "./global-verb-relay";
 import {
   type ReviewHonoEnv,
@@ -59,6 +63,7 @@ export function createReviewServerApp(input: {
   relay: ReviewDesktopVerbRelay;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
+  deployment?: ReturnType<typeof publicDeploymentConfig>;
 }): Hono<ReviewHonoEnv> {
   const app = new Hono<ReviewHonoEnv>();
   app.use("*", async (context, next) => {
@@ -67,11 +72,15 @@ export function createReviewServerApp(input: {
   });
   // Open to any caller, but the stable ids only to one holding the token.
   app.get("/health", (context) => {
-    const health: ReviewServerHealth = {
+    const health: ReviewServerHealth & {
+      deployment: ReturnType<typeof publicDeploymentConfig>;
+    } = {
       ok: true,
       instanceId: input.instanceId,
       desktopAttached: input.relay.attached,
       version,
+      deployment:
+        input.deployment ?? publicDeploymentConfig(loadDeploymentConfig()),
     };
 
     return serverJson(
@@ -95,6 +104,7 @@ export function createReviewServerApp(input: {
     token: input.token,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: input.localBrowserPort,
+    deployment: input.deployment,
   });
 
   app.get("/setup-info", (context) => setupInfo(context.req.raw));
@@ -180,6 +190,7 @@ export interface WhiteboardCoreInput {
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const { store, data, shared } = input.profile;
+  const deployment = publicDeploymentConfig(loadDeploymentConfig());
 
   const app = createReviewServerApp({
     token: input.token,
@@ -188,6 +199,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     relay: input.relay,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: input.localBrowserPort,
+    deployment,
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -203,7 +215,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     callbacks.capabilities,
     input.scratchpad,
     () => traceMachineEnabled(),
-    input.status,
+    () => ({ ...input.status(), deployment }),
     input.hooks,
     askThreads && { threads: askThreads, agents: () => detectAskAgents() },
     input.localBrowserAuth,

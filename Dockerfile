@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certi
 ENV NODE_ENV=production
 ENV DEV_REVIEW_SERVER_DIR=/data
 ENV WHITEBOARD_PORT=7421
+ENV WHITEBOARD_MODE=local
 WORKDIR /app
 COPY --from=build --chown=node:node /out ./
 COPY --from=build --chown=node:node /app/packages/review/app/dist/web ./web

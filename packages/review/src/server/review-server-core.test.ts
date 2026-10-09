@@ -106,6 +106,14 @@ describe.each(["desktop", "headless"] as const)("the %s server", (kind) => {
         instanceId: expect.stringMatching(uuid),
         desktopAttached: false,
         version: expect.any(String),
+        deployment: {
+          mode: "local",
+          db: "sqlite",
+          blobs: "fs",
+          repoSource: "local",
+          jobs: "inline",
+          auth: "local-token",
+        },
       });
     }
   });
