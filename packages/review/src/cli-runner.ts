@@ -58,7 +58,9 @@ import {
   findReviewPackageRoot,
   readReviewPackageVersion,
 } from "./package-paths";
+import { preflight, resolveTarget } from "./preflight.js";
 import { reviewAgentCliHelp } from "./review-api/agent-cli";
+import { connectReviewInstance } from "./review-api/agent-client.js";
 import { ReviewApiError } from "./review-api/client";
 import {
   type ReviewAppEvent,
@@ -645,6 +647,106 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       .option("--focus", "bring Whiteboard Desktop to the foreground"),
     "plain",
   ).action(pickReview);
+
+  configureJsonOutput(
+    program
+      .command("review")
+      .description("Create and open a review of selected commits")
+      .option("--commit <sha>", "review one commit against its first parent")
+      .option("--range <range>", "review a commit range such as a..b")
+      .option("--branch <name>", "review a branch against the default branch")
+      .option("--pick <sha>", "review a selected commit")
+      .option(
+        "--repo <path>",
+        "repository path; defaults to the current directory",
+      ),
+    "plain",
+  ).action(
+    async (options: {
+      commit?: string;
+      range?: string;
+      branch?: string;
+      pick?: string;
+      repo?: string;
+      json?: boolean;
+    }) => {
+      const repositoryPath = path.resolve(cwd, options.repo ?? ".");
+      const target = await resolveTarget(repositoryPath, {
+        commit: options.commit,
+        range: options.range,
+        branch: options.branch,
+        pick: options.pick,
+      });
+      const connected = await connectReviewInstance(authoringEnv());
+      const healthResponse = await fetch(
+        new URL("/health", connected.client.connection.serverUrl),
+        {
+          headers: connected.client.connection.token
+            ? { "x-review-token": connected.client.connection.token }
+            : undefined,
+        },
+      );
+      const health: unknown = healthResponse.ok
+        ? await healthResponse.json()
+        : null;
+      const topLevelRemote =
+        typeof health === "object" &&
+        health !== null &&
+        "mode" in health &&
+        health.mode === "remote";
+      const deploymentRemote =
+        typeof health === "object" &&
+        health !== null &&
+        "deployment" in health &&
+        typeof health.deployment === "object" &&
+        health.deployment !== null &&
+        "mode" in health.deployment &&
+        health.deployment.mode === "remote";
+      const remote = topLevelRemote || deploymentRemote;
+
+      if (remote) {
+        const { errors } = await preflight(repositoryPath, { remote: true });
+
+        if (errors.length) {
+          for (const error of errors) input.stderr.write(`${error.message}\n`);
+
+          state.exitCode = 1;
+
+          return;
+        }
+      }
+
+      const created = await connected.client.post<{ reviewId: string }>(
+        "/commands",
+        {
+          operation: {
+            type: "create",
+            target: {
+              kind: "commits",
+              repositoryPath,
+              base: target.baseSha,
+              head: target.headSha,
+            },
+          },
+          open: false,
+        },
+      );
+      const opened = await connected.client.post<{ url?: string }>(
+        `/${encodeURIComponent(created.reviewId)}/open`,
+        {},
+      );
+      const url =
+        opened.url ??
+        `${connected.client.connection.serverUrl}/r/${encodeURIComponent(created.reviewId)}`;
+
+      input.stdout.write(
+        options.json
+          ? `${JSON.stringify({ event: "review.created", reviewId: created.reviewId, url, ...target })}\n`
+          : `${url}\n`,
+      );
+      state.exitCode = 0;
+    },
+  );
 
   const instanceOutput = (command: Command) => ({
     env,
