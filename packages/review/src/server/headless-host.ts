@@ -163,12 +163,13 @@ async function serve(input: HeadlessServerInput) {
       api,
       scratchpad: () => persistedSettings.scratchpadEnabled,
       stateless: core.deployment.mode === "remote",
+      forwardHeaders: core.auth?.forwardHeaders,
     }),
   );
 
   const server = createServer(
     createNodeRequestListener(
-      input.webDir ? serveWebCanvas(app, input.webDir) : app,
+      input.webDir ? serveWebCanvas(app, input.webDir, core.auth) : app,
       { requireHostOnReviewApi: input.localBrowserAuth },
     ),
   );

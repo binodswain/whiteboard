@@ -11,8 +11,12 @@ import { type RepoSource, RepoSourceError } from "./index.js";
 const exec = promisify(execFile);
 
 export type GitHubRepoSourceOptions = {
-  /** Supplies a short-lived installation token; GH_TOKEN is used by default. */
-  tokenProvider?: () => string | undefined | Promise<string | undefined>;
+  /** Supplies a short-lived installation token; GH_TOKEN is used by default.
+   * The canonical remote URL is passed so an App provider can mint a token
+   * for the specific repository being checked out. */
+  tokenProvider?: (
+    canonicalRepo?: string,
+  ) => string | undefined | Promise<string | undefined>;
   /** Allows a host to provide disposable on-disk checkout storage. */
   cacheDir?: string;
   /** Internal transport override, useful for mirrors and local bare remotes. */
@@ -64,9 +68,9 @@ export function createGitHubRepoSource(
         let token: string | undefined;
 
         try {
-          token = await (
-            options.tokenProvider ?? (() => process.env.GH_TOKEN)
-          )();
+          token = await (options.tokenProvider ?? (() => process.env.GH_TOKEN))(
+            canonicalRepo,
+          );
         } catch {
           throw new RepoSourceError(
             "GitHub credentials could not be obtained.",

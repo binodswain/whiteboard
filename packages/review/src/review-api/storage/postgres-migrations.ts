@@ -90,13 +90,32 @@ export const POSTGRES_MIGRATIONS: {
   {
     version: 6,
     name: "hosted_ask_queue",
-    sql: `
-      CREATE TABLE asks(
-        id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
-        claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
-        max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
-        result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+    sql: `CREATE TABLE asks(
+      id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
+      claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
+      result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
       CREATE INDEX asks_pending ON asks(status, created_at);`,
+  },
+  {
+    version: 7,
+    name: "auth",
+    sql: `
+      CREATE TABLE auth_users(
+        id TEXT PRIMARY KEY, login TEXT NOT NULL, name TEXT, avatar_url TEXT,
+        github_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE auth_sessions(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+      CREATE INDEX auth_sessions_user ON auth_sessions(user_id);
+      CREATE TABLE auth_api_tokens(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL, last_used_at TEXT);
+      CREATE TABLE auth_repo_access(
+        user_id TEXT NOT NULL REFERENCES auth_users(id), repo TEXT NOT NULL,
+        allowed INTEGER NOT NULL, checked_at TEXT NOT NULL,
+        PRIMARY KEY(user_id, repo));`,
   },
 ];

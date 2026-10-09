@@ -593,6 +593,11 @@ export class ReviewStore {
     return group;
   }
 
+  /** The metadata backend, shared with subsystems (auth, jobs) that own their
+   * own tables in the same database. */
+  get metadata(): MetadataStore {
+    return this.meta;
+  }
   async registerRepository(root: string) {
     await this.meta.run(
       "INSERT INTO repositories(id,path,name) VALUES(?,?,?) ON CONFLICT DO NOTHING",
@@ -607,6 +612,23 @@ export class ReviewStore {
     ))!;
 
     return { id: String(row.id), name: String(row.name) };
+  }
+  /** A hosted repository row keyed by a canonical remote URL — the spelling
+   * GitHub checkouts register as. The `.git` suffix is identity-neutral, so
+   * both spellings resolve to one row. */
+  async registerRemoteRepository(remote: string) {
+    const canonical = remote.replace(/\.git$/, "");
+
+    const existing = await this.meta.get(
+      "SELECT id,name FROM repositories WHERE path IN (?, ?)",
+      canonical,
+      `${canonical}.git`,
+    );
+
+    if (existing)
+      return { id: String(existing.id), name: String(existing.name) };
+
+    return this.registerRepository(canonical);
   }
   async unregisterRepository(id: string) {
     // Document pins and per-reference pins both spell the id in the snapshot.

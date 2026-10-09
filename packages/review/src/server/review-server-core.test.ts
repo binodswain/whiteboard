@@ -45,6 +45,12 @@ it("constructs the configured S3 blob store on the Whiteboard core", async () =>
       repoSource: "github",
       jobs: "queue",
       auth: "oauth",
+      authSecret: "test-auth-secret",
+      proxy: {
+        header: "x-user",
+        secret: "proxy-secret",
+        secretHeader: "x-proxy-secret",
+      },
       postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
       s3: {
         bucket: "whiteboard",
@@ -80,6 +86,12 @@ it("constructs the configured GitHub repo source on the Whiteboard core", async 
       repoSource: "github",
       jobs: "queue",
       auth: "oauth",
+      authSecret: "test-auth-secret",
+      proxy: {
+        header: "x-user",
+        secret: "proxy-secret",
+        secretHeader: "x-proxy-secret",
+      },
       postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
     },
   });

@@ -89,6 +89,21 @@ const REVIEW_SCHEMA = `
   CREATE TABLE IF NOT EXISTS review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL,
     PRIMARY KEY(review_id,tag));
   CREATE INDEX IF NOT EXISTS review_tags_tag ON review_tags(tag);
+  CREATE TABLE IF NOT EXISTS auth_users(
+    id TEXT PRIMARY KEY, login TEXT NOT NULL, name TEXT, avatar_url TEXT,
+    github_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS auth_sessions(
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions(user_id);
+  CREATE TABLE IF NOT EXISTS auth_api_tokens(
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+    name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL, last_used_at TEXT);
+  CREATE TABLE IF NOT EXISTS auth_repo_access(
+    user_id TEXT NOT NULL REFERENCES auth_users(id), repo TEXT NOT NULL,
+    allowed INTEGER NOT NULL, checked_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, repo));
 `;
 
 /** Columns the review list filters on, denormalized from the latest version. */

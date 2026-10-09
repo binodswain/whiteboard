@@ -9,6 +9,11 @@ import { traceMachineEnabled } from "@dev.fast/trace-core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
+import { type AuthDriver, createAuthDriver } from "@review/auth/index.js";
+import {
+  createGitHubAppCredentials,
+  githubRepoSlug,
+} from "@review/auth/repo-access.js";
 import {
   type JobRunner,
   type PrepareReviewInput,
@@ -98,7 +103,16 @@ export function createReviewServerApp(input: {
   deployment: ReturnType<typeof publicDeploymentConfig>;
   jobSecret?: string;
   runJob?: () => Promise<boolean>;
+  /** The remote auth driver; absent on local, which keeps its token wall. */
+  auth?: AuthDriver;
 }): Hono<ReviewHonoEnv> {
+  const { auth } = input;
+
+  const authorized = (request: Request): Promise<boolean> | boolean =>
+    auth
+      ? auth.authenticate(request).then((principal) => principal !== null)
+      : isAuthorizedRequest(request, input.token);
+
   const app = new Hono<ReviewHonoEnv>();
   app.use("*", async (context, next) => {
     await next();
@@ -118,7 +132,7 @@ export function createReviewServerApp(input: {
 
     return serverJson(
       200,
-      isAuthorizedRequest(context.req.raw, input.token) ||
+      (await authorized(context.req.raw)) ||
         (input.localBrowserAuth &&
           isLocalAuthRequest(context.req.raw, input.localBrowserPort?.()))
         ? ({
@@ -140,9 +154,21 @@ export function createReviewServerApp(input: {
     deployment: input.deployment,
   });
 
-  app.get("/setup-info", (context) => setupInfo(context.req.raw));
+  // Remote keeps /setup-info behind sign-in; local answers it for any caller.
+  if (!auth) app.get("/setup-info", (context) => setupInfo(context.req.raw));
+
+  // Sign-in, session and token routes sit before the wall that guards the
+  // rest — they are how a remote caller becomes authorized.
+  if (auth) app.route("/auth", auth.routes);
+
   app.use("*", async (context, next) => {
-    if (isAuthorizedRequest(context.req.raw, input.token)) return next();
+    if (await authorized(context.req.raw)) return next();
+
+    if (auth) {
+      if (context.req.method === "OPTIONS") return next();
+
+      return unauthorizedRemote(context, auth);
+    }
 
     const path = new URL(context.req.url).pathname;
 
@@ -179,6 +205,8 @@ export function createReviewServerApp(input: {
 
     return serverJson(401, { ok: false, error: "Unauthorized" });
   });
+
+  if (auth) app.get("/setup-info", (context) => setupInfo(context.req.raw));
   app.options("*", (context) => corsPreflightResponse(context.req.raw));
   app.get("/control", (context) => openControlEvents(context, input.relay));
   app.post("/control/result", async (context) => {
@@ -239,6 +267,8 @@ export interface WhiteboardCoreInput {
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   };
   headlessOpenUrl?: (reviewId: string) => string;
+  /** Network transport for the auth driver and GitHub App; tests stub it. */
+  fetchImpl?: typeof fetch;
 }
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
@@ -261,10 +291,40 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
         })
       : createBlobStore({ driver: "fs" });
 
+  const auth = createAuthDriver({
+    deployment: deploymentConfig,
+    meta: store.metadata,
+    fetchImpl: input.fetchImpl,
+  });
+
+  // A configured GitHub App mints the checkout's installation token per job;
+  // without one the operator's GITHUB_TOKEN stands in.
+  const githubApp =
+    deploymentConfig.githubApp &&
+    createGitHubAppCredentials({
+      app: deploymentConfig.githubApp,
+      apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
+      fetchImpl: input.fetchImpl,
+    });
+
+  const githubWebHost = new URL(
+    deploymentConfig.github?.webUrl ?? "https://github.com",
+  ).hostname;
+
   const repoSource =
     deploymentConfig.repoSource === "github"
       ? createGitHubRepoSource({
-          tokenProvider: () => process.env.GITHUB_TOKEN,
+          tokenProvider: githubApp
+            ? async (canonicalRepo) => {
+                const slug = canonicalRepo
+                  ? githubRepoSlug(canonicalRepo, githubWebHost)
+                  : undefined;
+
+                return slug
+                  ? githubApp.installationToken(slug)
+                  : process.env.GITHUB_TOKEN;
+              }
+            : () => process.env.GITHUB_TOKEN,
         })
       : createLocalRepoSource();
 
@@ -347,6 +407,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     deployment,
     jobSecret: process.env.WHITEBOARD_JOB_SECRET,
     runJob: () => jobs.runNext(),
+    auth: auth ?? undefined,
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -369,6 +430,14 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     input.webSettings,
     input.headlessOpenUrl,
     jobs,
+    auth === null
+      ? undefined
+      : {
+          authenticate: (request: Request) => auth.authenticate(request),
+          canReadRepo: (principal, repoPath) =>
+            auth.access.canRead(principal, repoPath),
+          normalizeRepoPath: (repoPath) => auth.access.normalize(repoPath),
+        },
   );
 
   // A shared store mounts the publisher with the rest of sharing.
@@ -380,6 +449,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     blobStore,
     repoSource,
     deployment: deploymentConfig,
+    auth: auth ?? undefined,
     close: () => askThreads?.closeAll(),
   };
 }
@@ -413,11 +483,30 @@ const WEB_CANVAS_CSP = [
 export function serveWebCanvas(
   app: Hono<ReviewHonoEnv>,
   root: string,
+  auth?: AuthDriver,
 ): Hono<ReviewHonoEnv> {
   const indexPath = path.join(root, "index.html");
   const assetsDir = path.join(root, `assets${path.sep}`);
 
   const outer = new Hono<ReviewHonoEnv>();
+
+  // A hosted viewer signs in before the SPA is served at all: static files
+  // and the index fall behind the same identity check as the API, except
+  // /health and the sign-in flow itself.
+  if (auth)
+    outer.use("*", async (context, next) => {
+      if (context.req.method !== "GET" && context.req.method !== "HEAD")
+        return next();
+
+      const path = new URL(context.req.url).pathname;
+
+      if (path === "/health" || path === "/auth" || path.startsWith("/auth/"))
+        return next();
+
+      if (await auth.authenticate(context.req.raw)) return next();
+
+      return unauthorizedRemote(context, auth);
+    });
 
   const headers = (file: string, context: Context<ReviewHonoEnv>) => {
     context.header(
@@ -562,6 +651,28 @@ function openControlEvents(
   response.headers.set("connection", "close");
   response.headers.set("cache-control", "no-cache, no-transform");
   response.headers.set("content-type", "text/event-stream; charset=utf-8");
+
+  return response;
+}
+
+/** A remote-mode 401: an HTML sign-in page for a browser GET, a Bearer
+ * challenge for an API or MCP client. */
+function unauthorizedRemote(
+  context: Context<ReviewHonoEnv>,
+  auth: AuthDriver,
+): Response {
+  const acceptsHtml =
+    context.req.method === "GET" &&
+    (context.req.header("accept")?.includes("text/html") ?? false);
+
+  if (acceptsHtml)
+    return new Response(auth.signInPage(new URL(context.req.url).pathname), {
+      status: 401,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+
+  const response = serverJson(401, { ok: false, error: "Unauthorized" });
+  response.headers.set("www-authenticate", 'Bearer realm="whiteboard"');
 
   return response;
 }
