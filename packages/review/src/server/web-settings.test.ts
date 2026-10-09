@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, expect, it } from "vitest";
 
-import { createWebSettings } from "./web-settings.js";
+import { createWebSettings, webSettingsUpdateSchema } from "./web-settings.js";
 
 let directory: string | undefined;
 
@@ -37,4 +37,10 @@ it("defaults safely and persists validated updates under the state directory", a
   await expect(settings.update({ codeFontSize: 100 })).rejects.toThrow(
     "Too big",
   );
+});
+
+it("omits defaults from partial updates", () => {
+  expect(webSettingsUpdateSchema.parse({ codeFontSize: 16 })).toEqual({
+    codeFontSize: 16,
+  });
 });

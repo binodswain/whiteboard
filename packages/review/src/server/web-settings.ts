@@ -4,16 +4,29 @@ import path from "node:path";
 import { writePrivateJsonAtomic } from "@dev.fast/trace-core";
 import { z } from "zod";
 
+const themeSchema = z.enum(["system", "light", "dark"]);
+
+const documentWidthSchema = z.enum(["standard", "wide", "full"]);
+
+const codeFontSizeSchema = z.number().int().min(8).max(32);
+
+const scratchpadEnabledSchema = z.boolean();
+
 export const webSettingsSchema = z.strictObject({
-  theme: z.enum(["system", "light", "dark"]).default("system"),
-  documentWidth: z.enum(["standard", "wide", "full"]).default("standard"),
-  codeFontSize: z.number().int().min(8).max(32).default(14),
-  scratchpadEnabled: z.boolean().default(false),
+  theme: themeSchema.default("system"),
+  documentWidth: documentWidthSchema.default("standard"),
+  codeFontSize: codeFontSizeSchema.default(14),
+  scratchpadEnabled: scratchpadEnabledSchema.default(false),
 });
 
 export type WebSettings = z.infer<typeof webSettingsSchema>;
 
-export const webSettingsUpdateSchema = webSettingsSchema.partial();
+export const webSettingsUpdateSchema = z.strictObject({
+  theme: themeSchema.optional(),
+  documentWidth: documentWidthSchema.optional(),
+  codeFontSize: codeFontSizeSchema.optional(),
+  scratchpadEnabled: scratchpadEnabledSchema.optional(),
+});
 
 export function createWebSettings(stateDir: string) {
   const file = path.join(stateDir, "web-settings.json");
