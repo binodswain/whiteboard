@@ -293,6 +293,18 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         "port to listen on (0 chooses an available port)",
         "0",
       )
+      .addOption(
+        new Option(
+          "--web <dir>",
+          "serve a built web canvas directory on the same origin",
+        ).env("WHITEBOARD_WEB_DIR"),
+      )
+      .addOption(
+        new Option(
+          "--token <value>",
+          "pin the server token instead of generating one (32+ characters)",
+        ).env("WHITEBOARD_TOKEN"),
+      )
       .option(
         "--software-maps",
         "allow the authoring skill to generate optional software maps",
@@ -305,6 +317,8 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       stateDir?: string;
       host?: string;
       port: string;
+      web?: string;
+      token?: string;
       softwareMaps?: boolean;
       authoringMode?: string;
       json?: boolean;
@@ -320,6 +334,22 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       throw new ReviewCliUsageError(
         "--port must be an integer between 0 and 65535.",
       );
+
+    // Docker passes an empty ${WHITEBOARD_TOKEN:-} to mean "generate one".
+    const token = options.token || undefined;
+
+    if (token !== undefined && token.length < 32)
+      throw new ReviewCliUsageError(
+        "--token must be at least 32 characters long.",
+      );
+
+    const webDir = options.web ? path.resolve(cwd, options.web) : undefined;
+
+    if (webDir && !existsSync(path.join(webDir, "index.html")))
+      throw new ReviewCliUsageError(
+        `--web must name a built web canvas directory; ${webDir} has no index.html.`,
+      );
+
     const stateDir = reviewServerStateDir(authoringEnv(options.stateDir));
     const controller = new AbortController();
     const stop = () => controller.abort();
@@ -332,14 +362,21 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         stateDir,
         port,
         host: options.host?.trim() || undefined,
+        webDir,
+        token,
         softwareMapEnabled: options.softwareMaps,
         signal: controller.signal,
         telemetry,
-        onReady: ({ url, serverPid }) => {
+        onReady: ({ url, serverPid, token }) => {
+          // The fragment never reaches the server, so the token can ride in
+          // the printed URL the way Jupyter's does.
+          const openUrl = webDir ? `${url}/#token=${token}` : undefined;
           input.stdout.write(
             options.json
-              ? `${JSON.stringify({ event: "server.ready", url, serverPid, stateDir })}\n`
-              : `Whiteboard server ready at ${url}\nSaved reviews: ${stateDir}\n`,
+              ? `${JSON.stringify({ event: "server.ready", url, ...(openUrl && { openUrl }), serverPid, stateDir })}\n`
+              : `Whiteboard server ready at ${url}\n` +
+                  (openUrl ? `Open ${openUrl}\n` : "") +
+                  `Saved reviews: ${stateDir}\n`,
           );
         },
       });

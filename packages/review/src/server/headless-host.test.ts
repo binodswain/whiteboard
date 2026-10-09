@@ -1,5 +1,6 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
   access,
   mkdir,
@@ -14,7 +15,9 @@ import { request as httpRequest } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 
+import type { JsonObject } from "@dev.fast/json";
 import {
   type JsonValue,
   REVIEW_CLIENT_HEADER,
@@ -68,6 +71,7 @@ async function start(
   stateDir = path.join(root, "server"),
   softwareMapEnabled = false,
   host?: string,
+  options: { webDir?: string; token?: string } = {},
 ) {
   const controller = new AbortController();
   const ready = Promise.withResolvers<ReviewServerDiscovery>();
@@ -75,6 +79,8 @@ async function start(
   const running = runHeadlessServer({
     stateDir,
     host,
+    webDir: options.webDir,
+    token: options.token,
     softwareMapEnabled,
     signal: controller.signal,
     onReady: ready.resolve,
@@ -1146,6 +1152,210 @@ it("refuses to reset the id where there is no store, and creates none", async ()
   expect(refused.exitCode).toBe(1);
   expect(JSON.parse(refused.output).error.message).toContain(typo);
   await expect(access(typo)).rejects.toThrow(/ENOENT/);
+});
+
+/** A minimal built canvas: a document shell, one hashed asset, one loose file. */
+async function webDirectory() {
+  const dir = path.join(root, "web");
+  await mkdir(path.join(dir, "assets"), { recursive: true });
+  await writeFile(
+    path.join(dir, "index.html"),
+    "<!doctype html><title>Web canvas</title><div id=root></div>\n",
+  );
+  await writeFile(
+    path.join(dir, "assets", "index-a1b2c3.js"),
+    "console.log('canvas');\n",
+  );
+  await writeFile(path.join(dir, "favicon.ico"), "icon\n");
+
+  return dir;
+}
+
+it("serves the web canvas without a token while the API stays protected", async () => {
+  const webDir = await webDirectory();
+  const server = await start(undefined, false, undefined, { webDir });
+  const { url, token } = server.discovery;
+
+  const page = await fetch(`${url}/`);
+  expect(page.status).toBe(200);
+  expect(page.headers.get("content-type")).toContain("text/html");
+  expect(page.headers.get("cache-control")).toBe("no-store");
+  expect(page.headers.get("content-security-policy")).toContain(
+    "default-src 'self'",
+  );
+  expect(await page.text()).toContain("Web canvas");
+
+  // The SPA's own routes get the same shell on a fresh load or a reload.
+  for (const route of ["/r/a-review-id", "/r/a-review-id/"]) {
+    const fallback = await fetch(`${url}${route}`);
+
+    expect(fallback.status).toBe(200);
+    expect(fallback.headers.get("cache-control")).toBe("no-store");
+    expect(await fallback.text()).toContain("Web canvas");
+  }
+
+  const asset = await fetch(`${url}/assets/index-a1b2c3.js`);
+  expect(asset.status).toBe(200);
+  expect(asset.headers.get("content-type")).toContain("javascript");
+  expect(asset.headers.get("cache-control")).toBe(
+    "public, max-age=31536000, immutable",
+  );
+  expect(await asset.text()).toContain("canvas");
+
+  const loose = await fetch(`${url}/favicon.ico`);
+  expect(loose.status).toBe(200);
+  expect(loose.headers.get("cache-control")).toBe("no-cache");
+
+  expect((await fetch(`${url}/health`)).status).toBe(200);
+  expect((await fetch(`${url}/reviews-api`)).status).toBe(401);
+  expect((await fetch(`${url}/control`)).status).toBe(401);
+  // The fallback is only the shell's routes; a static miss keeps API behavior.
+  expect((await fetch(`${url}/assets/missing.js`)).status).toBe(401);
+
+  const unknown = await fetch(`${url}/no-such-page`, {
+    headers: { "x-review-token": token },
+  });
+
+  expect(unknown.status).toBe(404);
+  expect(await unknown.json()).toEqual({ ok: false, error: "Not found." });
+
+  expect(
+    await server.client.read<unknown[]>(""),
+    "API calls still authenticate",
+  ).toEqual([]);
+});
+
+const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
+
+/** `whiteboard server start` in a child so the test can stop it when ready. */
+function spawnServer(args: string[], env: NodeJS.ProcessEnv = {}) {
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", "src/cli.ts", "server", "start", "--json", ...args],
+    {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        ...env,
+        DEV_FAST_REVIEW_TELEMETRY_DISABLED: "1",
+        DEV_FAST_REVIEW_CLI_NO_DELEGATE: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  let output = "";
+  let errors = "";
+  const ready = Promise.withResolvers<JsonObject>();
+  child.stdout!.on("data", (chunk) => {
+    output += chunk;
+
+    const line = output
+      .split("\n")
+      .find((entry) => entry.includes('"server.ready"'));
+
+    if (line) ready.resolve(JSON.parse(line));
+  });
+  child.stderr!.on("data", (chunk) => {
+    errors += chunk;
+  });
+  child.once("exit", (code, signal) =>
+    ready.reject(
+      new Error(`server exited before ready (${signal ?? code}):\n${errors}`),
+    ),
+  );
+  stops.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+  });
+
+  return { child, ready: ready.promise };
+}
+
+it("prints the open URL with the token in the fragment when --web serves the canvas", async () => {
+  const webDir = await webDirectory();
+  const token = `pinned-${"t".repeat(40)}`;
+
+  const server = spawnServer([
+    "--state-dir",
+    path.join(root, "server"),
+    "--web",
+    webDir,
+    "--token",
+    token,
+  ]);
+
+  const ready = await server.ready;
+  expect(ready.openUrl).toBe(`${ready.url}/#token=${token}`);
+
+  const health = await fetch(`${ready.url as string}/health`, {
+    headers: { "x-review-token": token },
+  });
+
+  expect(await health.json()).toMatchObject({
+    ok: true,
+    serverId: expect.any(String),
+  });
+});
+
+it("reads the pinned token and web directory from the environment", async () => {
+  const webDir = await webDirectory();
+  const token = `enved-${"e".repeat(40)}`;
+
+  const server = spawnServer(["--state-dir", path.join(root, "server")], {
+    WHITEBOARD_WEB_DIR: webDir,
+    WHITEBOARD_TOKEN: token,
+  });
+
+  const ready = await server.ready;
+  expect(ready.openUrl).toBe(`${ready.url}/#token=${token}`);
+});
+
+it("treats an empty WHITEBOARD_TOKEN as unset and generates one", async () => {
+  const webDir = await webDirectory();
+
+  const server = spawnServer(
+    ["--state-dir", path.join(root, "server"), "--web", webDir],
+    { WHITEBOARD_TOKEN: "" },
+  );
+
+  const ready = await server.ready;
+  expect(ready.openUrl).toMatch(/#token=[A-Za-z0-9_-]{32,}$/);
+});
+
+it.each([
+  ["--token", ["--token", "short"]],
+  ["WHITEBOARD_TOKEN", []],
+] as const)("rejects a %s shorter than 32 characters", async (envVar, args) => {
+  if (envVar !== "--token") vi.stubEnv(envVar, "short");
+
+  const refused = await cli(
+    ["--state-dir", path.join(root, "refused"), "server", "start", ...args],
+    process.env,
+  );
+
+  expect(refused.exitCode).toBe(1);
+  expect(refused.errors).toContain("at least 32 characters");
+});
+
+it("rejects a --web directory without an index.html", async () => {
+  const refused = await cli(
+    [
+      "--state-dir",
+      path.join(root, "refused"),
+      "server",
+      "start",
+      "--web",
+      root,
+    ],
+    process.env,
+  );
+
+  expect(refused.exitCode).toBe(1);
+  expect(refused.errors).toContain("index.html");
 });
 
 it("refuses the removed batch authoring mode instead of ignoring it", async () => {
