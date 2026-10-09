@@ -332,6 +332,76 @@ it("reports each api tool call with its outcome", async () => {
   }
 });
 
+it("prints the headless session URL for session_open", async () => {
+  const headlessApi = createReviewApi(
+    store,
+    undefined,
+    undefined,
+    undefined,
+    () => ({ desktopAvailable: false, softwareMapEnabled: false }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (sessionId) =>
+      `http://127.0.0.1:3000/r/${encodeURIComponent(sessionId)}#token=test-token`,
+  );
+
+  const headlessClient = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test-token" },
+    async (url, init) =>
+      headlessApi.request(url.replace("/reviews-api", ""), init),
+  );
+
+  const connection = vi
+    .spyOn(agentClient, "connectReviewInstance")
+    .mockResolvedValue({ client: headlessClient });
+
+  const created = await store.execute({
+    operation: {
+      type: "create",
+      title: "Headless URL",
+      target: {
+        kind: "commits",
+        repositoryId: "repo",
+        base: "base",
+        head: "head",
+      },
+    },
+  });
+
+  let output = "";
+
+  const stdout = new Writable({
+    write(chunk, _encoding, done) {
+      output += chunk;
+      done();
+    },
+  });
+
+  try {
+    expect(
+      await runReviewAgentCli({
+        argv: [
+          "api",
+          "session_open",
+          JSON.stringify({ sessionId: created.reviewId }),
+        ],
+        stdout,
+        stderr: stdout,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(output)).toEqual({
+      ok: true,
+      opened: false,
+      url: `http://127.0.0.1:3000/r/${encodeURIComponent(created.reviewId)}#token=test-token`,
+    });
+  } finally {
+    connection.mockRestore();
+  }
+});
+
 it("hands the parent CLI the release of the Desktop an api call reached", async () => {
   const connection = vi
     .spyOn(agentClient, "connectReviewInstance")

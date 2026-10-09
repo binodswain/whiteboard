@@ -125,6 +125,10 @@ async function serve(input: HeadlessServerInput) {
     scratchpad: () => false,
     status: () => ({ key: "headless", home: input.stateDir }),
     ask: ask ? { tools: headlessAskTools(input.stateDir) } : undefined,
+    headlessOpenUrl: input.webDir
+      ? (reviewId) =>
+          headlessSessionUrl(discovery.url, discovery.token, reviewId)
+      : undefined,
   });
 
   const { app, api } = core;
@@ -190,6 +194,14 @@ async function serve(input: HeadlessServerInput) {
       }
     }
   }
+}
+
+export function headlessSessionUrl(
+  serverUrl: string,
+  token: string,
+  reviewId: string,
+) {
+  return `${serverUrl}/r/${encodeURIComponent(reviewId)}#token=${encodeURIComponent(token)}`;
 }
 
 function discoveryHost(bound: string) {

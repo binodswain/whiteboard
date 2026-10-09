@@ -244,6 +244,42 @@ describe("the web canvas entry", () => {
     expect(container!.textContent).toContain("Queue order");
   });
 
+  it("opens a returned session URL and renders that session", async () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    const snapshot = fixtureReview(sessionId, "Headless URL review");
+
+    const state: FixtureState = {
+      catalog: [summaryOf(snapshot)],
+      snapshots: new Map([[sessionId, snapshot]]),
+    };
+
+    const { request } = webFixtureRequest(state);
+
+    history.replaceState(
+      null,
+      "",
+      `/r/${encodeURIComponent(sessionId)}#token=abcd1234abcd1234abcd1234`,
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, { request });
+    });
+
+    expect(location.hash).toBe("");
+    expect(sessionStorage.getItem("review-token")).toBe(
+      "abcd1234abcd1234abcd1234",
+    );
+    expect(
+      await settled(
+        () => container!.querySelectorAll(".react-flow__edge").length > 0,
+      ),
+    ).toBe(true);
+    expect(container!.textContent).toContain("Queue order");
+  });
+
   it("bootstraps the token from the URL fragment and asks for one when missing", async () => {
     const state: FixtureState = { catalog: [], snapshots: new Map() };
     const fixture = webFixtureRequest(state);

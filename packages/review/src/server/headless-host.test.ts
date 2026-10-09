@@ -58,7 +58,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createGlobalReviewServer } from "./desktop-server.js";
-import { headlessAskTools, runHeadlessServer } from "./headless-host.js";
+import {
+  headlessAskTools,
+  headlessSessionUrl,
+  runHeadlessServer,
+} from "./headless-host.js";
 
 let root: string;
 
@@ -74,6 +78,16 @@ afterEach(async () => {
   await Promise.all(stops.splice(0).map((stop) => stop()));
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
+});
+
+it("encodes headless session IDs in the returned URL", () => {
+  expect(
+    headlessSessionUrl(
+      "http://127.0.0.1:3000",
+      "test-token",
+      "browser/session 23",
+    ),
+  ).toBe("http://127.0.0.1:3000/r/browser%2Fsession%2023#token=test-token");
 });
 
 async function start(
@@ -329,7 +343,12 @@ it("shares review identity, resources, sessions and live changes with Desktop in
 
 it("authors through CLI and MCP without Desktop and retains source, unfinished sections and resources across restart", async () => {
   const repo = await repository();
-  const server = await start();
+
+  const server = await start(path.join(root, "server"), false, undefined, {
+    webDir: await webDirectory(),
+    token: "test-headless-session-open-token-123456",
+  });
+
   const client = server.client;
 
   const registered = await client.post<{ id: string }>("/repositories", {
@@ -366,6 +385,25 @@ it("authors through CLI and MCP without Desktop and retains source, unfinished s
   const { sessionId: reviewId } = z
     .object({ sessionId: z.string() })
     .parse(JSON.parse(created.output));
+
+  const opened = await cli(
+    [
+      "--state-dir",
+      server.stateDir,
+      "api",
+      "session_open",
+      JSON.stringify({ sessionId: reviewId }),
+    ],
+    process.env,
+  );
+
+  expect(opened.exitCode).toBe(0);
+
+  const openedUrl = new URL(JSON.parse(opened.output).url);
+  expect(opened.errors).toBe("");
+  expect(openedUrl.origin).toBe(server.discovery.url);
+  expect(openedUrl.pathname).toBe(`/r/${reviewId}`);
+  expect(/^#token=[A-Za-z0-9_-]{32,}$/.test(openedUrl.hash)).toBe(true);
 
   await client.post("/commands", {
     operation: {

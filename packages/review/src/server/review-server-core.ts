@@ -128,6 +128,7 @@ export interface WhiteboardCoreInput {
   status: () => JsonObject;
   hooks?: ReviewApiHooks;
   ask?: { tools: AskTools };
+  headlessOpenUrl?: (reviewId: string) => string;
 }
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
@@ -156,6 +157,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     input.status,
     input.hooks,
     askThreads && { threads: askThreads, agents: () => detectAskAgents() },
+    input.headlessOpenUrl,
   );
 
   // A shared store mounts the publisher with the rest of sharing.
