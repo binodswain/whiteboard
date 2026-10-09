@@ -28,7 +28,7 @@ import {
   drainServerCrashReport,
   installProcessErrorTelemetry,
 } from "./process-error-telemetry.js";
-import { createWhiteboardCore } from "./review-server-core.js";
+import { createWhiteboardCore, serveWebCanvas } from "./review-server-core.js";
 import type { ReviewTelemetryCapture } from "./ui-telemetry.js";
 
 interface HeadlessServerInput {
@@ -36,6 +36,10 @@ interface HeadlessServerInput {
   port?: number;
   /** Bind address; a non-loopback one makes the API reachable from other machines. */
   host?: string;
+  /** Serve the built web canvas from this directory on the same origin. */
+  webDir?: string;
+  /** Pin the auth token; a fresh one is generated when omitted. */
+  token?: string;
   softwareMapEnabled?: boolean;
   /** Ask reviewers through an installed agent CLI; unset runs Ask when one
    * is detected. */
@@ -87,6 +91,9 @@ export function withHeadlessServerLock<T>(
 async function serve(input: HeadlessServerInput) {
   if (input.signal.aborted) return;
 
+  if (input.token !== undefined && input.token.length < 32)
+    throw new Error("The server token must be at least 32 characters long.");
+
   await migrateDiffrConfig(input.signal);
 
   if (input.telemetry) await drainServerCrashReport(input.telemetry);
@@ -100,7 +107,7 @@ async function serve(input: HeadlessServerInput) {
     instanceId: randomUUID(),
     url: "http://127.0.0.1:0",
     serverPid: process.pid,
-    token: randomBytes(32).toString("base64url"),
+    token: input.token ?? randomBytes(32).toString("base64url"),
   };
 
   const relay = new GlobalReviewDesktopVerbRelay();
@@ -124,7 +131,12 @@ async function serve(input: HeadlessServerInput) {
 
   app.route("/reviews-api", api);
 
-  const server = createServer(createNodeRequestListener(app));
+  const server = createServer(
+    createNodeRequestListener(
+      input.webDir ? serveWebCanvas(app, input.webDir) : app,
+    ),
+  );
+
   let published = false;
 
   try {

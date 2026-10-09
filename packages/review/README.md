@@ -61,6 +61,17 @@ container. On a non-loopback bind the discovery-file token is the only
 protection, and same-machine `whiteboard api` and `whiteboard mcp` keep
 working through it.
 
+Pass `--web <dir>` (or set `WHITEBOARD_WEB_DIR`) to serve a built web canvas
+from the same origin: `pnpm --filter @dev.fast/review-canvas build:web` writes
+one to `packages/review/app/dist/web`. The static files are public — the page
+load cannot carry the token — while `/reviews-api` and `/control` stay
+token-protected and `/health` stays open. The startup output prints an open
+URL with the token in its fragment, for example
+`http://localhost:3000/#token=…`; a page opened without one asks for it. Pin
+the token with `--token <value>` (or `WHITEBOARD_TOKEN`, 32 characters or
+more) instead of reading it from the logs; an empty `WHITEBOARD_TOKEN` means
+"generate one".
+
 The server also serves Ask — sending a selection in a review to a coding
 agent — once it detects an installed agent: Claude Code (`claude`), Codex
 (`codex`), Cursor (`cursor-agent`), OpenCode (`opencode`), or Pi (`pi`), found

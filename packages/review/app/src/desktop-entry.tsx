@@ -140,16 +140,25 @@ function CanvasShell({
 }
 
 // The canvas shares the workbench DOM, so outside a session (which carries its
-// own theme bridge) the workbench root is the theme authority.
+// own theme bridge) the workbench root is the theme authority. In a plain
+// browser document — the web bundle — the OS preference is.
 function workbenchColorTheme(container: HTMLElement): "dark" | "light" {
   const workbench = container.ownerDocument.querySelector(".monaco-workbench");
 
-  if (!workbench) return "dark";
+  if (!workbench) return osColorTheme(container);
 
   return workbench.classList.contains("vs-dark") ||
     workbench.classList.contains("hc-black")
     ? "dark"
     : "light";
+}
+
+function osColorTheme(container: HTMLElement): "dark" | "light" {
+  const media = container.ownerDocument.defaultView?.matchMedia(
+    "(prefers-color-scheme: dark)",
+  );
+
+  return media?.matches ? "dark" : "light";
 }
 
 export function mountReviewCanvas(
@@ -216,6 +225,20 @@ export function mountReviewCanvas(
           attributeFilter: ["class"],
         });
         themeSubscription = { dispose: () => observer.disconnect() };
+      } else {
+        // The web canvas has no workbench root: follow the OS theme instead.
+        const media = container.ownerDocument.defaultView?.matchMedia(
+          "(prefers-color-scheme: dark)",
+        );
+
+        if (media) {
+          const changed = () => applyTheme(osColorTheme(container));
+
+          media.addEventListener("change", changed);
+          themeSubscription = {
+            dispose: () => media.removeEventListener("change", changed),
+          };
+        }
       }
     }
 

@@ -1,9 +1,12 @@
+import path from "node:path";
+
 import type { JsonObject } from "@dev.fast/json";
 import type {
   ReviewServerHealth,
   ReviewServerHealthWithToken,
 } from "@dev.fast/review-protocol";
 import { traceMachineEnabled } from "@dev.fast/trace-core";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
 import {
@@ -159,6 +162,75 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   if (!shared) mountSharingPublisher(api, store, data);
 
   return { app, api, close: () => askThreads?.closeAll() };
+}
+
+// The canvas runs its own scripts, its styles, its fonts and the libavoid
+// wasm, all from this origin. libavoid's embind glue builds invokers with
+// `new Function`, so 'unsafe-eval' (which also covers WebAssembly) is the
+// smallest script-src that runs it.
+const WEB_CANVAS_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+/**
+ * Serves the built web canvas from the same origin as the API: an outer,
+ * unauthenticated app whose static routes answer before the core app's
+ * `use("*")` token auth is reached. The first page load cannot carry the
+ * token — it lives in the URL fragment, which never reaches the server — and
+ * the files hold no data, so they are public. `/` and `/r/*` fall back to
+ * `index.html` for the SPA's own router; anything else is left for the core
+ * app, which keeps answering 401 or its JSON 404.
+ */
+export function serveWebCanvas(
+  app: Hono<ReviewHonoEnv>,
+  root: string,
+): Hono<ReviewHonoEnv> {
+  const indexPath = path.join(root, "index.html");
+  const assetsDir = path.join(root, `assets${path.sep}`);
+
+  const outer = new Hono<ReviewHonoEnv>();
+
+  const headers = (file: string, context: Context<ReviewHonoEnv>) => {
+    context.header(
+      "cache-control",
+      file === indexPath
+        ? "no-store"
+        : file.startsWith(assetsDir)
+          ? "public, max-age=31536000, immutable"
+          : "no-cache",
+    );
+    context.header("content-security-policy", WEB_CANVAS_CSP);
+  };
+
+  const files = serveStatic<ReviewHonoEnv>({ root, onFound: headers });
+  outer.use("*", (context, next) =>
+    context.req.method === "GET" || context.req.method === "HEAD"
+      ? files(context, next)
+      : next(),
+  );
+
+  const index = serveStatic<ReviewHonoEnv>({
+    root,
+    path: "index.html",
+    onFound: headers,
+  });
+
+  outer.get("/", index);
+  outer.get("/r/*", index);
+
+  outer.route("/", app);
+  outer.notFound(() => serverJson(404, { ok: false, error: "Not found." }));
+
+  return outer;
 }
 
 /** The Desktop callbacks `createReviewApi` takes, answered over the relay. */
