@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
 import type { JsonObject } from "@dev.fast/json";
@@ -108,6 +109,22 @@ export function createReviewServerApp(input: {
 }): Hono<ReviewHonoEnv> {
   const { auth } = input;
 
+  const jobSecretMatches = (request: Request) => {
+    if (!input.jobSecret) return false;
+
+    const supplied = request.headers.get("authorization");
+
+    if (!supplied) return false;
+
+    const suppliedBytes = Buffer.from(supplied);
+    const expectedBytes = Buffer.from(`Bearer ${input.jobSecret}`);
+
+    return (
+      suppliedBytes.length === expectedBytes.length &&
+      timingSafeEqual(suppliedBytes, expectedBytes)
+    );
+  };
+
   const authorized = (request: Request): Promise<boolean> | boolean =>
     auth
       ? auth.authenticate(request).then((principal) => principal !== null)
@@ -162,6 +179,19 @@ export function createReviewServerApp(input: {
   if (auth) app.route("/auth", auth.routes);
 
   app.use("*", async (context, next) => {
+    if (
+      context.req.method === "POST" &&
+      new URL(context.req.url).pathname === "/internal/jobs/run"
+    ) {
+      if (!input.jobSecret)
+        return serverJson(404, { ok: false, error: "Not found." });
+
+      if (!jobSecretMatches(context.req.raw))
+        return serverJson(401, { ok: false, error: "Unauthorized" });
+
+      return next();
+    }
+
     if (await authorized(context.req.raw)) return next();
 
     if (auth) {
@@ -171,13 +201,6 @@ export function createReviewServerApp(input: {
     }
 
     const path = new URL(context.req.url).pathname;
-
-    if (
-      path === "/internal/jobs/run" &&
-      input.jobSecret &&
-      context.req.header("authorization") === `Bearer ${input.jobSecret}`
-    )
-      return next();
 
     const reviewApiPath =
       path === "/reviews-api" || path.startsWith("/reviews-api/");
@@ -220,7 +243,7 @@ export function createReviewServerApp(input: {
     if (!input.jobSecret)
       return serverJson(404, { ok: false, error: "Not found." });
 
-    if (context.req.header("authorization") !== `Bearer ${input.jobSecret}`)
+    if (!jobSecretMatches(context.req.raw))
       return serverJson(401, { ok: false, error: "Unauthorized" });
 
     return serverJson(200, {

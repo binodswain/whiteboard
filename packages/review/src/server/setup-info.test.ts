@@ -1,3 +1,5 @@
+import type { AuthDriver, AuthPrincipal } from "@review/auth/index.js";
+import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -161,5 +163,93 @@ describe("POST /internal/jobs/run", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, ran: true });
     expect(runJob).toHaveBeenCalledOnce();
+  });
+
+  it("checks the job secret before OAuth auth and rejects a user token", async () => {
+    const runJob = vi.fn<() => Promise<boolean>>(async () => true);
+
+    const userPrincipal: AuthPrincipal = {
+      id: "user:1",
+      login: "user",
+      via: "api-token",
+    };
+
+    const authenticate = vi.fn<
+      (request: Request) => Promise<AuthPrincipal | null>
+    >(async (request) =>
+      request.headers.get("authorization") === "Bearer user-token"
+        ? userPrincipal
+        : null,
+    );
+
+    const auth: AuthDriver = {
+      kind: "oauth",
+      authenticate,
+      forwardHeaders: [],
+      routes: new Hono(),
+      viewerAuth: true,
+      signInPage: () => "",
+      access: {
+        canRead: async () => true,
+        normalize: (repoPath) => repoPath,
+      },
+    };
+
+    const server = createReviewServerApp({
+      token: TOKEN,
+      instanceId: "test-instance",
+      serverId: "test-server",
+      relay: new GlobalReviewDesktopVerbRelay(),
+      deployment: publicDeploymentConfig(loadDeploymentConfig({})),
+      jobSecret: "job-secret",
+      runJob,
+      auth,
+    });
+
+    const missing = await server.request("/internal/jobs/run", {
+      method: "POST",
+    });
+
+    const wrong = await server.request("/internal/jobs/run", {
+      method: "POST",
+      headers: { authorization: "Bearer wrong-secret" },
+    });
+
+    const userToken = await server.request("/internal/jobs/run", {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+    });
+
+    expect(missing.status).toBe(401);
+    expect(wrong.status).toBe(401);
+    expect(userToken.status).toBe(401);
+    expect(authenticate).not.toHaveBeenCalled();
+
+    const job = await server.request("/internal/jobs/run", {
+      method: "POST",
+      headers: { authorization: "Bearer job-secret" },
+    });
+
+    expect(job.status).toBe(200);
+    expect(await job.json()).toEqual({ ok: true, ran: true });
+    expect(runJob).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the job route unavailable without a configured secret", async () => {
+    const server = createReviewServerApp({
+      token: TOKEN,
+      instanceId: "test-instance",
+      serverId: "test-server",
+      relay: new GlobalReviewDesktopVerbRelay(),
+      deployment: publicDeploymentConfig(loadDeploymentConfig({})),
+      runJob: vi.fn<() => Promise<boolean>>(async () => true),
+    });
+
+    const response = await server.request("/internal/jobs/run", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(response.status).toBe(404);
   });
 });
