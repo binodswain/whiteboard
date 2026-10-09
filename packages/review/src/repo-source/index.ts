@@ -14,7 +14,10 @@ export interface RepoSource {
   checkout(request: RepoCheckoutRequest): Promise<RepoCheckout>;
 }
 
-export type RepoSourceErrorCode = "UNKNOWN_SHA" | "INVALID_REPOSITORY";
+export type RepoSourceErrorCode =
+  | "UNKNOWN_SHA"
+  | "FETCH_FAILED"
+  | "INVALID_REPOSITORY";
 
 export class RepoSourceError extends Error {
   constructor(

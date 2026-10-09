@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { type ExecFileException, execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -50,29 +50,42 @@ export function createGitHubRepoSource(
       const directory = await mkdtemp(path.join(tempRoot, "whiteboard-repo-"));
 
       try {
-        const token = await (
-          options.tokenProvider ?? (() => process.env.GH_TOKEN)
-        )();
+        let token: string | undefined;
 
-        const args = token
-          ? [
-              "-c",
-              `http.extraHeader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
-            ]
-          : [];
+        try {
+          token = await (
+            options.tokenProvider ?? (() => process.env.GH_TOKEN)
+          )();
+        } catch {
+          throw new RepoSourceError(
+            "GitHub credentials could not be obtained.",
+            "FETCH_FAILED",
+          );
+        }
+
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0",
+        };
+
+        if (token) {
+          env.GIT_CONFIG_COUNT = "1";
+          env.GIT_CONFIG_KEY_0 = "http.extraHeader";
+          env.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+        }
 
         const git = async (...gitArgs: string[]) => {
           try {
-            await exec("git", [...args, "-C", directory, ...gitArgs], {
-              env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+            await exec("git", ["-C", directory, ...gitArgs], {
+              env,
               maxBuffer: 8 * 1024 * 1024,
             });
           } catch {
             // Git's stderr may include transport details. Never expose it because
             // credential helpers and HTTP implementations can echo credentials.
             throw new RepoSourceError(
-              `GitHub could not provide the requested commit. Make sure both SHAs are pushed to ${canonicalRepo}.`,
-              "UNKNOWN_SHA",
+              `Unable to prepare a checkout from ${canonicalRepo}.`,
+              "FETCH_FAILED",
             );
           }
         };
@@ -84,14 +97,42 @@ export function createGitHubRepoSource(
           "origin",
           options.remoteUrl?.(canonicalRepo) ?? canonicalRepo,
         );
-        await git(
-          "fetch",
-          "--depth=1",
-          "--filter=blob:none",
-          "origin",
-          baseSha,
-          headSha,
-        );
+
+        try {
+          await exec(
+            "git",
+            [
+              "-C",
+              directory,
+              "fetch",
+              "--depth=1",
+              "--filter=blob:none",
+              "origin",
+              baseSha,
+              headSha,
+            ],
+            { env, maxBuffer: 8 * 1024 * 1024 },
+          );
+        } catch (error) {
+          // SAFETY: execFile rejects with ExecFileException, which carries the child's stderr.
+          const stderr = String((error as ExecFileException).stderr ?? "");
+
+          if (
+            /not our ref|could(?:n['’]t| not) find remote ref|server does not allow request for unadvertised object/i.test(
+              stderr,
+            )
+          )
+            throw new RepoSourceError(
+              `GitHub does not have the requested commit. Make sure both SHAs are pushed to ${canonicalRepo}.`,
+              "UNKNOWN_SHA",
+            );
+
+          throw new RepoSourceError(
+            `Unable to fetch commits from ${canonicalRepo}. Check repository access and network connectivity.`,
+            "FETCH_FAILED",
+          );
+        }
+
         await git("checkout", "--quiet", "--detach", headSha);
 
         return {
