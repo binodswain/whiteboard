@@ -209,7 +209,9 @@ describe("the /setup landing page", () => {
 
     expect(
       await settled(() =>
-        container!.textContent?.includes("claude mcp add --transport http whiteboard"),
+        container!.textContent?.includes(
+          "claude mcp add --transport http whiteboard",
+        ),
       ),
     ).toBe(true);
   });
