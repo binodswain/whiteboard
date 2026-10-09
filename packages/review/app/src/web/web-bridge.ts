@@ -1,3 +1,4 @@
+import { reviewFetchUrl } from "@canvas/host/review-client";
 import {
   REVIEW_DISCORD_URL,
   type ReviewCanvasBridge,
@@ -9,8 +10,6 @@ import {
   type ReviewVerbResponse,
 } from "@dev.fast/review-protocol";
 import wasmAssetUrl from "@mr_mint/elkjs-libavoid/dist/libavoid.wasm?url";
-
-import { reviewFetchUrl } from "@canvas/host/review-client";
 
 const BROWSER_ONLY_MESSAGE =
   "This action opens an editor, which is unavailable in the browser review canvas.";
@@ -57,10 +56,7 @@ export function webNotify(kind: "success" | "error", text: string): void {
  * An embedded editor's stand-in on the web: a quiet notice inside the slot the
  * host reserved, with a handle that answers every query neutrally.
  */
-function mountUnavailableNotice(
-  container: HTMLElement,
-  text: string,
-): number {
+function mountUnavailableNotice(container: HTMLElement, text: string): number {
   const notice = container.ownerDocument.createElement("div");
 
   notice.textContent = text;
@@ -113,8 +109,7 @@ export function createWebBridge(
   };
 
   let diffLayout: ReviewDiffLayout =
-    (globalThis.localStorage?.getItem(DIFF_LAYOUT_KEY) ??
-      "split") === "unified"
+    (globalThis.localStorage?.getItem(DIFF_LAYOUT_KEY) ?? "split") === "unified"
       ? "unified"
       : "split";
 
@@ -167,8 +162,7 @@ export function createWebBridge(
   return {
     config,
     request:
-      options.request ??
-      ((url, init) => reviewFetchUrl(config, url, init)),
+      options.request ?? ((url, init) => reviewFetchUrl(config, url, init)),
 
     subscribe(listener) {
       listeners.add(listener);
