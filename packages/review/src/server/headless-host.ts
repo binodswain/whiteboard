@@ -32,6 +32,7 @@ import {
 import { createWhiteboardCore, serveWebCanvas } from "./review-server-core.js";
 import type { ReviewTelemetryCapture } from "./ui-telemetry.js";
 import { createWebSettings } from "./web-settings.js";
+import { loadDeploymentConfig } from "./deployment-config.js";
 
 interface HeadlessServerInput {
   stateDir: string;
@@ -101,10 +102,13 @@ async function serve(input: HeadlessServerInput) {
 
   if (input.telemetry) await drainServerCrashReport(input.telemetry);
 
+  const deploymentConfig = loadDeploymentConfig();
+
   const token = input.token ?? (await persistedServerToken(input.stateDir));
 
   const local = await openReviewProfile(input.stateDir, {
     manageWorkspaces: false,
+    deployment: deploymentConfig,
   });
 
   const discovery: ReviewServerDiscovery = {
@@ -128,6 +132,7 @@ async function serve(input: HeadlessServerInput) {
     relay,
     token: discovery.token,
     instanceId: discovery.instanceId,
+    deploymentConfig,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: () => localBrowserPort,
     softwareMapEnabled: input.softwareMapEnabled,

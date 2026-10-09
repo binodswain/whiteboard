@@ -73,6 +73,7 @@ import { createJsonReviewReporting } from "./json-review-reporting";
 import { reviewLifecycleTelemetry } from "./review-lifecycle-telemetry";
 import { ReviewOpenWatchdog } from "./review-open-watchdog";
 import { createWhiteboardCore, serverJson } from "./review-server-core";
+import type { DeploymentConfig } from "./deployment-config.js";
 import { invalidateStructuralComparisons } from "./structural-comparisons.js";
 import { createTutorialService } from "./tutorial-service";
 import { captureSanitizedUiTelemetry } from "./ui-telemetry";
@@ -100,6 +101,7 @@ export interface GlobalReviewServerInput {
   relay?: ReviewDesktopVerbRelay;
   /** Electron's Review crash dump directory; `/crash-reports` reads only inside it. */
   crashDumpsDir?: string;
+  deploymentConfig?: DeploymentConfig;
 }
 
 export interface GlobalReviewServer {
@@ -232,6 +234,7 @@ export function createGlobalReviewServer(
     relay,
     token,
     instanceId,
+    deploymentConfig: input.deploymentConfig,
     scratchpad: () => scratchpadEnabled,
     status: () => {
       const { key, channel, checkout, appVersion, cliVersion, instanceId } =

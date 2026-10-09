@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { withFileLock } from "@dev.fast/trace-core";
 import { afterEach, beforeEach, expect, it } from "vitest";
 
-import { openReviewProfile } from "./profile.js";
+import { metadataStoreConfig, openReviewProfile } from "./profile.js";
 import { ReviewStore } from "./store.js";
 
 let home: string;
@@ -29,6 +29,18 @@ const providers = {
 
 const command = <Operation>(operation: Operation) => ({
   operation,
+});
+
+it("selects Postgres metadata from the deployment URL", () => {
+  expect(
+    metadataStoreConfig("/state", {
+      db: "postgres",
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+    }),
+  ).toEqual({
+    kind: "postgres",
+    url: "postgres://whiteboard:secret@db/whiteboard",
+  });
 });
 
 beforeEach(async () => {

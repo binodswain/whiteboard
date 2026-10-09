@@ -3,7 +3,12 @@ import path from "node:path";
 
 import { withFileLock } from "@dev.fast/trace-core";
 
+import type { DeploymentConfig } from "../server/deployment-config.js";
 import { openLocalReviewStore } from "./local-data.js";
+import {
+  createMetadataStore,
+  type MetadataStoreConfig,
+} from "./storage/metadata-store.js";
 import { importHeadlessStore } from "./storage/sqlite.js";
 
 const lockOptions = {
@@ -15,21 +20,34 @@ const lockOptions = {
 
 export async function openReviewProfile(
   home: string,
-  options: { manageWorkspaces: boolean },
+  options: { manageWorkspaces: boolean; deployment?: DeploymentConfig },
 ) {
   await mkdir(home, { recursive: true, mode: 0o700 });
+  const deployment = options.deployment;
+  const metadataConfig = metadataStoreConfig(home, deployment);
 
   const outcome = await withFileLock(
     path.join(home, ".review-profile-startup"),
     lockOptions,
     async () => {
-      for (const source of [
-        path.join(home, "review-server", "reviews.db"),
-        path.join(home, "reviews.db"),
-      ])
-        await importHeadlessStore(home, source, lockOptions);
+      if (metadataConfig.kind === "sqlite")
+        for (const source of [
+          path.join(home, "review-server", "reviews.db"),
+          path.join(home, "reviews.db"),
+        ])
+          await importHeadlessStore(home, source, lockOptions);
 
-      return openLocalReviewStore(path.join(home, "review-api.db"), options);
+      const source =
+        metadataConfig.kind === "postgres"
+          ? await createMetadataStore(metadataConfig)
+          : metadataConfig.dir;
+
+      try {
+        return await openLocalReviewStore(source, options);
+      } catch (error) {
+        if (typeof source !== "string") await source.close().catch(() => {});
+        throw error;
+      }
     },
   );
 
@@ -39,4 +57,18 @@ export async function openReviewProfile(
     );
 
   return outcome.result;
+}
+
+export function metadataStoreConfig(
+  home: string,
+  deployment?: Pick<DeploymentConfig, "db" | "postgresUrl">,
+): MetadataStoreConfig {
+  if (deployment?.db === "postgres") {
+    if (!deployment.postgresUrl)
+      throw new Error("Postgres deployment requires WHITEBOARD_DB URL.");
+
+    return { kind: "postgres", url: deployment.postgresUrl };
+  }
+
+  return { kind: "sqlite", dir: path.join(home, "review-api.db") };
 }

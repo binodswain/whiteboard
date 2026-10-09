@@ -11,6 +11,7 @@ import { devReviewHome } from "@review/review-home-paths";
 import { ReviewTelemetry } from "@review/review-telemetry";
 import { SharedReviewStore } from "@review/sharing/import.js";
 import { reviewTelemetryChannel } from "@review/telemetry-config";
+import { loadDeploymentConfig } from "./deployment-config";
 
 import { listenForDesktopHostShutdown } from "./desktop-host-shutdown";
 import { createGlobalReviewServer } from "./desktop-server";
@@ -72,10 +73,12 @@ export async function runDesktopHost(
   };
 
   const home = devReviewHome(env);
+  const deploymentConfig = loadDeploymentConfig(env);
   await mkdir(home, { recursive: true });
 
   const local = await openReviewProfile(home, {
     manageWorkspaces: true,
+    deployment: deploymentConfig,
   });
 
   // JSON is the sole user-review store. A failure is surfaced, never replaced
@@ -92,6 +95,7 @@ export async function runDesktopHost(
     reviewData: local.data,
     cliRuntimePath: env.DEV_FAST_REVIEW_CLI_RUNTIME,
     crashDumpsDir: env.DEV_FAST_REVIEW_CRASH_DUMPS_DIR,
+    deploymentConfig,
   });
 
   try {

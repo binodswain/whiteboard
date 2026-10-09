@@ -32,6 +32,7 @@ import { z } from "zod";
 import {
   loadDeploymentConfig,
   publicDeploymentConfig,
+  type DeploymentConfig,
 } from "./deployment-config.js";
 import type { ReviewDesktopVerbRelay } from "./global-verb-relay";
 import {
@@ -173,6 +174,7 @@ export interface WhiteboardCoreInput {
   relay: ReviewDesktopVerbRelay;
   token: string;
   instanceId: string;
+  deploymentConfig?: DeploymentConfig;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
   softwareMapEnabled?: boolean;
@@ -189,7 +191,7 @@ export interface WhiteboardCoreInput {
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const { store, data, shared } = input.profile;
-  const deploymentConfig = loadDeploymentConfig();
+  const deploymentConfig = input.deploymentConfig ?? loadDeploymentConfig();
   const deployment = publicDeploymentConfig(deploymentConfig);
 
   const app = createReviewServerApp({
