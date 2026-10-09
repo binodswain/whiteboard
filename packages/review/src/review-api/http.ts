@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import { type JsonObject, isJsonObject } from "@dev.fast/json";
 import {
@@ -325,6 +326,15 @@ export function createReviewApi(
       catalog(coverageModeSchema.parse(context.req.query("mode"))),
     );
   });
+
+  app.get("/repositories", (context) =>
+    context.json(
+      store.repositories().map(({ id, path: root }) => ({
+        id,
+        name: path.basename(root),
+      })),
+    ),
+  );
 
   // Server-owned state only: asking the Desktop canvas would let a stalled
   // renderer block tool listing and the first instructions call.
@@ -1724,6 +1734,18 @@ export function createReviewApi(
     });
 
     const input = commandSchema.parse(request);
+
+    const targetRepositoryId =
+      input.operation.type === "create" &&
+      input.operation.target?.kind === "worktree"
+        ? input.operation.target.repositoryId
+        : undefined;
+
+    if (
+      targetRepositoryId &&
+      !store.repositories().some(({ id }) => id === targetRepositoryId)
+    )
+      throw new ReviewInputError("Select a registered repository.", 400);
 
     const command = sharedCommandSchema.safeParse(input);
 

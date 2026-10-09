@@ -1,6 +1,7 @@
 import { mountReviewCanvas } from "@canvas/desktop-entry";
 import { reviewFetchUrl } from "@canvas/host/review-client";
 import type {
+  ReviewApiRepository,
   ReviewApiSummary,
   ReviewCanvasContent,
 } from "@dev.fast/review-protocol";
@@ -169,6 +170,9 @@ function mountWebCanvas(
   const canvas = mountReviewCanvas(container, { kind: "loading" });
 
   let reviews: ReviewApiSummary[] = [];
+  let repositories: ReviewApiRepository[] = [];
+  let searchQuery = "";
+  let catalogError: string | undefined;
   let catalog: AbortController | undefined;
   let disposed = false;
 
@@ -190,6 +194,30 @@ function mountWebCanvas(
   const homeContent = (): ReviewCanvasContent => ({
     kind: "home",
     reviews,
+    repositories,
+    searchQuery,
+    setSearchQuery(query) {
+      searchQuery = query;
+    },
+    catalogError,
+    refreshCatalog() {
+      void showHome();
+    },
+    createSession: async ({ title, repositoryId }) => {
+      const result = await client.post<{ review: ReviewApiSummary }>(
+        "/commands",
+        {
+          operation: {
+            type: "create",
+            title,
+            target: { kind: "worktree", repositoryId },
+            open: false,
+          },
+        },
+      );
+
+      return result.review;
+    },
     openReview,
     openTutorial() {
       webNotify("success", "The tutorial runs in the Whiteboard desktop app.");
@@ -214,9 +242,14 @@ function mountWebCanvas(
     const signal = catalog.signal;
 
     document.title = "Whiteboard Reviews";
+    canvas.update({ kind: "loading" });
 
     try {
-      reviews = await client.read<ReviewApiSummary[]>("", signal);
+      [reviews, repositories] = await Promise.all([
+        client.read<ReviewApiSummary[]>("", signal),
+        client.read<ReviewApiRepository[]>("/repositories", signal),
+      ]);
+      catalogError = undefined;
     } catch (error) {
       if (!signal.aborted && !disposed) {
         canvas.update({
@@ -225,6 +258,9 @@ function mountWebCanvas(
             error instanceof Error
               ? error.message
               : "Could not load the review catalog.",
+          retry() {
+            void showHome();
+          },
         });
       }
 
@@ -240,10 +276,18 @@ function mountWebCanvas(
       signal,
       (catalogUpdate) => {
         reviews = catalogUpdate;
+        catalogError = undefined;
 
         if (!signal.aborted && !disposed) canvas.update(homeContent());
       },
-      (cause) => console.error("Review catalog connection lost.", cause),
+      (cause) => {
+        catalogError =
+          cause instanceof Error
+            ? cause.message
+            : "The live catalog connection was interrupted.";
+
+        if (!signal.aborted && !disposed) canvas.update(homeContent());
+      },
     );
   }
 
