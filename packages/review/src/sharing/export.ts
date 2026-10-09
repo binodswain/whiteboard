@@ -69,7 +69,7 @@ export async function exportShare(input: {
     sourceUnavailable: _sourceUnavailable,
     lastEdit: _lastEdit,
     ...snapshot
-  } = structuredClone(input.store.read(input.reviewId, input.version));
+  } = structuredClone(await input.store.read(input.reviewId, input.version));
 
   if (target?.kind === "worktree")
     throw new ReviewInputError("Pin this review to commits before sharing it.");
@@ -139,7 +139,7 @@ export async function exportShare(input: {
     )
       continue;
     const { id } = reference;
-    const resource = input.store.resource(id);
+    const resource = await input.store.resource(id);
     resources.push({
       id,
       kind: z.enum(["image", "trace", "map"]).parse(resource.kind),

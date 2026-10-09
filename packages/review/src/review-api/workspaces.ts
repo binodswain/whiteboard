@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import { git, gitCommonDir } from "@dev.fast/local-vcs";
 import { errorMessage, processIsAlive } from "@dev.fast/trace-core";
@@ -21,6 +20,11 @@ import {
 } from "@review/review-prepare.js";
 
 import { type Pins, ReviewInputError } from "./document.js";
+import {
+  type MetadataStore,
+  createMetadataStore,
+  isMetadataStore,
+} from "./storage/metadata-store.js";
 import type { ReviewStore } from "./store.js";
 
 export interface WorkspaceStatus {
@@ -57,56 +61,79 @@ const OWNED_ELSEWHERE =
  * and per-review managed checkout layout instead of a new settings system.
  */
 export class ReviewWorkspaces {
-  private readonly db: DatabaseSync;
   private readonly requests = new Map<string, Promise<WorkspaceStatus>>();
   private readonly jobs = new Map<
     string,
     { done: Promise<void>; abort: AbortController }
   >();
-  private readonly stop: () => void;
+  private stop: () => void = () => {};
   private cleanup: Promise<void> = Promise.resolve();
   private closed = false;
   private readonly ownerId = randomUUID();
 
-  constructor(
-    databasePath: string,
+  private constructor(
+    private readonly meta: MetadataStore,
+    /** True when this manager opened the backend and must close it. */
+    private readonly ownsMeta: boolean,
     private readonly store: ReviewStore,
-  ) {
-    this.db = new DatabaseSync(databasePath, { timeout: 5000 });
-    this.db.exec(
-      "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS pinned_environments(id TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    );
-    // Desktops sharing a profile each own the reviews they prepare; the
-    // lease stops a second process from preparing or collecting them. The
-    // profile-wide lock it replaces only ever shipped in preview builds.
-    this.db.exec(
-      "DROP TABLE IF EXISTS workspace_owner; CREATE TABLE IF NOT EXISTS workspace_leases(review_id TEXT PRIMARY KEY,owner TEXT NOT NULL,pid INTEGER NOT NULL)",
-    );
-    this.db.exec("BEGIN IMMEDIATE");
+  ) {}
+
+  /** A file path opens a SQLite sidecar (today's `.workspaces` file); a
+   * shared backend keeps the lease rows beside the review metadata. */
+  static async open(
+    source: string | MetadataStore,
+    store: ReviewStore,
+  ): Promise<ReviewWorkspaces> {
+    const ownsMeta = !isMetadataStore(source);
+
+    const meta = ownsMeta
+      ? await createMetadataStore({
+          kind: "sqlite",
+          dir: source,
+          schema: "workspace",
+        })
+      : source;
+
+    const manager = new ReviewWorkspaces(meta, ownsMeta, store);
 
     try {
-      // Only the owning Desktop can invalidate generations or recover interrupted preparation.
-      for (const environment of this.all()) {
-        if (this.leasedElsewhere(environment.reviewId)) continue;
-
-        if (environment.state === "preparing") environment.state = "pending";
-        environment.generation = randomUUID();
-        this.save(environment);
-      }
-
-      this.db.exec("COMMIT");
+      await manager.init();
     } catch (error) {
-      this.db.exec("ROLLBACK");
-      this.db.close();
+      if (ownsMeta) await meta.close().catch(() => {});
       throw error;
     }
 
-    this.stop = store.subscribeCatalog(() => {
-      this.collect();
-      this.releaseDismissed();
+    return manager;
+  }
+
+  private async init() {
+    // Only the owning Desktop can invalidate generations or recover interrupted preparation.
+    await this.meta.transaction(async () => {
+      for (const environment of await this.all()) {
+        if (await this.leasedElsewhere(environment.reviewId)) continue;
+
+        if (environment.state === "preparing") environment.state = "pending";
+        environment.generation = randomUUID();
+        await this.save(environment);
+      }
     });
-    this.collect();
-    this.releaseDismissed();
+
+    this.stop = this.store.subscribeCatalog(() =>
+      this.notify(() =>
+        Promise.all([this.collect(), this.releaseDismissed()]).then(() => {}),
+      ),
+    );
+    this.notify(() =>
+      Promise.all([this.collect(), this.releaseDismissed()]).then(() => {}),
+    );
+  }
+
+  /** Scan work triggered by catalog or shared-review changes, serialized so
+   * idle() can wait out a release that a notification has not queued yet. */
+  private notified: Promise<void> = Promise.resolve();
+
+  private notify(work: () => Promise<void>) {
+    this.notified = this.notified.then(work, () => work()).catch(() => {});
   }
 
   // Unset until the first scan, so startup also frees reviews dismissed
@@ -120,8 +147,8 @@ export class ReviewWorkspaces {
    * dismissed review are kept until the next startup or dismissal, since
    * the Desktop's canvas tabs and source windows may still show them.
    */
-  private releaseDismissed() {
-    const dismissed = new Set(this.store.dismissedIds());
+  private async releaseDismissed() {
+    const dismissed = new Set(await this.store.dismissedIds());
     const released = [...dismissed].filter((id) => !this.dismissed?.has(id));
     this.dismissed = dismissed;
 
@@ -135,9 +162,9 @@ export class ReviewWorkspaces {
   }
 
   private async repositoryDirs(): Promise<string[]> {
-    const dirs = new Set(this.all().map((item) => item.repository));
+    const dirs = new Set((await this.all()).map((item) => item.repository));
 
-    for (const { path: root } of this.store.repositories()) {
+    for (const { path: root } of await this.store.repositories()) {
       const common = await gitCommonDir(root).catch(() => null);
 
       if (common) dirs.add(common);
@@ -177,9 +204,9 @@ export class ReviewWorkspaces {
 
   private async releaseCheckouts(reviewId: string, repositories: string[]) {
     // Restored since the dismissal: its checkouts may be in use.
-    if (!this.store.dismissedIds().includes(reviewId)) return;
+    if (!(await this.store.dismissedIds()).includes(reviewId)) return;
 
-    const environments = this.all().filter(
+    const environments = (await this.all()).filter(
       (item) => item.reviewId === reviewId,
     );
 
@@ -187,7 +214,10 @@ export class ReviewWorkspaces {
       existsSync(reviewManagedCheckoutRoot(repository, reviewId)),
     );
 
-    if ((!environments.length && !checkouts.length) || !this.claim(reviewId))
+    if (
+      (!environments.length && !checkouts.length) ||
+      !(await this.claim(reviewId))
+    )
       return;
 
     for (const environment of environments) {
@@ -212,16 +242,18 @@ export class ReviewWorkspaces {
       ) {
         environment.state = "cleanup-failed";
         environment.log = errors.join("\n");
-        this.save(environment);
+        await this.save(environment);
       } else
-        this.db
-          .prepare("DELETE FROM pinned_environments WHERE id=?")
-          .run(environment.id);
-    this.db
-      .prepare(
-        "DELETE FROM workspace_leases WHERE review_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM pinned_environments WHERE value->>'reviewId'=?)",
-      )
-      .run(reviewId, this.ownerId, reviewId);
+        await this.meta.run(
+          "DELETE FROM pinned_environments WHERE id=?",
+          environment.id,
+        );
+    await this.meta.run(
+      `DELETE FROM workspace_leases WHERE review_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM pinned_environments WHERE ${this.meta.dialect.jsonText("value", "reviewId")}=?)`,
+      reviewId,
+      this.ownerId,
+      reviewId,
+    );
 
     if (errors.length) throw new Error(errors.join("\n"));
   }
@@ -239,28 +271,31 @@ export class ReviewWorkspaces {
     if (this.external === source) return;
     this.stopExternal?.();
     this.external = source;
-    this.stopExternal = source.subscribe(() => this.collect());
-    this.collect();
+    this.stopExternal = source.subscribe(() =>
+      this.notify(() => this.collect()),
+    );
+    this.notify(() => this.collect());
   }
 
-  private hasReview(id: string): boolean {
+  private async hasReview(id: string): Promise<boolean> {
     // The shared catalog loads after the local store during host startup.
     if (id.startsWith("shared-") && !this.external) return true;
 
-    return this.store.has(id) || Boolean(this.external?.has(id));
+    return (await this.store.has(id)) || Boolean(this.external?.has(id));
   }
 
-  private assertReview(id: string) {
-    if (!this.hasReview(id)) this.store.assertExists(id);
+  private async assertReview(id: string) {
+    if (!(await this.hasReview(id))) await this.store.assertExists(id);
   }
 
   async remove(reviewId: string) {
-    if (!this.claim(reviewId)) throw new ReviewInputError(OWNED_ELSEWHERE, 409);
+    if (!(await this.claim(reviewId)))
+      throw new ReviewInputError(OWNED_ELSEWHERE, 409);
     await Promise.all(this.requests.values());
-    this.collect(undefined, reviewId);
+    await this.collect(undefined, reviewId);
     await this.cleanup;
 
-    if (this.all().some((item) => item.reviewId === reviewId))
+    if ((await this.all()).some((item) => item.reviewId === reviewId))
       throw new ReviewInputError(
         "Could not remove the managed workspace. Retry deletion.",
         409,
@@ -268,13 +303,14 @@ export class ReviewWorkspaces {
   }
 
   private lease(reviewId: string) {
-    return this.db
-      .prepare("SELECT owner,pid FROM workspace_leases WHERE review_id=?")
-      .get(reviewId);
+    return this.meta.get(
+      "SELECT owner,pid FROM workspace_leases WHERE review_id=?",
+      reviewId,
+    );
   }
 
-  private leasedElsewhere(reviewId: string): boolean {
-    const lease = this.lease(reviewId);
+  private async leasedElsewhere(reviewId: string): Promise<boolean> {
+    const lease = await this.lease(reviewId);
 
     return Boolean(
       lease &&
@@ -284,48 +320,46 @@ export class ReviewWorkspaces {
   }
 
   /** Takes the review's lease unless another live Desktop holds it. */
-  private claim(reviewId: string): boolean {
+  private async claim(reviewId: string): Promise<boolean> {
     // Status reads claim on every poll; holding the lease needs no write lock.
-    if (this.lease(reviewId)?.owner === this.ownerId) return true;
-    this.db.exec("BEGIN IMMEDIATE");
+    if ((await this.lease(reviewId))?.owner === this.ownerId) return true;
 
-    try {
-      const free = !this.leasedElsewhere(reviewId);
+    return this.meta.transaction(async () => {
+      const free = !(await this.leasedElsewhere(reviewId));
 
       if (free)
-        this.db
-          .prepare("INSERT OR REPLACE INTO workspace_leases VALUES(?,?,?)")
-          .run(reviewId, this.ownerId, process.pid);
-      this.db.exec("COMMIT");
+        await this.meta.run(
+          "INSERT INTO workspace_leases VALUES(?,?,?) ON CONFLICT(review_id) DO UPDATE SET owner=excluded.owner,pid=excluded.pid",
+          reviewId,
+          this.ownerId,
+          process.pid,
+        );
 
       return free;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
-  private all(): Environment[] {
-    return this.db
-      .prepare("SELECT value FROM pinned_environments")
-      .all()
-      .map((row) => JSON.parse(String(row.value)));
+  private async all(): Promise<Environment[]> {
+    return (await this.meta.all("SELECT value FROM pinned_environments")).map(
+      (row) => JSON.parse(String(row.value)),
+    );
   }
 
-  private get(id: string): Environment | undefined {
-    const row = this.db
-      .prepare("SELECT value FROM pinned_environments WHERE id=?")
-      .get(id);
+  private async get(id: string): Promise<Environment | undefined> {
+    const row = await this.meta.get(
+      "SELECT value FROM pinned_environments WHERE id=?",
+      id,
+    );
 
     return row ? JSON.parse(String(row.value)) : undefined;
   }
 
-  private save(environment: Environment) {
-    this.db
-      .prepare(
-        "INSERT INTO pinned_environments VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
-      )
-      .run(environment.id, JSON.stringify(environment));
+  private async save(environment: Environment) {
+    await this.meta.run(
+      "INSERT INTO pinned_environments VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
+      environment.id,
+      JSON.stringify(environment),
+    );
   }
 
   private status(environment: Environment): WorkspaceStatus {
@@ -345,28 +379,28 @@ export class ReviewWorkspaces {
     return status;
   }
 
-  list(reviewId: string): WorkspaceStatus[] {
-    return this.all()
+  async list(reviewId: string): Promise<WorkspaceStatus[]> {
+    return (await this.all())
       .filter((item) => item.reviewId === reviewId)
       .map((item) => this.status(item));
   }
 
-  failures(): WorkspaceStatus[] {
-    return this.all()
+  async failures(): Promise<WorkspaceStatus[]> {
+    return (await this.all())
       .filter((item) => item.state === "cleanup-failed")
       .map((item) => this.status(item));
   }
 
   async retryCleanup(id: string) {
-    const environment = this.get(id);
+    const environment = await this.get(id);
 
     if (!environment || environment.state !== "cleanup-failed")
       throw new ReviewInputError("Cleanup failure not found.", 404);
 
     // A dismissed review keeps its record, so collection would skip it.
-    if (this.store.has(environment.reviewId))
+    if (await this.store.has(environment.reviewId))
       this.release(environment.reviewId);
-    else this.collect(id);
+    else await this.collect(id);
     await this.cleanup;
   }
 
@@ -376,7 +410,7 @@ export class ReviewWorkspaces {
     if (pins.base !== pins.head) await this.source(reviewId, pins, "base");
   }
 
-  source(
+  async source(
     reviewId: string,
     pins: Pins,
     side: "base" | "head",
@@ -384,7 +418,7 @@ export class ReviewWorkspaces {
   ): Promise<WorkspaceStatus> {
     if (this.closed)
       return Promise.reject(new Error("Language environments are closed."));
-    this.assertReview(reviewId);
+    await this.assertReview(reviewId);
 
     const id = createHash("sha256")
       .update(JSON.stringify([reviewId, pins.repositoryId, pins[side]]))
@@ -394,21 +428,19 @@ export class ReviewWorkspaces {
 
     if (current) return current;
 
-    if (!this.claim(reviewId)) {
-      const environment = this.get(id);
+    if (!(await this.claim(reviewId))) {
+      const environment = await this.get(id);
 
-      return Promise.resolve(
-        environment
-          ? this.status(environment)
-          : {
-              id,
-              commit: pins[side],
-              rootPath: null,
-              generation: "",
-              state: "pending",
-              log: OWNED_ELSEWHERE,
-            },
-      );
+      return environment
+        ? this.status(environment)
+        : {
+            id,
+            commit: pins[side],
+            rootPath: null,
+            generation: "",
+            state: "pending",
+            log: OWNED_ELSEWHERE,
+          };
     }
 
     const request = this.acquire(id, reviewId, pins, side, retryFailed).finally(
@@ -428,7 +460,7 @@ export class ReviewWorkspaces {
     retryFailed: boolean,
   ): Promise<WorkspaceStatus> {
     await this.released(reviewId);
-    let environment = this.get(id);
+    let environment = await this.get(id);
 
     if (this.jobs.has(id)) return this.status(environment!);
     environment ??= {
@@ -444,10 +476,10 @@ export class ReviewWorkspaces {
       state: "pending",
       log: "",
     };
-    this.save(environment);
+    await this.save(environment);
 
     try {
-      const root = this.store.repositoryPath(pins.repositoryId);
+      const root = await this.store.repositoryPath(pins.repositoryId);
 
       const repository =
         environment.repository || (await gitCommonDir(root).catch(() => null));
@@ -483,10 +515,10 @@ export class ReviewWorkspaces {
 
       if (!checkout) throw new Error("Pinned checkout is unavailable.");
 
-      if (!this.hasReview(reviewId)) {
+      if (!(await this.hasReview(reviewId))) {
         environment.rootPath = checkout;
-        this.save(environment);
-        this.collect();
+        await this.save(environment);
+        this.notify(() => this.collect());
 
         return this.status(environment);
       }
@@ -512,7 +544,7 @@ export class ReviewWorkspaces {
         environment.state = "preparing";
         environment.generation = randomUUID();
         environment.log = "Preparing pinned checkout…";
-        this.save(environment);
+        await this.save(environment);
         this.prepare(environment, commands);
 
         return this.status(environment);
@@ -525,7 +557,7 @@ export class ReviewWorkspaces {
       environment.log = errorMessage(error);
     }
 
-    this.save(environment);
+    await this.save(environment);
 
     return this.status(environment);
   }
@@ -540,7 +572,7 @@ export class ReviewWorkspaces {
       signal: abort.signal,
       progress: (log) => {
         environment.log = log;
-        this.save(environment);
+        void this.save(environment).catch(() => {});
       },
       warning: (log) => {
         environment.log = log;
@@ -559,9 +591,9 @@ export class ReviewWorkspaces {
         environment.state = "failed";
         environment.log = errorMessage(error);
       })
-      .finally(() => {
+      .finally(async () => {
         environment.generation = randomUUID();
-        this.save(environment);
+        await this.save(environment);
         this.jobs.delete(environment.id);
       });
 
@@ -569,28 +601,29 @@ export class ReviewWorkspaces {
   }
 
   async retry(reviewId: string, id: string): Promise<WorkspaceStatus> {
-    const environment = this.get(id);
+    const environment = await this.get(id);
 
     if (!environment || environment.reviewId !== reviewId)
       throw new ReviewInputError("Language environment not found.", 404);
 
     if (this.jobs.has(id)) return this.status(environment);
 
-    if (!this.claim(reviewId)) throw new ReviewInputError(OWNED_ELSEWHERE, 409);
+    if (!(await this.claim(reviewId)))
+      throw new ReviewInputError(OWNED_ELSEWHERE, 409);
 
     if (environment.state === "cleanup-failed") {
-      this.collect();
+      this.notify(() => this.collect());
 
       return this.status(environment);
     }
 
-    this.assertReview(reviewId);
+    await this.assertReview(reviewId);
 
     if (environment.rootPath)
       await rm(reviewPrepareMarkerPath(environment.rootPath), { force: true });
     environment.state = "pending";
     environment.generation = randomUUID();
-    this.save(environment);
+    await this.save(environment);
 
     return this.source(
       reviewId,
@@ -603,17 +636,24 @@ export class ReviewWorkspaces {
     );
   }
 
-  private collect(retryId?: string, removedReviewId?: string) {
+  private async collect(retryId?: string, removedReviewId?: string) {
     // Capture ownership before awaiting, so shutdown never reads a closed store.
-    const deleted = this.all().filter(
-      (environment) =>
-        (environment.reviewId === removedReviewId ||
-          !this.hasReview(environment.reviewId)) &&
+    const deleted: Environment[] = [];
+
+    for (const environment of await this.all()) {
+      const gone =
+        environment.reviewId === removedReviewId ||
+        !(await this.hasReview(environment.reviewId));
+
+      if (
+        gone &&
         (environment.state !== "cleanup-failed" ||
           environment.id === retryId ||
           environment.reviewId === removedReviewId) &&
-        this.claim(environment.reviewId),
-    );
+        (await this.claim(environment.reviewId))
+      )
+        deleted.push(environment);
+    }
 
     this.cleanup = this.cleanup.then(async () => {
       for (const environment of deleted) {
@@ -647,26 +687,31 @@ export class ReviewWorkspaces {
           if (environment.rootPath)
             await removeReviewPrepareArtifacts(environment.rootPath);
 
-          this.db
-            .prepare("DELETE FROM pinned_environments WHERE id=?")
-            .run(environment.id);
-          this.db
-            .prepare(
-              "DELETE FROM workspace_leases WHERE review_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM pinned_environments WHERE value->>'reviewId'=?)",
-            )
-            .run(environment.reviewId, this.ownerId, environment.reviewId);
+          await this.meta.run(
+            "DELETE FROM pinned_environments WHERE id=?",
+            environment.id,
+          );
+          await this.meta.run(
+            `DELETE FROM workspace_leases WHERE review_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM pinned_environments WHERE ${this.meta.dialect.jsonText("value", "reviewId")}=?)`,
+            environment.reviewId,
+            this.ownerId,
+            environment.reviewId,
+          );
         } catch (error) {
           environment.state = "cleanup-failed";
           environment.log = errorMessage(error);
-          this.save(environment);
+          await this.save(environment);
         }
       }
     });
+
+    await this.cleanup.catch(() => {});
   }
 
   async idle() {
     await Promise.all(this.requests.values());
     await Promise.all([...this.jobs.values()].map((job) => job.done));
+    await this.notified;
     await this.cleanup;
   }
 
@@ -684,9 +729,11 @@ export class ReviewWorkspaces {
 
     for (const job of this.jobs.values()) job.abort.abort();
     await this.idle();
-    this.db
-      .prepare("DELETE FROM workspace_leases WHERE owner=?")
-      .run(this.ownerId);
-    this.db.close();
+    await this.meta.run(
+      "DELETE FROM workspace_leases WHERE owner=?",
+      this.ownerId,
+    );
+
+    if (this.ownsMeta) await this.meta.close();
   }
 }

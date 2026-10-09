@@ -17,7 +17,7 @@ it("retains the document, images, maps and complete conversations without copyin
     const bundle = await exportShare(fixture);
     const parsed = validateShareBundle(bundle);
     expect(parsed.snapshot.pins).toEqual(
-      fixture.store.read(fixture.reviewId).pins,
+      (await fixture.store.read(fixture.reviewId)).pins,
     );
     expect(bundle.manifest.repository).toEqual(fixture.repository);
 
@@ -128,7 +128,7 @@ it("checks every quote in a reused trace and rejects duplicate event IDs", async
     );
   } finally {
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -73,7 +73,7 @@ it("exposes the device URL while login is pending and allows retry after failure
     );
   } finally {
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -150,7 +150,7 @@ it("reports download and checkout preparation without starting duplicate imports
     await shared.close();
     downloadSpy.mockRestore();
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -189,7 +189,7 @@ it("reports a revoke through onRevoked", async () => {
   } finally {
     revoke.mockRestore();
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -233,7 +233,7 @@ it("reports one start and one outcome per login attempt", async () => {
     ]);
   } finally {
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
     await rm(root, { recursive: true, force: true });
   }
 });

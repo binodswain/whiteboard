@@ -41,7 +41,7 @@ interface Running {
 
 const servers = {
   async desktop(): Promise<Running> {
-    const local = openLocalReviewStore(path.join(root, "review-api.db"));
+    const local = await openLocalReviewStore(path.join(root, "review-api.db"));
 
     const server = createGlobalReviewServer({
       reviewStore: local.store,
@@ -570,12 +570,15 @@ it("refuses to reset the id while a paused headless server holds the store", asy
   child.kill("SIGCONT");
   expect(await serverId()).toBe(before);
 
-  const local = openLocalReviewStore(path.join(stateDir, "review-api.db"));
+  const local = await openLocalReviewStore(
+    path.join(stateDir, "review-api.db"),
+  );
+
   onTestFinished(async () => {
     await local.data.close();
     await local.store.close();
   });
-  expect(local.store.serverId()).toBe(before);
+  expect(await local.store.serverId()).toBe(before);
 }, 30_000);
 
 function spawnSource(

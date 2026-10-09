@@ -14,15 +14,15 @@ let store: ReviewStore;
 afterEach(async () => store?.close());
 
 it("routes sanitized telemetry and uploads only opted-in JSON context from the displayed version", async () => {
-  store = new ReviewStore(":memory:", {
+  store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
   });
-  const repository = store.registerRepository(process.cwd());
+  const repository = await store.registerRepository(process.cwd());
   const pins = { repositoryId: repository.id, base: "base", head: "head" };
   const mapId = randomUUID();
-  store.putResource(
+  await store.putResource(
     mapId,
     repository.id,
     "map",
@@ -47,7 +47,7 @@ it("routes sanitized telemetry and uploads only opted-in JSON context from the d
     },
   );
 
-  const original = store.read(reviewId);
+  const original = await store.read(reviewId);
   await store.execute({
     operation: {
       type: "edit",
@@ -210,7 +210,7 @@ it("routes sanitized telemetry and uploads only opted-in JSON context from the d
 });
 
 it("rejects shared telemetry when the shared store is unavailable", async () => {
-  store = new ReviewStore(":memory:", {
+  store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -237,12 +237,12 @@ it("rejects shared telemetry when the shared store is unavailable", async () => 
 });
 
 it("sends a bug report without the envelope when telemetry cannot supply one", async () => {
-  store = new ReviewStore(":memory:", {
+  store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
   });
-  const repository = store.registerRepository(process.cwd());
+  const repository = await store.registerRepository(process.cwd());
 
   const { reviewId } = await store.execute({
     operation: {

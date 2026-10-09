@@ -21,7 +21,7 @@ it("makes and lists the scratchpad only while its preference is on", async () =>
   vi.stubEnv("DEV_REVIEW_HOME", devHome);
   await mkdir(devHome, { recursive: true });
 
-  const local = openLocalReviewStore(path.join(devHome, "review-api.db"));
+  const local = await openLocalReviewStore(path.join(devHome, "review-api.db"));
 
   const serve = () =>
     createGlobalReviewServer({
@@ -85,7 +85,7 @@ it("makes and lists the scratchpad only while its preference is on", async () =>
     });
 
     expect(created.status).toBe(409);
-    expect(local.store.has(SCRATCHPAD_REVIEW_ID)).toBe(false);
+    expect(await local.store.has(SCRATCHPAD_REVIEW_ID)).toBe(false);
 
     // On: the pad exists, is listed, and is accessible.
     expect(await setEnabled(server.url, true)).toEqual({ enabled: true });
@@ -106,7 +106,7 @@ it("makes and lists the scratchpad only while its preference is on", async () =>
     expect(
       (await get(server.url, `/reviews-api/${SCRATCHPAD_REVIEW_ID}`)).status,
     ).toBe(409);
-    expect(local.store.has(SCRATCHPAD_REVIEW_ID)).toBe(true);
+    expect(await local.store.has(SCRATCHPAD_REVIEW_ID)).toBe(true);
 
     // A new server starts from the saved preference.
     await setEnabled(server.url, true);

@@ -25,7 +25,7 @@ const bundle = await exportShare({
 
 bundle.attribution = { login: "fixture-sender", sharedAt: Date.now() };
 
-const recipient = openLocalReviewStore(path.join(home, "review-api.db"));
+const recipient = await openLocalReviewStore(path.join(home, "review-api.db"));
 
 const store = new SharedReviewStore(
   path.join(home, "shared-reviews"),
@@ -46,11 +46,11 @@ const reviewId = await store.import(
 
 await recipient.data.close();
 
-recipient.store.close();
+await recipient.store.close();
 
 await fixture.data.close();
 
-fixture.store.close();
+await fixture.store.close();
 
 await rename(fixture.repo, path.join(root, "sender-unavailable"));
 

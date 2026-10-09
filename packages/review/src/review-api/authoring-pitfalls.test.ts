@@ -23,7 +23,7 @@ import { openLocalReviewStore } from "./local-data.js";
 
 let directory: string, repository: string, pins: Pins, reviewId: string;
 
-let local: ReturnType<typeof openLocalReviewStore>;
+let local: Awaited<ReturnType<typeof openLocalReviewStore>>;
 
 let app: Hono;
 
@@ -68,14 +68,14 @@ async function expectRejected(
   message: string | RegExp,
   status = 400,
 ) {
-  const before = JSON.stringify(local.store.read(reviewId));
+  const before = JSON.stringify(await local.store.read(reviewId));
   const result = await send();
 
   expect({ status: result.status, body: result.body }).toMatchObject({
     status,
   });
   expect(result.body.error).toMatch(message);
-  expect(JSON.stringify(local.store.read(reviewId))).toBe(before);
+  expect(JSON.stringify(await local.store.read(reviewId))).toBe(before);
 }
 
 beforeEach(async () => {
@@ -110,7 +110,7 @@ beforeEach(async () => {
   );
   git("add", ".");
   git("-c", "commit.gpgsign=false", "commit", "-qm", "Head");
-  local = openLocalReviewStore(path.join(directory, "reviews.db"));
+  local = await openLocalReviewStore(path.join(directory, "reviews.db"));
   const registered = await local.data.register(repository);
   pins = await local.data.resolvePins(registered.id, "HEAD^", "HEAD");
   app = createReviewApi(local.store, local.data);
@@ -308,7 +308,7 @@ describe("diagram rules", () => {
     });
 
     expect(result.status).toBe(200);
-    expect(local.store.read(reviewId).document).toContainEqual(
+    expect((await local.store.read(reviewId)).document).toContainEqual(
       expect.objectContaining({
         type: "call_stack_diff",
         base: [expect.objectContaining({ source: rangeAnchor(baseSource) })],
@@ -362,7 +362,7 @@ describe("anchors written as strings", () => {
     });
 
     expect(step.status).toBe(200);
-    const document = local.store.read(reviewId).document;
+    const document = (await local.store.read(reviewId)).document;
 
     // Stored as written; both steps read at the diagram's pins.
     expect(
@@ -558,7 +558,7 @@ describe("edit protocol rules", () => {
     });
 
     expect(cleared.status).toBe(200);
-    expect(local.store.read(reviewId).document[0]).not.toHaveProperty(
+    expect((await local.store.read(reviewId)).document[0]).not.toHaveProperty(
       "caption",
     );
   });
@@ -661,9 +661,9 @@ describe("the fixtures are what the API accepts", () => {
           body: result.body,
         });
 
-        const written = elements(local.store.read(reviewId).document).find(
-          (element) => element.id === result.body.targetId,
-        );
+        const written = elements(
+          (await local.store.read(reviewId)).document,
+        ).find((element) => element.id === result.body.targetId);
 
         expect(written?.type).toBe(type);
       }

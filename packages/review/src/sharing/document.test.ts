@@ -25,7 +25,7 @@ afterEach(async () => {
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "document-sharing-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
-  const local = openLocalReviewStore(path.join(root, "review.db"));
+  const local = await openLocalReviewStore(path.join(root, "review.db"));
   cleanup.push(() => local.store.close());
   cleanup.push(() => local.data.close());
 
@@ -124,12 +124,12 @@ it("uploads and opens a document without registering or fetching a repository, i
   const id = await shared.import("https://sharing.test", shareId, bundle);
   await shared.assertReady(id);
   expect(shared.get(id).snapshot).toMatchObject({
-    document: local.store.read(local.reviewId).document,
+    document: (await local.store.read(local.reviewId)).document,
   });
   expect(shared.get(id).snapshot.pins).toBeUndefined();
   expect(shared.get(id).snapshot.target).toBeUndefined();
   expect(shared.get(id).snapshot).not.toHaveProperty("kind");
-  expect(shared.list().map((review) => review.reviewId)).toEqual([id]);
+  expect((await shared.list()).map((review) => review.reviewId)).toEqual([id]);
 
   const api = createReviewApi(
     local.store,
@@ -149,10 +149,12 @@ it("uploads and opens a document without registering or fetching a repository, i
   await restarted.load();
   await restarted.prepare(id);
   await restarted.assertReady(id);
-  expect(restarted.list().map((review) => review.reviewId)).toEqual([id]);
+  expect((await restarted.list()).map((review) => review.reviewId)).toEqual([
+    id,
+  ]);
   expect(fetchRepository).not.toHaveBeenCalled();
   await restarted.removeLocal(id);
-  expect(restarted.list()).toEqual([]);
+  expect(await restarted.list()).toEqual([]);
 });
 
 it("retains image and trace resources on a document without source pins", async () => {

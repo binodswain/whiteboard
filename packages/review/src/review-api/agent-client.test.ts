@@ -20,7 +20,7 @@ import { createReviewApi } from "./http.js";
 import { serveReviewMcp } from "./mcp.js";
 import { ReviewStore } from "./store.js";
 
-const store = new ReviewStore(":memory:", {
+const store = await ReviewStore.open(":memory:", {
   validatePins: async () => {},
   validateSource: async () => {},
   validateResource: async () => {},
@@ -39,7 +39,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   // The scratchpad cannot be deleted; every review can.
 
-  for (const { reviewId, kind } of store.list())
+  for (const { reviewId, kind } of await store.list())
     if (kind !== "scratchpad")
       await store.execute({
         operation: { type: "delete", reviewId },
@@ -91,7 +91,7 @@ it("uses host-advertised tools to edit, retry, reject invalid content and inspec
   };
 
   const result = (await call("edit", input)) as { targetId: string };
-  expect(store.read(created.reviewId).version).toBe(1);
+  expect((await store.read(created.reviewId)).version).toBe(1);
   expect(
     await call("get", {
       reviewId: created.reviewId,
@@ -109,7 +109,7 @@ it("uses host-advertised tools to edit, retry, reject invalid content and inspec
       },
     }),
   ).rejects.toThrow(Error);
-  expect(store.read(created.reviewId).version).toBe(1);
+  expect((await store.read(created.reviewId)).version).toBe(1);
   await call("edit", {
     reviewId: created.reviewId,
     edit: {
@@ -862,7 +862,7 @@ it("binds existing content through the host-advertised PR tool", async () => {
     },
   });
 
-  const authored = store.read(created.reviewId).document;
+  const authored = (await store.read(created.reviewId)).document;
 
   await callAuthoringTool(
     client,
@@ -878,9 +878,10 @@ it("binds existing content through the host-advertised PR tool", async () => {
       pullRequestUrl: "https://github.com/devdotfast/review/pull/310",
     },
   );
-  expect(store.read(created.reviewId).document).toEqual(authored);
+  expect((await store.read(created.reviewId)).document).toEqual(authored);
   expect(
-    store.list().find((review) => review.reviewId === created.reviewId)?.origin,
+    (await store.list()).find((review) => review.reviewId === created.reviewId)
+      ?.origin,
   ).toEqual({
     pullRequestNumber: 310,
     pullRequestUrl: "https://github.com/devdotfast/review/pull/310",

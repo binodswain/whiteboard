@@ -54,8 +54,8 @@ const commit = readBuildCommit(import.meta.url);
 export function createReviewServerApp(input: {
   token: string;
   instanceId: string;
-  /** The review store's `serverId()`. */
-  serverId: string;
+  /** The review store's `serverId()`; a promise settles by the first /health. */
+  serverId: string | Promise<string>;
   relay: ReviewDesktopVerbRelay;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
@@ -66,7 +66,7 @@ export function createReviewServerApp(input: {
     applyCorsHeaders(context.req.raw, context.res);
   });
   // Open to any caller, but the stable ids only to one holding the token.
-  app.get("/health", (context) => {
+  app.get("/health", async (context) => {
     const health: ReviewServerHealth = {
       ok: true,
       instanceId: input.instanceId,
@@ -81,7 +81,7 @@ export function createReviewServerApp(input: {
           isLocalAuthRequest(context.req.raw, input.localBrowserPort?.()))
         ? ({
             ...health,
-            serverId: input.serverId,
+            serverId: await input.serverId,
             serverPid: process.pid,
             commit,
           } satisfies ReviewServerHealthWithToken)

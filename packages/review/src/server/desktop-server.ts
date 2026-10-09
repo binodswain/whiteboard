@@ -250,7 +250,7 @@ export function createGlobalReviewServer(
     },
     hooks: reviewLifecycleTelemetry(
       telemetry,
-      (reviewId) => reviewStore.summary(reviewId)?.firstCreatedAt,
+      async (reviewId) => (await reviewStore.summary(reviewId))?.firstCreatedAt,
       () => aliasInstallationToAccount(telemetry),
     ),
     ask: { tools: askTools },
@@ -321,7 +321,7 @@ export function createGlobalReviewServer(
 
         const rawContext = isJsonObject(payload.context) ? payload.context : {};
 
-        const sourceKind = sessionStartedSourceKind(
+        const sourceKind = await sessionStartedSourceKind(
           reviewStore,
           jsonString(rawContext.reviewUuid),
         );
@@ -617,14 +617,14 @@ function watchSessionOpen(
  * shared review this store never had, or one deleted between open and the
  * event arriving) or was left without a target.
  */
-export function sessionStartedSourceKind(
+export async function sessionStartedSourceKind(
   reviewStore: ReviewStore,
   reviewUuid: string | undefined,
-): string | undefined {
+): Promise<string | undefined> {
   if (!reviewUuid) return undefined;
 
   try {
-    const snapshot = reviewStore.read(reviewUuid);
+    const snapshot = await reviewStore.read(reviewUuid);
 
     return snapshot.kind === "scratchpad"
       ? snapshot.kind

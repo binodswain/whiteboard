@@ -22,7 +22,7 @@ it("discovers the live Desktop map preference without opening a review", async (
     DEV_FAST_REVIEW_TELEMETRY_DISABLED: "1",
   };
 
-  const local = openLocalReviewStore(path.join(home, "review-api.db"));
+  const local = await openLocalReviewStore(path.join(home, "review-api.db"));
   const relay = new GlobalReviewDesktopVerbRelay();
   let softwareMapEnabled = false;
   let opened = false;

@@ -28,14 +28,14 @@ it("keeps a client's occurrence time only within the recent past", () => {
 });
 
 it("derives source_kind from the review's stored target, or the scratchpad kind", async () => {
-  const store = new ReviewStore(":memory:", {
+  const store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
   });
 
   try {
-    const repository = store.registerRepository(process.cwd());
+    const repository = await store.registerRepository(process.cwd());
 
     const { reviewId } = await store.execute({
       operation: {
@@ -50,11 +50,13 @@ it("derives source_kind from the review's stored target, or the scratchpad kind"
       },
     });
 
-    expect(sessionStartedSourceKind(store, reviewId)).toBe("commits");
+    expect(await sessionStartedSourceKind(store, reviewId)).toBe("commits");
     await store.ensureScratchpad();
-    expect(sessionStartedSourceKind(store, SCRATCHPAD_ID)).toBe("scratchpad");
-    expect(sessionStartedSourceKind(store, randomUUID())).toBeUndefined();
-    expect(sessionStartedSourceKind(store, undefined)).toBeUndefined();
+    expect(await sessionStartedSourceKind(store, SCRATCHPAD_ID)).toBe(
+      "scratchpad",
+    );
+    expect(await sessionStartedSourceKind(store, randomUUID())).toBeUndefined();
+    expect(await sessionStartedSourceKind(store, undefined)).toBeUndefined();
   } finally {
     await store.close();
   }
@@ -65,7 +67,7 @@ it("enriches session_started with source_kind on the global /telemetry/event rou
     path.join(os.tmpdir(), "review-session-telemetry-"),
   );
 
-  const local = openLocalReviewStore(path.join(home, "review-api.db"));
+  const local = await openLocalReviewStore(path.join(home, "review-api.db"));
   const token = "session-telemetry-test-token";
 
   await local.store.ensureScratchpad();
@@ -127,7 +129,7 @@ it("never trusts a client-supplied source_kind or agent_kind on session_started"
     path.join(os.tmpdir(), "review-session-telemetry-"),
   );
 
-  const local = openLocalReviewStore(path.join(home, "review-api.db"));
+  const local = await openLocalReviewStore(path.join(home, "review-api.db"));
   const token = "session-telemetry-test-token";
 
   const telemetry = ReviewTelemetry.fromEnv({
@@ -189,7 +191,7 @@ it("reports a session that starts and never presents, and not one that does", as
     path.join(os.tmpdir(), "review-session-telemetry-"),
   );
 
-  const local = openLocalReviewStore(path.join(home, "review-api.db"));
+  const local = await openLocalReviewStore(path.join(home, "review-api.db"));
   const token = "session-telemetry-test-token";
 
   const telemetry = ReviewTelemetry.fromEnv({
@@ -255,7 +257,7 @@ it("reports a session that starts and never presents, and not one that does", as
 
 it("reports app_ready once per launch, however many windows or reloads send it", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "review-app-ready-"));
-  const local = openLocalReviewStore(path.join(home, "review-api.db"));
+  const local = await openLocalReviewStore(path.join(home, "review-api.db"));
   const token = "app-ready-test-token";
 
   const telemetry = ReviewTelemetry.fromEnv({

@@ -207,7 +207,7 @@ export function mountSharingPublisher(
         "Only the authoring review can be shared.",
         409,
       );
-    const snapshot = store.read(input.reviewId, input.version);
+    const snapshot = await store.read(input.reviewId, input.version);
 
     if (snapshot.target?.kind === "worktree")
       throw new ReviewInputError(
@@ -224,7 +224,7 @@ export function mountSharingPublisher(
       );
 
     const root = snapshot.pins
-      ? store.repositoryPath(snapshot.pins.repositoryId)
+      ? await store.repositoryPath(snapshot.pins.repositoryId)
       : undefined;
 
     const repository = root

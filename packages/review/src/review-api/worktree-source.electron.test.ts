@@ -104,7 +104,7 @@ it.skipIf(!electron && !process.env.CI)(
       `
 import { openLocalReviewStore } from ${JSON.stringify(path.join(packageRoot, "src/review-api/local-data.ts"))};
 
-const local = openLocalReviewStore(${JSON.stringify(path.join(directory, "reviews.db"))});
+const local = await openLocalReviewStore(${JSON.stringify(path.join(directory, "reviews.db"))});
 
 try {
   const { id } = await local.data.register(${JSON.stringify(repository)});
@@ -115,7 +115,7 @@ try {
       target: { kind: "worktree", repositoryId: id },
     },
   });
-  const pins = local.store.read(reviewId).pins;
+  const pins = (await local.store.read(reviewId)).pins;
 
   console.log(JSON.stringify({
     fixture: (await local.data.file(pins, "head", "fixture.asar")).text,

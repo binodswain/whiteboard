@@ -496,7 +496,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         });
 
         try {
-          return local.store.resetServerId();
+          return await local.store.resetServerId();
         } finally {
           await local.data.close();
           await local.store.close();

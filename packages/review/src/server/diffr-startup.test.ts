@@ -61,7 +61,7 @@ test.each(["desktop", "headless"] as const)(
         await running;
         await ready();
       } else {
-        const local = openLocalReviewStore(path.join(root, "reviews.db"));
+        const local = await openLocalReviewStore(path.join(root, "reviews.db"));
 
         const server = createGlobalReviewServer({
           reviewStore: local.store,
