@@ -114,7 +114,11 @@ export function RenderedCodeBlock({
       <pre
         {...props}
         {...stylex.props(styles.body)}
-        style={{ ...props.style, fontSize: codeFontSize }}
+        style={
+          codeFontSize === undefined
+            ? props.style
+            : { ...props.style, fontSize: codeFontSize }
+        }
       >
         {lineNumbers && (
           <span aria-hidden="true" {...stylex.props(styles.gutter)}>

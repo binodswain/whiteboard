@@ -387,7 +387,11 @@ function WebCodePeek({
           <pre
             key={key}
             tabIndex={0}
-            style={{ fontSize: codeFontSize }}
+            style={
+              codeFontSize === undefined
+                ? undefined
+                : { fontSize: codeFontSize }
+            }
             aria-label={`${file}, ${range.side} lines ${range.startLine} to ${range.endLine}`}
           >
             <code data-review-copy-prose>{excerpt}</code>
