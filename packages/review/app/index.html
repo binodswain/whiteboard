@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Whiteboard Reviews</title>
+    <style>
+      /* The canvas stylesheet is scoped to .review-canvas-root; the page
+         shell sizes itself and matches the canvas palette until it loads. */
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: #fff;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #0c0f15;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/web/web-entry.tsx"></script>
+  </body>
+</html>

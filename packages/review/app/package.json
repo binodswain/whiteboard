@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build --config desktop.vite.config.ts",
+    "build:web": "vite build --config web.vite.config.ts",
     "pretest": "pnpm --filter @dev.fast/whiteboard ensure:tutorial-assets",
     "test": "vitest run --config vitest.config.ts",
     "test:node": "vitest run --config vitest.config.ts --project canvas-node",
