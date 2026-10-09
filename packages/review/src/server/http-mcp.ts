@@ -117,7 +117,7 @@ export function createHttpMcpApp(input: {
 
                 if (server.getClientCapabilities()?.roots) {
                   try {
-                    const roots = await server.listRoots({});
+                    const roots = await server.listRoots({}, { timeout: 3000 });
 
                     const uri = roots.roots.find(({ uri }) =>
                       uri.startsWith("file://"),

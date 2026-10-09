@@ -341,6 +341,57 @@ it("serves the authoring catalog over tokenless HTTP MCP and resolves repository
   }
 });
 
+it("returns the repositoryPath guidance quickly when an advertised root does not answer", async () => {
+  const server = await start(path.join(root, "server"), false, undefined, {
+    localAuth: true,
+  });
+
+  const client = new Client(
+    { name: "whiteboard-unresponsive-roots-test", version: "1.0.0" },
+    { capabilities: { roots: { listChanged: true } } },
+  );
+
+  const transport = new StreamableHTTPClientTransport(
+    new URL(server.discovery.url.replace("127.0.0.1", "localhost") + "/mcp"),
+  );
+
+  client.setRequestHandler(ListRootsRequestSchema, () => new Promise(() => {}));
+
+  await client.connect(transport);
+
+  try {
+    const startedAt = performance.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), 5_000);
+    });
+
+    const result = await Promise.race([
+      client.callTool({
+        name: "session_create",
+        arguments: {
+          title: "HTTP MCP unresponsive roots",
+          target: { kind: "worktree" },
+          open: false,
+        },
+      }),
+      timeout,
+    ]);
+
+    clearTimeout(timer);
+
+    expect(result).toBeDefined();
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+    expect(result?.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain(
+      "Pass repositoryPath as the absolute path",
+    );
+  } finally {
+    await client.close();
+  }
+}, 10_000);
+
 it("rejects an untrusted Host and Origin for tokenless HTTP MCP", async () => {
   const server = await start(path.join(root, "server"), false, undefined, {
     localAuth: true,
