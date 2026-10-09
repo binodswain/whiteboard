@@ -1847,6 +1847,11 @@ export async function openLocalReviewStore(
     sourcePins: (snapshot) => data.sourcePins(snapshot),
     unavailableAnchors: (snapshot) => data.unavailableAnchors(snapshot),
     validatePins: (pins) => data.validatePins(pins),
+    fileText: (pins, side, file) =>
+      data.file(pins, side, file).then(
+        (value) => value.text,
+        () => undefined,
+      ),
     filesChangedBetween: (from, to) => data.filesChangedBetween(from, to),
     validateSource: (pins, source, options) =>
       data.validateSource(pins, source, options),
