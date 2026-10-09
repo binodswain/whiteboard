@@ -503,7 +503,7 @@ const CanvasDocument = memo(function CanvasDocument({
   };
 
   return (
-    <CodeFontSizeContext.Provider value={codeFontSize ?? 13}>
+    <CodeFontSizeContext.Provider value={codeFontSize}>
       <App
         document={document}
         softwareMap={{
