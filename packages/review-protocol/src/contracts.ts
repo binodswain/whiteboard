@@ -326,6 +326,10 @@ export interface ReviewCanvasBridge {
   subscribe(listener: (event: ReviewSurfaceEvent) => void): ReviewDisposable;
   currentTheme(): ReviewTheme;
   onDidChangeTheme(listener: (theme: ReviewTheme) => void): ReviewDisposable;
+  /** Web settings can update the live canvas theme through the bridge. */
+  setCurrentTheme?(theme: ReviewTheme): void;
+  /** Opens the web canvas Settings route from its existing chrome. */
+  openSettings?(): void;
   // The diff layout is app-wide and backed by the `diffEditor.renderSideBySide`
   // setting, so a choice outlives the session and the app restart.
   currentDiffLayout(): ReviewDiffLayout;
@@ -688,6 +692,7 @@ export type ReviewCanvasContent =
       structuralDiffEnabled?: boolean;
       softwareMapEnabled?: boolean;
       documentWidth?: ReviewDocumentWidthChoice;
+      codeFontSize?: number;
       reviewId: string;
       version?: number;
       bridge: ReviewCanvasBridge;
@@ -713,7 +718,9 @@ export type ReviewCanvasContent =
   | {
       kind: "home";
       reviews: readonly ReviewApiSummary[];
+      theme?: ReviewTheme;
       openReview(uuid: string): void;
+      openSettings?(): void;
       // Deletes the review and closes its canvas. Absent when the host does
       // not support deletion.
       deleteReview?(uuid: string): Promise<void>;
@@ -751,6 +758,8 @@ export type ReviewCanvasContent =
   | {
       kind: "settings";
       settings: ReviewCanvasSettingsContent;
+      theme?: ReviewTheme;
+      close?(): void;
     };
 
 export interface ReviewCanvasRange {

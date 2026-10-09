@@ -38,6 +38,7 @@ import {
 } from "./authoring-cursor";
 import { SaveMarkdown } from "./blocks";
 import { CanvasQueryProvider } from "./canvas-query";
+import { CodeFontSizeContext } from "./code-font-size";
 import { DisplayedReviewVersionContext } from "./displayed-review-version-context";
 import { DrawQueueProvider } from "./draw-queue-provider";
 import {
@@ -450,6 +451,7 @@ export function ApiCanvas({
                                   content.softwareMapEnabled === true
                                 }
                                 documentWidth={content.documentWidth}
+                                codeFontSize={content.codeFontSize}
                               />
                             </SaveMarkdown.Provider>
                           </MapEnabled.Provider>
@@ -473,11 +475,13 @@ const CanvasDocument = memo(function CanvasDocument({
   findHost,
   softwareMapEnabled,
   documentWidth,
+  codeFontSize,
 }: {
   data: ApiDocumentData;
   findHost?: ReviewFindHost;
   softwareMapEnabled: boolean;
   documentWidth?: ReviewDocumentWidthChoice;
+  codeFontSize?: number;
 }) {
   const snapshot = data.snapshot;
 
@@ -499,34 +503,36 @@ const CanvasDocument = memo(function CanvasDocument({
   };
 
   return (
-    <App
-      document={document}
-      softwareMap={{
-        head:
-          [...data.maps.values()].find(
-            (map) => map.pinnedData.side === "head",
-          ) ?? null,
-        base:
-          [...data.maps.values()].find(
-            (map) => map.pinnedData.side === "base",
-          ) ?? null,
-      }}
-      softwareMapEnabled={softwareMapEnabled && data.maps.size > 0}
-      // A document without pins of its own has no change range: the Diff and
-      // Commits views hide, as for a review whose base is its head.
-      range={{
-        sourceUnavailable: snapshot.sourceUnavailable
-          ? "Local checkout unavailable."
-          : undefined,
-        baseRef: snapshot.pins?.base ?? "",
-        headRef: snapshot.pins?.head ?? "",
-        baseCommit: snapshot.pins?.base ?? "",
-        headCommit: snapshot.pins?.head ?? "",
-        worktreeRevision: snapshot.pins?.worktreeRevision,
-      }}
-      commits={data.commits}
-      findHost={findHost}
-    />
+    <CodeFontSizeContext.Provider value={codeFontSize ?? 13}>
+      <App
+        document={document}
+        softwareMap={{
+          head:
+            [...data.maps.values()].find(
+              (map) => map.pinnedData.side === "head",
+            ) ?? null,
+          base:
+            [...data.maps.values()].find(
+              (map) => map.pinnedData.side === "base",
+            ) ?? null,
+        }}
+        softwareMapEnabled={softwareMapEnabled && data.maps.size > 0}
+        // A document without pins of its own has no change range: the Diff and
+        // Commits views hide, as for a review whose base is its head.
+        range={{
+          sourceUnavailable: snapshot.sourceUnavailable
+            ? "Local checkout unavailable."
+            : undefined,
+          baseRef: snapshot.pins?.base ?? "",
+          headRef: snapshot.pins?.head ?? "",
+          baseCommit: snapshot.pins?.base ?? "",
+          headCommit: snapshot.pins?.head ?? "",
+          worktreeRevision: snapshot.pins?.worktreeRevision,
+        }}
+        commits={data.commits}
+        findHost={findHost}
+      />
+    </CodeFontSizeContext.Provider>
   );
 });
 

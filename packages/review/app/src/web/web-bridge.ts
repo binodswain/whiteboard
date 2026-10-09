@@ -18,8 +18,6 @@ const BROWSER_ONLY_MESSAGE =
 
 const DIFF_LAYOUT_KEY = "review-diff-layout";
 
-const WEB_THEME_KEY = "review-web-theme";
-
 const webSettingsSchema = z.object({
   theme: z.enum(["system", "light", "dark"]),
   documentWidth: z.enum(["standard", "wide", "full"]),
@@ -27,7 +25,7 @@ const webSettingsSchema = z.object({
   scratchpadEnabled: z.boolean(),
 });
 
-type WebSettingsValues = z.infer<typeof webSettingsSchema>;
+export type WebSettingsValues = z.infer<typeof webSettingsSchema>;
 
 export interface WebBridgeOptions {
   /** The review this bridge serves; empty while the canvas shows Home. */
@@ -43,10 +41,13 @@ export interface WebBridgeOptions {
   openReview?: (reviewId: string) => void;
   /** Test seam: the host request the canvas's API client shares. */
   request?: (url: string, init?: RequestInit) => Promise<Response>;
+  settings?: WebSettingsValues;
+  openSettings?: () => void;
 }
 
 export async function loadWebSettings(
   options: Pick<WebBridgeOptions, "serverUrl" | "token" | "request">,
+  onChange?: (settings: WebSettingsValues) => void,
 ): Promise<ReviewCanvasSettingsContent> {
   const config = {
     serverUrl: options.serverUrl ?? location.origin,
@@ -68,56 +69,7 @@ export async function loadWebSettings(
     return webSettingsSchema.parse(await response.json());
   };
 
-  const apply = (settings: Awaited<ReturnType<typeof read>>) => {
-    globalThis.localStorage?.setItem(WEB_THEME_KEY, settings.theme);
-
-    const themeHost = document.querySelector<HTMLElement>(
-      ".review-canvas-root > :first-child",
-    );
-
-    const resolvedTheme =
-      settings.theme === "system"
-        ? matchMedia("(prefers-color-scheme: dark)").matches
-          ? "dark"
-          : "light"
-        : settings.theme;
-
-    const canvasRoot = themeHost?.parentElement;
-
-    if (canvasRoot) {
-      canvasRoot.dataset.reviewTheme = resolvedTheme;
-      themeHost?.classList.toggle(
-        "review-app--theme-light",
-        resolvedTheme === "light",
-      );
-    }
-
-    const app = document.querySelector<HTMLElement>(".review-app");
-
-    if (app) {
-      app.className = app.className.replace(
-        /review-app--theme-(?:light|dark)/,
-        `review-app--theme-${resolvedTheme}`,
-      );
-      app.dataset.documentWidth = settings.documentWidth;
-    }
-
-    document.documentElement.style.setProperty(
-      "--code-font-size",
-      `${settings.codeFontSize}px`,
-    );
-
-    if (!document.getElementById("web-code-font-size")) {
-      const style = document.createElement("style");
-      style.id = "web-code-font-size";
-      style.textContent =
-        ".review-app .monaco-editor,.review-app pre{font-size:var(--code-font-size,14px)!important}";
-      document.head.append(style);
-    }
-  };
-
   let values = await read();
-  apply(values);
 
   const update = async (patch: Partial<WebSettingsValues>) => {
     const response = await request(url, {
@@ -129,7 +81,7 @@ export async function loadWebSettings(
     if (!response.ok)
       throw new Error(`Could not save settings (${response.status}).`);
     values = webSettingsSchema.parse(await response.json());
-    apply(values);
+    onChange?.(values);
 
     return values;
   };
@@ -222,13 +174,10 @@ export function createWebBridge(
       ? null
       : matchMedia("(prefers-color-scheme: dark)");
 
-  const theme = (): ReviewTheme => {
-    const stored = globalThis.localStorage?.getItem(WEB_THEME_KEY);
+  const resolvedTheme = (choice?: WebSettingsValues["theme"]): ReviewTheme =>
+    choice && choice !== "system" ? choice : media?.matches ? "dark" : "light";
 
-    if (stored === "dark" || stored === "light") return stored;
-
-    return media?.matches ? "dark" : "light";
-  };
+  let currentTheme = resolvedTheme(options.settings?.theme);
 
   const config: ReviewRuntimeConfig = {
     serverUrl: options.serverUrl ?? location.origin,
@@ -236,7 +185,7 @@ export function createWebBridge(
     token: options.token ?? "",
     wasmUrl: new URL(wasmAssetUrl, location.href).href,
     appVersion: "web",
-    theme: theme(),
+    theme: currentTheme,
     host: "desktop",
     surface: "web",
   };
@@ -261,6 +210,20 @@ export function createWebBridge(
       : "split";
 
   const diffLayoutListeners = new Set<(layout: ReviewDiffLayout) => void>();
+
+  const setCurrentTheme = (theme: ReviewTheme) => {
+    currentTheme = theme;
+    config.theme = theme;
+    listeners.forEach((listener) => listener({ event: "themeChanged", theme }));
+    themeListeners.forEach((listener) => listener(theme));
+  };
+
+  const themeListeners = new Set<(theme: ReviewTheme) => void>();
+
+  media?.addEventListener("change", () => {
+    if (!options.settings || options.settings.theme === "system")
+      setCurrentTheme(resolvedTheme("system"));
+  });
 
   async function post(request: ReviewVerbRequest): Promise<ReviewVerbResponse> {
     switch (request.name) {
@@ -318,18 +281,14 @@ export function createWebBridge(
     },
 
     post,
-    currentTheme: theme,
+    currentTheme: () => currentTheme,
+    setCurrentTheme,
+    openSettings: options.openSettings,
 
     onDidChangeTheme(listener) {
-      if (!media) return { dispose() {} };
+      themeListeners.add(listener);
 
-      const changed = () => listener(theme());
-
-      media.addEventListener("change", changed);
-
-      return {
-        dispose: () => media.removeEventListener("change", changed),
-      };
+      return { dispose: () => themeListeners.delete(listener) };
     },
 
     currentDiffLayout: () => diffLayout,

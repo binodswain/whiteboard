@@ -51,6 +51,7 @@ interface ReviewHomeProps {
   setupActions?: ReviewCanvasSetupActions;
   onboarding?: ReviewCanvasOnboarding;
   onOpenTutorial?(): void;
+  onOpenSettings?(): void;
 }
 
 interface ReviewAttentionActions {
@@ -104,6 +105,7 @@ export function ReviewHome({
   setupActions,
   onboarding,
   onOpenTutorial,
+  onOpenSettings,
 }: ReviewHomeProps) {
   const ui = useContext(CanvasUiContext);
   const deleting = useRef(new Set<string>());
@@ -235,6 +237,7 @@ export function ReviewHome({
         setupActions={setupActions}
         onboarding={onboarding}
         onOpenTutorial={onOpenTutorial}
+        onOpenSettings={onOpenSettings}
       />
     );
   }
@@ -246,6 +249,15 @@ export function ReviewHome({
           <div {...stylex.props(homeStyles.header)}>
             <h1 {...stylex.props(homeStyles.heading)}>Sessions</h1>
             <div {...stylex.props(styles.headerTools)}>
+              {onOpenSettings ? (
+                <Button
+                  variant="ghost"
+                  onClick={onOpenSettings}
+                  aria-label="Open Settings"
+                >
+                  Settings
+                </Button>
+              ) : null}
               <SearchBox query={query} onChange={setQuery} />
             </div>
           </div>

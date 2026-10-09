@@ -73,9 +73,11 @@ const READY_NOTIFICATION_LABELS: Record<ReviewReadyNotificationChoice, string> =
 export function SettingsPage({
   settings,
   web = false,
+  onGoHome,
 }: {
   settings: ReviewCanvasSettingsContent;
   web?: boolean;
+  onGoHome?(): void;
 }) {
   const [telemetryEnabled, setTelemetryEnabled] = useState(
     settings.telemetryEnabled,
@@ -143,6 +145,15 @@ export function SettingsPage({
         <div {...stylex.props(homeStyles.content, styles.page)}>
           <div {...stylex.props(homeStyles.header)}>
             <h1 {...stylex.props(homeStyles.heading)}>Settings</h1>
+            {web && onGoHome ? (
+              <Button
+                variant="ghost"
+                onClick={onGoHome}
+                aria-label="Return to Home"
+              >
+                Home
+              </Button>
+            ) : null}
           </div>
           <p {...stylex.props(styles.lede)}>
             Settings apply to Whiteboard on this machine.
@@ -348,7 +359,7 @@ export function SettingsPage({
             </Section>
           ) : null}
 
-          <Section label={web ? "Desktop only" : "Experimental Features"}>
+          <Section label="Experimental Features">
             {!web ? (
               <>
                 <Row
@@ -401,28 +412,6 @@ export function SettingsPage({
                     />
                   </label>
                 </Row>
-                <Row
-                  label="Scratchpad"
-                  description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
-                >
-                  <label {...stylex.props(styles.toggle)}>
-                    <input
-                      {...stylex.props(styles.checkbox)}
-                      type="checkbox"
-                      aria-label="Scratchpad"
-                      checked={scratchpadEnabled}
-                      disabled={busy !== null}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        void run(
-                          "scratchpad",
-                          () => settings.setScratchpadEnabled(enabled),
-                          setScratchpadEnabled,
-                        );
-                      }}
-                    />
-                  </label>
-                </Row>
                 {install ? (
                   <TraceCaptureSection
                     install={install}
@@ -438,33 +427,29 @@ export function SettingsPage({
                 <span aria-label="Unavailable in web canvas">Unavailable</span>
               </Row>
             )}
+            <Row
+              label="Scratchpad"
+              description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
+            >
+              <label {...stylex.props(styles.toggle)}>
+                <input
+                  {...stylex.props(styles.checkbox)}
+                  type="checkbox"
+                  aria-label="Scratchpad"
+                  checked={scratchpadEnabled}
+                  disabled={busy !== null}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    void run(
+                      "scratchpad",
+                      () => settings.setScratchpadEnabled(enabled),
+                      setScratchpadEnabled,
+                    );
+                  }}
+                />
+              </label>
+            </Row>
           </Section>
-          {web ? (
-            <Section label="Experimental Features">
-              <Row
-                label="Scratchpad"
-                description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
-              >
-                <label {...stylex.props(styles.toggle)}>
-                  <input
-                    {...stylex.props(styles.checkbox)}
-                    type="checkbox"
-                    aria-label="Scratchpad"
-                    checked={scratchpadEnabled}
-                    disabled={busy !== null}
-                    onChange={(event) => {
-                      const enabled = event.target.checked;
-                      void run(
-                        "scratchpad",
-                        () => settings.setScratchpadEnabled(enabled),
-                        setScratchpadEnabled,
-                      );
-                    }}
-                  />
-                </label>
-              </Row>
-            </Section>
-          ) : null}
 
           {error ? <p {...stylex.props(styles.error)}>{error}</p> : null}
         </div>

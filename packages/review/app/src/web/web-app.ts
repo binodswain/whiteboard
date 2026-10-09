@@ -3,10 +3,16 @@ import { reviewFetchUrl } from "@canvas/host/review-client";
 import type {
   ReviewApiSummary,
   ReviewCanvasContent,
+  ReviewCanvasSettingsContent,
 } from "@dev.fast/review-protocol";
 import { ReviewApiClient } from "@dev.fast/review-protocol";
 
-import { createWebBridge, loadWebSettings, webNotify } from "./web-bridge";
+import {
+  type WebSettingsValues,
+  createWebBridge,
+  loadWebSettings,
+  webNotify,
+} from "./web-bridge";
 
 const TOKEN_KEY = "review-token";
 
@@ -130,17 +136,18 @@ export function startWebCanvas(
 
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
-  const settingsButton = document.createElement("button");
-  settingsButton.type = "button";
-  settingsButton.textContent = "Settings";
-  settingsButton.setAttribute("aria-label", "Open Settings");
-  settingsButton.style.cssText =
-    "position:fixed;top:12px;right:16px;z-index:20;padding:7px 12px;border:1px solid #39404d;border-radius:6px;background:#1a1f29;color:#eef0f4;font:13px system-ui;cursor:pointer";
-  container.append(settingsButton);
 
   let reviews: ReviewApiSummary[] = [];
   let catalog: AbortController | undefined;
   let disposed = false;
+  let webValues: WebSettingsValues | undefined;
+  let settingsContent: ReviewCanvasSettingsContent | undefined;
+  let settingsPromise: Promise<ReviewCanvasSettingsContent> | undefined;
+  let activeBridge: ReturnType<typeof createWebBridge> | undefined;
+
+  let activeReviewContent:
+    | Extract<ReviewCanvasContent, { kind: "api" }>
+    | undefined;
 
   const navigate = (path: string) => {
     history.pushState(null, "", path);
@@ -155,37 +162,117 @@ export function startWebCanvas(
     token,
     request,
     openReview,
+    openSettings: () => navigate("/settings"),
   };
 
-  void loadWebSettings(bridgeOptions).catch((error) =>
-    console.error("Could not apply saved web settings.", error),
-  );
+  const canvasTheme = (theme = webValues?.theme ?? "system") =>
+    theme === "system"
+      ? matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light"
+      : theme;
+
+  const onSettingsChange = (next: WebSettingsValues) => {
+    if (webValues) Object.assign(webValues, next);
+    else webValues = { ...next };
+    activeBridge?.setCurrentTheme?.(canvasTheme(next.theme));
+
+    if (activeReviewContent) {
+      activeReviewContent = {
+        ...activeReviewContent,
+        documentWidth: next.documentWidth,
+        codeFontSize: next.codeFontSize,
+      };
+      canvas.update(activeReviewContent);
+    } else if (location.pathname === "/settings" && settingsContent) {
+      settingsContent = { ...settingsContent, ...next };
+      canvas.update({
+        kind: "settings",
+        settings: settingsContent,
+        theme: canvasTheme(next.theme),
+        close: () => navigate("/"),
+      });
+    } else if (location.pathname === "/" && settingsContent) {
+      canvas.update(homeContent());
+    }
+  };
+
+  const ensureSettings = () => {
+    settingsPromise ??= loadWebSettings(bridgeOptions, onSettingsChange).then(
+      (settings) => {
+        settingsContent = settings;
+        webValues = {
+          theme: settings.theme,
+          documentWidth: settings.documentWidth,
+          codeFontSize: settings.codeFontSize,
+          scratchpadEnabled: settings.scratchpadEnabled,
+        };
+
+        return settings;
+      },
+    );
+
+    return settingsPromise;
+  };
 
   const homeContent = (): ReviewCanvasContent => ({
     kind: "home",
     reviews,
+    theme: canvasTheme(),
     openReview,
+    openSettings: bridgeOptions.openSettings,
     openTutorial() {
       webNotify("success", "The tutorial runs in the Whiteboard desktop app.");
     },
   });
 
-  function showReview(reviewId: string) {
+  const colorScheme = matchMedia("(prefers-color-scheme: dark)");
+
+  const updateSystemTheme = () => {
+    if (webValues?.theme !== "system" || activeBridge) return;
+
+    if (location.pathname === "/settings" && settingsContent) {
+      canvas.update({
+        kind: "settings",
+        settings: settingsContent,
+        theme: canvasTheme("system"),
+        close: () => navigate("/"),
+      });
+    } else if (location.pathname === "/") {
+      canvas.update(homeContent());
+    }
+  };
+
+  colorScheme.addEventListener("change", updateSystemTheme);
+
+  async function showReview(reviewId: string) {
     catalog?.abort();
-    canvas.update({
+    await ensureSettings();
+
+    if (disposed || location.pathname !== `/r/${encodeURIComponent(reviewId)}`)
+      return;
+    activeBridge = createWebBridge({
+      ...bridgeOptions,
+      reviewId,
+      settings: webValues,
+      openSettings: bridgeOptions.openSettings,
+    });
+    activeReviewContent = {
       kind: "api",
       reviewId,
-      bridge: createWebBridge({ ...bridgeOptions, reviewId }),
+      bridge: activeBridge,
+      documentWidth: webValues?.documentWidth,
+      codeFontSize: webValues?.codeFontSize,
       setTitle(title) {
         document.title = title || "Whiteboard Review";
       },
-    });
-    void loadWebSettings(bridgeOptions).catch((error) =>
-      console.error("Could not apply saved web settings.", error),
-    );
+    };
+    canvas.update(activeReviewContent);
   }
 
   async function showHome() {
+    activeReviewContent = undefined;
+    activeBridge = undefined;
     catalog?.abort();
     catalog = new AbortController();
     const signal = catalog.signal;
@@ -193,7 +280,12 @@ export function startWebCanvas(
     document.title = "Whiteboard Reviews";
 
     try {
-      reviews = await client.read<ReviewApiSummary[]>("", signal);
+      const [nextReviews] = await Promise.all([
+        client.read<ReviewApiSummary[]>("", signal),
+        ensureSettings(),
+      ]);
+
+      reviews = nextReviews;
     } catch (error) {
       if (!signal.aborted && !disposed) {
         canvas.update({
@@ -211,9 +303,6 @@ export function startWebCanvas(
     if (signal.aborted || disposed) return;
 
     canvas.update(homeContent());
-    void loadWebSettings(bridgeOptions).catch((error) =>
-      console.error("Could not apply saved web settings.", error),
-    );
 
     void client.follow<ReviewApiSummary[]>(
       null,
@@ -229,17 +318,19 @@ export function startWebCanvas(
 
   function route() {
     if (location.pathname === "/settings") {
-      settingsButton.textContent = "Home";
-      settingsButton.setAttribute("aria-label", "Return to Home");
+      activeReviewContent = undefined;
+      activeBridge = undefined;
       catalog?.abort();
       document.title = "Settings - Whiteboard";
-      void loadWebSettings(bridgeOptions)
+      void ensureSettings()
         .then((settings) => {
           if (!disposed && location.pathname === "/settings") {
-            canvas.update({ kind: "settings", settings });
-            void loadWebSettings(bridgeOptions).catch((error) =>
-              console.error("Could not apply saved web settings.", error),
-            );
+            canvas.update({
+              kind: "settings",
+              settings,
+              theme: canvasTheme(settings.theme),
+              close: () => navigate("/"),
+            });
           }
         })
         .catch((error) =>
@@ -252,9 +343,6 @@ export function startWebCanvas(
       return;
     }
 
-    settingsButton.textContent = "Settings";
-    settingsButton.setAttribute("aria-label", "Open Settings");
-
     const reviewId = routeReviewId(location.pathname);
 
     if (reviewId) {
@@ -264,10 +352,6 @@ export function startWebCanvas(
     }
   }
 
-  settingsButton.addEventListener("click", () => {
-    navigate(location.pathname === "/settings" ? "/" : "/settings");
-  });
-
   window.addEventListener("popstate", route);
   route();
 
@@ -276,7 +360,7 @@ export function startWebCanvas(
       disposed = true;
       catalog?.abort();
       window.removeEventListener("popstate", route);
-      settingsButton.remove();
+      colorScheme.removeEventListener("change", updateSystemTheme);
       canvas.dispose();
     },
   };

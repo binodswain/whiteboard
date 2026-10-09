@@ -10,9 +10,10 @@ import {
 } from "@review/lens-selection";
 import { type FileLineRange, codePeekSource } from "@review/source";
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
+import { CodeFontSizeContext } from "./code-font-size";
 import { DocumentCodeView } from "./DocumentCodeView";
 import { drawStyles } from "./draw-styles";
 import { useReviewSession } from "./host/review-session";
@@ -284,6 +285,7 @@ function WebCodePeek({
   outcome: PeekResolutionOutcome;
 }) {
   const session = useReviewSession();
+  const codeFontSize = useContext(CodeFontSizeContext);
 
   const [results, setResults] = useState<
     readonly { key: string; text?: string; error?: string }[]
@@ -385,6 +387,7 @@ function WebCodePeek({
           <pre
             key={key}
             tabIndex={0}
+            style={{ fontSize: codeFontSize }}
             aria-label={`${file}, ${range.side} lines ${range.startLine} to ${range.endLine}`}
           >
             <code data-review-copy-prose>{excerpt}</code>

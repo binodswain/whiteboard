@@ -8,10 +8,12 @@ import * as stylex from "@stylexjs/stylex";
 import {
   type ComponentProps,
   type ReactElement,
+  useContext,
   useEffect,
   useState,
 } from "react";
 
+import { CodeFontSizeContext } from "./code-font-size";
 import { CopyButton } from "./copy-text";
 import { DiagramHeader } from "./diagram-header";
 import { drawStyles } from "./draw-styles";
@@ -43,6 +45,7 @@ export function RenderedCodeBlock({
   className,
   ...props
 }: RenderedCodeBlockProps): ReactElement {
+  const codeFontSize = useContext(CodeFontSizeContext);
   const normalizedLanguage = normalizeMarkdownCodeLanguage(language ?? "");
 
   const [highlightedTokens, setHighlightedTokens] = useState<
@@ -108,7 +111,11 @@ export function RenderedCodeBlock({
           />
         }
       />
-      <pre {...props} {...stylex.props(styles.body)}>
+      <pre
+        {...props}
+        {...stylex.props(styles.body)}
+        style={{ ...props.style, fontSize: codeFontSize }}
+      >
         {lineNumbers && (
           <span aria-hidden="true" {...stylex.props(styles.gutter)}>
             {Array.from({ length: lineCount }, (_, index) => index + 1).join(

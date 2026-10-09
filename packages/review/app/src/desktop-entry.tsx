@@ -81,6 +81,7 @@ function ReviewCanvas({
       <SettingsPage
         settings={content.settings}
         web={content.settings.web === true}
+        onGoHome={content.close}
       />
     );
   }
@@ -122,6 +123,7 @@ function Home({
       setupActions={content.setupActions}
       onboarding={content.onboarding}
       onOpenTutorial={content.openTutorial}
+      onOpenSettings={content.openSettings}
     />
   );
 }
@@ -215,12 +217,17 @@ export function mountReviewCanvas(
       applyTheme(content.bridge.currentTheme());
       themeSubscription = content.bridge.onDidChangeTheme(applyTheme);
     } else {
-      applyTheme(workbenchColorTheme(container));
+      const contentTheme =
+        content.kind === "home" || content.kind === "settings"
+          ? content.theme
+          : undefined;
+
+      applyTheme(contentTheme ?? workbenchColorTheme(container));
 
       const workbench =
         container.ownerDocument.querySelector(".monaco-workbench");
 
-      if (workbench) {
+      if (!contentTheme && workbench) {
         const observer = new MutationObserver(() => {
           applyTheme(workbenchColorTheme(container));
         });
@@ -230,7 +237,7 @@ export function mountReviewCanvas(
           attributeFilter: ["class"],
         });
         themeSubscription = { dispose: () => observer.disconnect() };
-      } else {
+      } else if (!contentTheme) {
         // The web canvas has no workbench root: follow the OS theme instead.
         const media = container.ownerDocument.defaultView?.matchMedia(
           "(prefers-color-scheme: dark)",
