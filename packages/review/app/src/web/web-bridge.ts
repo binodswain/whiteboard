@@ -1,6 +1,7 @@
 import { reviewFetchUrl } from "@canvas/host/review-client";
 import {
   REVIEW_DISCORD_URL,
+  type ReviewAccessTokens,
   type ReviewCanvasBridge,
   type ReviewDiffLayout,
   type ReviewRuntimeConfig,
@@ -26,6 +27,67 @@ const webSettingsSchema = z.object({
 });
 
 export type WebSettingsValues = z.infer<typeof webSettingsSchema>;
+
+const authSessionSchema = z.object({
+  authenticated: z.boolean(),
+  user: z.object({ via: z.string().optional() }).optional(),
+});
+
+const accessTokenSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
+  lastUsedAt: z.string().nullable(),
+});
+
+/** Personal API tokens exist on hosted deployments only; a session answer
+ * says whether this viewer manages them. Token-authenticated callers cannot
+ * mint further tokens. */
+function accessTokens(
+  request: (url: string, init?: RequestInit) => Promise<Response>,
+  serverUrl: string,
+  session: { authenticated: boolean; user?: { via?: string } },
+): ReviewAccessTokens | undefined {
+  if (!session.authenticated || session.user?.via === "api-token")
+    return undefined;
+
+  const url = `${serverUrl}/auth/tokens`;
+
+  return {
+    async list() {
+      const response = await request(url);
+
+      if (!response.ok)
+        throw new Error(`Could not list API tokens (${response.status}).`);
+
+      return z
+        .object({ tokens: z.array(accessTokenSchema) })
+        .parse(await response.json()).tokens;
+    },
+    async create(name) {
+      const response = await request(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+
+      if (!response.ok)
+        throw new Error(`Could not create an API token (${response.status}).`);
+
+      return accessTokenSchema
+        .extend({ token: z.string() })
+        .parse(await response.json());
+    },
+    async revoke(id) {
+      const response = await request(`${url}/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok)
+        throw new Error(`Could not revoke the API token (${response.status}).`);
+    },
+  };
+}
 
 export interface WebBridgeOptions {
   /** The review this bridge serves; empty while the canvas shows Home. */
@@ -59,6 +121,16 @@ export async function loadWebSettings(
     ((url: string, init?: RequestInit) => reviewFetchUrl(config, url, init));
 
   const url = `${config.serverUrl}/reviews-api/settings`;
+
+  // Hosted deployments sign the viewer in with a cookie; the endpoint only
+  // exists there, so a missing or unauthenticated answer means no tokens.
+  const session = await request(`${config.serverUrl}/auth/session`)
+    .then(async (response) =>
+      response.ok
+        ? authSessionSchema.parse(await response.json())
+        : { authenticated: false },
+    )
+    .catch(() => ({ authenticated: false }));
 
   const read = async () => {
     const response = await request(url);
@@ -122,6 +194,7 @@ export async function loadWebSettings(
     manageExtensions: () => {},
     importVsCodeSettings: () => {},
     web: true,
+    accessTokens: accessTokens(request, config.serverUrl, session),
   } satisfies ReviewCanvasSettingsContent;
 }
 

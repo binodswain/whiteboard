@@ -24,6 +24,9 @@ export function createHttpMcpApp(input: {
   api: Hono;
   scratchpad: () => boolean;
   stateless?: boolean;
+  /** Request headers the internal API client copies from the caller, so the
+   * review API sees the MCP caller's identity rather than an anonymous one. */
+  forwardHeaders?: string[];
 }) {
   const stateless = input.stateless ?? false;
   const app = new Hono();
@@ -37,7 +40,7 @@ export function createHttpMcpApp(input: {
     }
   >();
 
-  const createServer = () => {
+  const createServer = (callerHeaders?: Headers) => {
     const server = new Server(
       { name: "whiteboard", version: "1.0.0" },
       { capabilities: { tools: { listChanged: true } } },
@@ -54,8 +57,20 @@ export function createHttpMcpApp(input: {
         const route =
           url.replace("http://whiteboard.invalid/reviews-api", "") || "/";
 
+        const headers = new Headers(init?.headers);
+
+        if (callerHeaders)
+          for (const name of input.forwardHeaders ?? []) {
+            const value = callerHeaders.get(name);
+
+            if (value && !headers.has(name)) headers.set(name, value);
+          }
+
         return input.api.fetch(
-          new Request(`http://whiteboard.invalid${route}`, init),
+          new Request(`http://whiteboard.invalid${route}`, {
+            ...init,
+            headers,
+          }),
         );
       },
     );
@@ -156,7 +171,7 @@ export function createHttpMcpApp(input: {
           headers: { Allow: "POST, DELETE" },
         });
 
-      const server = createServer();
+      const server = createServer(context.req.raw.headers);
 
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -194,7 +209,7 @@ export function createHttpMcpApp(input: {
       );
 
     if (!session) {
-      const server = createServer();
+      const server = createServer(context.req.raw.headers);
       let transport!: WebStandardStreamableHTTPServerTransport;
       transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),

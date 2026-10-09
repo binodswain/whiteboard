@@ -49,4 +49,26 @@ export const POSTGRES_MIGRATIONS: {
       CREATE TABLE pinned_environments(id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE workspace_leases(review_id TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`,
   },
+  {
+    // The issue number keeps the version unique while sibling hosted-mode
+    // work adds its own migrations.
+    version: 43,
+    name: "auth",
+    sql: `
+      CREATE TABLE auth_users(
+        id TEXT PRIMARY KEY, login TEXT NOT NULL, name TEXT, avatar_url TEXT,
+        github_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE auth_sessions(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+      CREATE INDEX auth_sessions_user ON auth_sessions(user_id);
+      CREATE TABLE auth_api_tokens(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL, last_used_at TEXT);
+      CREATE TABLE auth_repo_access(
+        user_id TEXT NOT NULL REFERENCES auth_users(id), repo TEXT NOT NULL,
+        allowed INTEGER NOT NULL, checked_at TEXT NOT NULL,
+        PRIMARY KEY(user_id, repo));`,
+  },
 ];

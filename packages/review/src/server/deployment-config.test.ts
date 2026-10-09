@@ -26,6 +26,9 @@ describe("loadDeploymentConfig", () => {
         WHITEBOARD_REPO_SOURCE: "github",
         WHITEBOARD_JOBS: "queue",
         WHITEBOARD_AUTH: "oauth",
+        WHITEBOARD_AUTH_SECRET: "session-secret",
+        GITHUB_OAUTH_CLIENT_ID: "client-id",
+        GITHUB_OAUTH_CLIENT_SECRET: "client-secret",
       }),
     ).toMatchObject({ repoSource: "github", jobs: "queue", auth: "oauth" });
   });
@@ -39,6 +42,9 @@ describe("loadDeploymentConfig", () => {
       WHITEBOARD_S3_REGION: "auto",
       WHITEBOARD_S3_KEY: "access",
       WHITEBOARD_S3_SECRET: "private",
+      WHITEBOARD_AUTH_SECRET: "session-secret",
+      GITHUB_OAUTH_CLIENT_ID: "client-id",
+      GITHUB_OAUTH_CLIENT_SECRET: "client-secret",
     });
 
     expect(config).toMatchObject({

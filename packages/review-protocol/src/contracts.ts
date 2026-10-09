@@ -544,9 +544,29 @@ export interface ReviewDiffrConfigActions {
   testSummarizer(input: ReviewDiffrSummarizerInput): Promise<string>;
 }
 
+/** A personal API token as the viewer lists it — the value itself is only
+ * shown once, at creation. */
+export interface ReviewAccessToken {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** Personal API tokens for CLI/MCP access on a hosted deployment. Present
+ * only when the signed-in viewer can manage them. */
+export interface ReviewAccessTokens {
+  list(): Promise<ReviewAccessToken[]>;
+  /** The returned `token` is the only time it is readable. */
+  create(name: string): Promise<ReviewAccessToken & { token: string }>;
+  revoke(id: string): Promise<void>;
+}
+
 export interface ReviewCanvasSettingsContent {
   /** True when rendered by the authenticated headless web canvas. */
   web?: boolean;
+  /** Hosted deployments only: manage personal API tokens for CLI/MCP. */
+  accessTokens?: ReviewAccessTokens;
   // Backed by the `review.telemetry.enabled` workbench setting, which the
   // review server and the CLI both read.
   telemetryEnabled: boolean;
