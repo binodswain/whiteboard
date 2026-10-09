@@ -32,7 +32,7 @@ describe("Review Desktop tutorial preparation", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "review-tutorial-json-"));
     vi.stubEnv("DEV_REVIEW_HOME", home);
 
-    const local = openLocalReviewStore(path.join(home, "review-api.db"));
+    const local = await openLocalReviewStore(path.join(home, "review-api.db"));
 
     const original = await createTutorialService({
       packageRoot,
@@ -59,13 +59,13 @@ describe("Review Desktop tutorial preparation", () => {
         kind: "api",
         reviewUuid: original.reviewId,
       });
-      const snapshot = local.store.read(original.reviewId);
+      const snapshot = await local.store.read(original.reviewId);
       expect(snapshot.pins).toMatchObject({
         base: original.pins!.base,
         head: original.pins!.head,
       });
       expect(snapshot.origin?.tutorial).toBe(true);
-      expect(local.store.list()).toEqual([]);
+      expect(await local.store.list()).toEqual([]);
       const blocks = elements(snapshot.document);
       expect(
         blocks.filter((b) => b.type === "tutorial").map((b) => b.kind),
@@ -82,15 +82,15 @@ describe("Review Desktop tutorial preparation", () => {
       ).toBe(false);
       const repeated = await tutorialJson(server.url, "/tutorial/open", "POST");
       expect(repeated.reviewUuid).toBe(original.reviewId);
-      expect(local.store.read(original.reviewId)).toEqual(snapshot);
+      expect(await local.store.read(original.reviewId)).toEqual(snapshot);
       expect(
         (await tutorialRequest(server.url, "/tutorial", "DELETE")).status,
       ).toBe(200);
-      expect(local.store.has(original.reviewId)).toBe(false);
+      expect(await local.store.has(original.reviewId)).toBe(false);
       const fresh = await tutorialJson(server.url, "/tutorial/open", "POST");
       expect(fresh.kind).toBe("api");
       expect(fresh.reviewUuid).not.toBe(original.reviewId);
-      expect(local.store.list()).toEqual([]);
+      expect(await local.store.list()).toEqual([]);
     } finally {
       await server.close();
       await local.data.close();

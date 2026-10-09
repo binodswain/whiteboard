@@ -32,8 +32,8 @@ beforeEach(async () => {
     validateSource: async () => {},
     validateResource: async () => {},
   };
-  a = new ReviewStore(database, providers);
-  b = new ReviewStore(database, providers);
+  a = await ReviewStore.open(database, providers);
+  b = await ReviewStore.open(database, providers);
   ({ reviewId } = await a.execute(
     command({
       type: "create",
@@ -53,21 +53,25 @@ afterEach(async () => {
 it("credits each edit to the agent that made it, renewing only that agent, and never refuses a write", async () => {
   vi.useFakeTimers();
 
-  const begin = (description: string) =>
-    a.activity.update(reviewId, {
-      action: "begin",
-      focus: { description },
-    }).activityId!;
+  const begin = async (description: string) =>
+    (
+      await a.activity.update(reviewId, {
+        action: "begin",
+        focus: { description },
+      })
+    ).activityId!;
 
-  const first = begin("Writing the summary"),
-    second = begin("Grouping files");
+  const first = await begin("Writing the summary"),
+    second = await begin("Grouping files");
 
-  const present = () =>
-    b.activity.read(reviewId).activities?.map(({ activityId }) => activityId);
+  const present = async () =>
+    (await b.activity.read(reviewId)).activities?.map(
+      ({ activityId }) => activityId,
+    );
 
-  expect(b.activity.read(reviewId).activities?.map(({ slot }) => slot)).toEqual(
-    [0, 1],
-  );
+  expect(
+    (await b.activity.read(reviewId)).activities?.map(({ slot }) => slot),
+  ).toEqual([0, 1]);
 
   const insert = (markdown: string, activityId?: string) =>
     command({
@@ -79,17 +83,18 @@ it("credits each edit to the agent that made it, renewing only that agent, and n
 
   vi.advanceTimersByTime(ACTIVITY_TTL_MS / 2);
   await b.execute(insert("One", first));
-  expect(a.read(reviewId).lastEdit?.activityId).toBe(first);
+  expect((await a.read(reviewId)).lastEdit?.activityId).toBe(first);
   expect(
-    b.activity.read(reviewId).activities?.find((p) => p.activityId === first)
-      ?.surface,
+    (await b.activity.read(reviewId)).activities?.find(
+      (p) => p.activityId === first,
+    )?.surface,
   ).toBe("document");
 
   // Another agent's presence never blocks a write, named or not.
   await b.execute(command({ type: "rename", reviewId, title: "Anyone" }));
   await b.execute(insert("Two"));
   // With two agents present, an unnamed edit is no one's.
-  expect(a.read(reviewId).lastEdit?.activityId).toBeUndefined();
+  expect((await a.read(reviewId)).lastEdit?.activityId).toBeUndefined();
 
   // A rejected edit credits and renews nothing.
   await expect(
@@ -105,19 +110,19 @@ it("credits each edit to the agent that made it, renewing only that agent, and n
 
   // Only the accepted edit renewed its agent.
   vi.advanceTimersByTime(ACTIVITY_TTL_MS / 2);
-  expect(present()).toEqual([first]);
+  expect(await present()).toEqual([first]);
 
   // With one agent left, an unnamed edit is its.
   await b.execute(insert("Three"));
-  expect(a.read(reviewId).lastEdit?.activityId).toBe(first);
+  expect((await a.read(reviewId)).lastEdit?.activityId).toBe(first);
 
   // Once it expires, an edit naming it still applies, is no one's, and says so.
   vi.advanceTimersByTime(ACTIVITY_TTL_MS);
   expect((await b.execute(insert("Four", first))).warnings).toEqual([
     expect.any(String),
   ]);
-  expect(a.read(reviewId).lastEdit?.activityId).toBeUndefined();
-  expect(b.activity.read(reviewId).workingCount).toBe(0);
+  expect((await a.read(reviewId)).lastEdit?.activityId).toBeUndefined();
+  expect((await b.activity.read(reviewId)).workingCount).toBe(0);
 });
 
 it("rejects a stale one-off edit when another connection commits during validation", async () => {
@@ -150,7 +155,7 @@ it("rejects a stale one-off edit when another connection commits during validati
   );
   release.resolve();
   expect(await rejected).toMatchObject({ status: 409 });
-  expect(a.read(reviewId)).toMatchObject({
+  expect(await a.read(reviewId)).toMatchObject({
     title: "Committed first",
     version: 1,
     document: [],

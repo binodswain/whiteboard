@@ -37,7 +37,7 @@ it.each([false, true])(
       return git("rev-parse", "HEAD");
     };
 
-    const local = openLocalReviewStore(path.join(root, "reviews.db"));
+    const local = await openLocalReviewStore(path.join(root, "reviews.db"));
 
     try {
       git("init", "-q", "-b", "main");

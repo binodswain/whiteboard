@@ -1,9 +1,8 @@
-import { DatabaseSync } from "node:sqlite";
-
 import { AskThreads } from "@review/ask/threads.js";
 import { AskHistory, type AskRecord } from "@review/review-api/ask-history.js";
 import { createReviewApi } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
+import { createMetadataStore } from "@review/review-api/storage/metadata-store.js";
 import { ReviewStore } from "@review/review-api/store.js";
 import { afterEach, beforeEach, expect, it } from "vitest";
 
@@ -13,8 +12,8 @@ const command = <Operation>(operation: Operation) => ({ operation });
 
 let store: ReviewStore;
 
-beforeEach(() => {
-  store = new ReviewStore(":memory:", {
+beforeEach(async () => {
+  store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -58,57 +57,63 @@ it("keeps each review's conversations, newest first, until the review is deleted
 
   const history = store.askHistory;
 
-  history.save(record(reviewId, "older", "2026-09-01T10:00:00.000Z"));
-  history.save(record(reviewId, "newer", "2026-09-01T11:00:00.000Z"));
-  history.save(record("shared-review", "shared", "2026-09-01T12:00:00.000Z"));
+  await history.save(record(reviewId, "older", "2026-09-01T10:00:00.000Z"));
+  await history.save(record(reviewId, "newer", "2026-09-01T11:00:00.000Z"));
+  await history.save(
+    record("shared-review", "shared", "2026-09-01T12:00:00.000Z"),
+  );
 
-  expect(history.list(reviewId).map(({ id }) => id)).toEqual([
+  expect((await history.list(reviewId)).map(({ id }) => id)).toEqual([
     "newer",
     "older",
   ]);
   // The list is what the panel shows; the session stays on the server.
-  expect(history.list(reviewId)[0]).not.toHaveProperty("sessionId");
+  expect((await history.list(reviewId))[0]).not.toHaveProperty("sessionId");
 
-  history.touch("older", "2026-09-01T12:30:00.000Z");
-  expect(history.list(reviewId).map(({ id }) => id)).toEqual([
+  await history.touch("older", "2026-09-01T12:30:00.000Z");
+  expect((await history.list(reviewId)).map(({ id }) => id)).toEqual([
     "older",
     "newer",
   ]);
-  expect(history.get("older")).toEqual(
+  expect(await history.get("older")).toEqual(
     record(reviewId, "older", "2026-09-01T12:30:00.000Z"),
   );
 
-  history.delete("newer");
-  expect(history.get("newer")).toBeUndefined();
+  await history.delete("newer");
+  expect(await history.get("newer")).toBeUndefined();
 
   await store.execute(command({ type: "delete", reviewId }));
-  expect(history.list(reviewId)).toEqual([]);
-  expect(history.list("shared-review").map(({ id }) => id)).toEqual(["shared"]);
+  expect(await history.list(reviewId)).toEqual([]);
+  expect((await history.list("shared-review")).map(({ id }) => id)).toEqual([
+    "shared",
+  ]);
 });
 
-it("keeps what the panel showed, and what each agent offered", () => {
-  const db = new DatabaseSync(":memory:");
+it("keeps what the panel showed, and what each agent offered", async () => {
+  const meta = await createMetadataStore({ kind: "sqlite", dir: ":memory:" });
 
   try {
-    const history = new AskHistory(db);
+    const history = new AskHistory(meta);
     const saved = record("review", "thread", "2026-09-01T10:00:00.000Z");
 
-    history.save(saved);
+    await history.save(saved);
 
     const entries = [
       { kind: "user" as const, id: "q", text: "Is this safe?", at: 1 },
       { kind: "agent" as const, id: "a", text: "It does." },
     ];
 
-    history.saveEntries("thread", entries);
-    expect(history.get("thread")).toEqual({ ...saved, entries });
-    expect(history.list("review")[0]).not.toHaveProperty("entries");
-    history.rename("thread", "Generic agent title");
-    expect(history.list("review")[0]).toMatchObject({
+    await history.saveEntries("thread", entries);
+    expect(await history.get("thread")).toEqual({ ...saved, entries });
+    expect((await history.list("review"))[0]).not.toHaveProperty("entries");
+    await history.rename("thread", "Generic agent title");
+    expect((await history.list("review"))[0]).toMatchObject({
       title: "Generic agent title",
       question: "Is this safe?",
     });
-    expect(new AskHistory(db).get("thread")?.entries).toEqual(entries);
+    expect((await new AskHistory(meta).get("thread"))?.entries).toEqual(
+      entries,
+    );
 
     // What an agent offered last, for picking before it starts.
     const offer = {
@@ -123,9 +128,9 @@ it("keeps what the panel showed, and what each agent offered", () => {
       accepts: { image: true },
     };
 
-    expect(history.offer("claude")).toBeUndefined();
-    history.saveOffer("claude", offer);
-    expect(new AskHistory(db).offer("claude")).toEqual(offer);
+    expect(await history.offer("claude")).toBeUndefined();
+    await history.saveOffer("claude", offer);
+    expect(await new AskHistory(meta).offer("claude")).toEqual(offer);
 
     // And last with each model: the efforts on offer depend on it.
     const haiku = {
@@ -140,25 +145,25 @@ it("keeps what the panel showed, and what each agent offered", () => {
       },
     };
 
-    expect(history.offer("claude", "default")).toEqual(offer);
-    expect(history.offer("claude", "haiku")).toBeUndefined();
-    history.saveModelOffer("claude", haiku);
-    expect(history.offer("claude", "haiku")).toEqual(haiku);
-    expect(history.offer("claude")).toEqual(offer);
+    expect(await history.offer("claude", "default")).toEqual(offer);
+    expect(await history.offer("claude", "haiku")).toBeUndefined();
+    await history.saveModelOffer("claude", haiku);
+    expect(await history.offer("claude", "haiku")).toEqual(haiku);
+    expect(await history.offer("claude")).toEqual(offer);
   } finally {
-    db.close();
+    await meta.close();
   }
 });
 
-it("reopens a conversation in the new session that replaced one its agent lost, with what it showed", () => {
+it("reopens a conversation in the new session that replaced one its agent lost, with what it showed", async () => {
   const history = store.askHistory;
   const entries = [{ kind: "user" as const, id: "asked", text: "Is it?" }];
 
-  history.save(record("review", "lost", "2026-09-01T10:00:00.000Z"));
-  history.saveEntries("lost", entries);
-  history.updateSession("lost", "session-new");
+  await history.save(record("review", "lost", "2026-09-01T10:00:00.000Z"));
+  await history.saveEntries("lost", entries);
+  await history.updateSession("lost", "session-new");
 
-  expect(history.get("lost")).toMatchObject({
+  expect(await history.get("lost")).toMatchObject({
     sessionId: "session-new",
     entries,
   });
@@ -178,8 +183,10 @@ it("serves a saved conversation without its agent or its checkout", async () => 
     { kind: "agent" as const, id: "a", text: "It does." },
   ];
 
-  store.askHistory.save(record(reviewId, "thread", "2026-09-01T10:00:00.000Z"));
-  store.askHistory.saveEntries("thread", entries);
+  await store.askHistory.save(
+    record(reviewId, "thread", "2026-09-01T10:00:00.000Z"),
+  );
+  await store.askHistory.saveEntries("thread", entries);
 
   const api = createReviewApi(
     store,

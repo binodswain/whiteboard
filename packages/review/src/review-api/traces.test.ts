@@ -12,7 +12,7 @@ import { openLocalReviewStore } from "./local-data.js";
 
 let root: string;
 
-let local: ReturnType<typeof openLocalReviewStore>;
+let local: Awaited<ReturnType<typeof openLocalReviewStore>>;
 
 let api: ReturnType<typeof createReviewApi>;
 
@@ -72,7 +72,7 @@ beforeEach(async () => {
       .join("\n"),
   );
   clearTraceEnvCache();
-  local = openLocalReviewStore(path.join(root, "review.db"));
+  local = await openLocalReviewStore(path.join(root, "review.db"));
   const repo = await local.data.register(root);
   const pins = await local.data.resolvePins(repo.id, "HEAD^", "HEAD");
 
@@ -111,7 +111,7 @@ it("finds a pinned commit's stored session and reads its events without embedded
     ok: true,
     events: [{ kind: "user", text: "Recover my stored trace" }],
   });
-  expect(local.store.read(id).document).toEqual([]);
+  expect((await local.store.read(id)).document).toEqual([]);
 });
 
 it("rejects invalid source overrides and missing reviews", async () => {

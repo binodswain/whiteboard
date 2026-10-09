@@ -91,7 +91,7 @@ console.log(JSON.stringify({type:'complete',succeeded:1,failed:0}));
     );
     vi.spyOn(diffr, "diffrBinaryPath").mockReturnValue(executable);
     vi.stubEnv("XDG_CONFIG_HOME", path.join(root, "config"));
-    const local = openLocalReviewStore(path.join(root, "reviews.db"));
+    const local = await openLocalReviewStore(path.join(root, "reviews.db"));
 
     try {
       const repository = await local.data.register(workspace);
@@ -115,7 +115,7 @@ console.log(JSON.stringify({type:'complete',succeeded:1,failed:0}));
       for (const commit of [undefined, head]) {
         const query = new URLSearchParams({
           file: "file name.ts",
-          version: String(local.store.read(reviewId).version),
+          version: String((await local.store.read(reviewId)).version),
         });
 
         if (commit) query.set("commit", commit);

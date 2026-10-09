@@ -110,8 +110,8 @@ it("carries several threads on one stream, taking turns", async () => {
 
   first.append("One.");
   second.append("Two.");
-  first.close();
-  second.close();
+  await first.close();
+  await second.close();
 
   expect(await all(response)).toEqual([
     { threadId: "first", update: { seq: 0, snapshot: state } },
@@ -159,7 +159,7 @@ it("ends a thread once it closes, after what it already sent", async () => {
   const response = watchAskThreads(new Map([["a", source]]));
 
   source.append("Stopped.");
-  source.close();
+  await source.close();
   // A change after closing is not the thread's any more.
   source.append("Late.");
 

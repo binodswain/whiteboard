@@ -15,7 +15,9 @@ import type {
  */
 export function reviewLifecycleTelemetry(
   telemetry: Pick<ReviewTelemetry, "captureEvent">,
-  firstCreatedAt: (reviewId: string) => string | undefined,
+  firstCreatedAt: (
+    reviewId: string,
+  ) => string | undefined | Promise<string | undefined>,
   onLoggedIn: () => Promise<void>,
   now: () => number = Date.now,
 ): ReviewApiHooks {
@@ -51,16 +53,25 @@ export function reviewLifecycleTelemetry(
         if (!authoring.has(reviewId)) return;
         const agentKind = authoring.get(reviewId);
         authoring.delete(reviewId);
-        const createdAt = Date.parse(firstCreatedAt(reviewId) ?? "");
+        const publishedAt = now();
 
-        if (Number.isNaN(createdAt)) return;
+        const emit = (firstCreated: string | undefined) => {
+          const createdAt = Date.parse(firstCreated ?? "");
 
-        const properties: PostHogCaptureProperties = {
-          duration_ms: Math.max(0, now() - createdAt),
+          if (Number.isNaN(createdAt)) return;
+
+          const properties: PostHogCaptureProperties = {
+            duration_ms: Math.max(0, publishedAt - createdAt),
+          };
+
+          if (agentKind) properties.agent_kind = agentKind;
+          capture("review_authoring_completed", properties, reviewId);
         };
 
-        if (agentKind) properties.agent_kind = agentKind;
-        capture("review_authoring_completed", properties, reviewId);
+        const first = firstCreatedAt(reviewId);
+
+        if (first instanceof Promise) void first.then(emit);
+        else emit(first);
       },
       onRevoked: () => capture("review_review_revoked"),
       onLogin: (outcome, reason) => {

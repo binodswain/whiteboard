@@ -50,8 +50,12 @@ export function jsonReviewBugReportSource(
 
       return ids.length
         ? JSON.stringify(
-            ids.map((id) =>
-              JSON.parse(Buffer.from(store.resource(id).data).toString()),
+            await Promise.all(
+              ids.map(async (id) =>
+                JSON.parse(
+                  Buffer.from((await store.resource(id)).data).toString(),
+                ),
+              ),
             ),
           )
         : null;
@@ -60,7 +64,7 @@ export function jsonReviewBugReportSource(
       if (!snapshot.pins) return { files: [] };
 
       return resolveReviewDiffFiles({
-        rootPath: store.repositoryPath(snapshot.pins.repositoryId),
+        rootPath: await store.repositoryPath(snapshot.pins.repositoryId),
         baseRef: snapshot.pins.base,
         headRef: snapshot.pins.head,
         includePatch: true,
@@ -101,7 +105,7 @@ export function createJsonReviewReporting(
       if (!shared)
         throw new ReviewInputError("Shared review is not available.", 404);
       shared.get(id);
-    } else store.assertExists(id);
+    } else await store.assertExists(id);
     await next();
   });
   app.post("/:id/telemetry/event", async (c) => {
@@ -144,7 +148,9 @@ export function createJsonReviewReporting(
 
     const id = context.req.param("id");
     const imported = id.startsWith("shared-") ? shared?.get(id) : undefined;
-    const snapshot = imported?.snapshot ?? store.read(id, query.version);
+
+    const snapshot =
+      imported?.snapshot ?? (await store.read(id, query.version));
 
     const report = parseReviewBugReportInput(
       await readBoundedRequestJson(context.req.raw, 6 * 1024 * 1024, {}),

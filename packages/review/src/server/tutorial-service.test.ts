@@ -30,7 +30,7 @@ async function setup() {
     recursive: true,
     filter: (source) => !source.includes("/.bundle"),
   });
-  const local = openLocalReviewStore(path.join(home, "reviews.db"));
+  const local = await openLocalReviewStore(path.join(home, "reviews.db"));
   cleanups.push(async () => {
     await local.data.close();
     await local.store.close();
@@ -49,7 +49,7 @@ it("opens all shipped native evidence with retained maps and trace, without a le
   const { service, store, data, home } = await setup();
   const snapshot = await service.prepare();
   expect(await service.prepare()).toEqual(snapshot);
-  expect(store.list()).toEqual([]);
+  expect(await store.list()).toEqual([]);
 
   for (const { source } of sourceReferences(snapshot.document))
     expect(
@@ -78,7 +78,7 @@ it("refreshes changed native content even when source pins do not change", async
   expect(next.reviewId).not.toBe(old.reviewId);
   expect(next.pins).toEqual(old.pins);
   expect(next.document.at(-1)).toMatchObject({ markdown: "An updated tour." });
-  expect(store.has(old.reviewId)).toBe(false);
+  expect(await store.has(old.reviewId)).toBe(false);
 });
 
 it("repairs missing source repositories and recreates a deleted native tutorial", async () => {
@@ -88,9 +88,9 @@ it("repairs missing source repositories and recreates a deleted native tutorial"
   expect((await service.status()).reviewUuid).toBeNull();
   const repaired = await service.prepare();
   expect(repaired.reviewId).not.toBe(first.reviewId);
-  expect(store.has(first.reviewId)).toBe(false);
+  expect(await store.has(first.reviewId)).toBe(false);
   await service.cleanup();
-  expect(store.has(repaired.reviewId)).toBe(false);
+  expect(await store.has(repaired.reviewId)).toBe(false);
   const fresh = await service.prepare();
   expect(fresh.reviewId).not.toBe(repaired.reviewId);
 });
@@ -108,7 +108,7 @@ it.each(["old", "corrupt"])(
     );
     const next = await service.prepare();
     expect(next.reviewId).not.toBe(old.reviewId);
-    expect(store.has(old.reviewId)).toBe(false);
+    expect(await store.has(old.reviewId)).toBe(false);
   },
 );
 
@@ -130,5 +130,5 @@ it("rejects invalid shipped source references before saving a document", async (
     "File is unavailable at the pinned commit.",
   );
   expect((await service.status()).reviewUuid).toBeNull();
-  expect(store.tutorialIds()).toEqual([]);
+  expect(await store.tutorialIds()).toEqual([]);
 });

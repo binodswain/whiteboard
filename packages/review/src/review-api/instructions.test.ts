@@ -148,13 +148,13 @@ describe("tool descriptions", () => {
 describe("review_get_instructions", () => {
   const stores: ReviewStore[] = [];
 
-  afterEach(() => {
-    for (const store of stores) store.close();
+  afterEach(async () => {
+    for (const store of stores) await store.close();
     stores.length = 0;
   });
 
-  const api = (desktopAvailable = false, scratchpadEnabled = false) => {
-    const store = new ReviewStore(":memory:", {
+  const api = async (desktopAvailable = false, scratchpadEnabled = false) => {
+    const store = await ReviewStore.open(":memory:", {
       validatePins: async () => {},
       validateSource: async () => {},
       validateResource: async () => {},
@@ -197,7 +197,7 @@ describe("review_get_instructions", () => {
       [false, true, false],
       [true, false, false],
     ] as const) {
-      const { client } = api(desktopAvailable, scratchpadEnabled);
+      const { client } = await api(desktopAvailable, scratchpadEnabled);
 
       const catalog =
         await client.read<ReturnType<typeof authoringTools>>("/authoring");
@@ -212,7 +212,7 @@ describe("review_get_instructions", () => {
   });
 
   it("serves the workflow and rejects invalid or extra query fields with 400", async () => {
-    const { app, client } = api();
+    const { app, client } = await api();
 
     const catalog = await client.read<AuthoringTool[]>("/authoring");
 
@@ -245,7 +245,7 @@ describe("review_get_instructions", () => {
   });
 
   it("prints CLI guidance as raw text and reports offline recovery on stderr", async () => {
-    const { client } = api();
+    const { client } = await api();
     const connection = vi.spyOn(agentClient, "connectReviewInstance");
     let stdout = "";
     let stderr = "";
@@ -291,7 +291,7 @@ describe("review_get_instructions", () => {
   });
 
   it("lists tools and serves instructions without querying renderer capabilities", async () => {
-    const store = new ReviewStore(":memory:", {
+    const store = await ReviewStore.open(":memory:", {
       validatePins: async () => {},
       validateSource: async () => {},
       validateResource: async () => {},
@@ -326,12 +326,12 @@ describe("review_get_instructions", () => {
         await (await app.request("/instructions?topic=scratchpad")).json(),
       ).toContain("# Scratchpad");
     } finally {
-      store.close();
+      await store.close();
     }
   });
 
   it("reads the trace gate on every request", async () => {
-    const store = new ReviewStore(":memory:", {
+    const store = await ReviewStore.open(":memory:", {
       validatePins: async () => {},
       validateSource: async () => {},
       validateResource: async () => {},
@@ -364,7 +364,7 @@ describe("review_get_instructions", () => {
         ).description,
       ).toContain('topic:"trace-archaeology"');
     } finally {
-      store.close();
+      await store.close();
     }
   });
 });
@@ -425,7 +425,7 @@ describe("whiteboard mcp instructions", () => {
     let up = false;
     let connections = 0;
 
-    const store = new ReviewStore(":memory:", {
+    const store = await ReviewStore.open(":memory:", {
       validatePins: async () => {},
       validateSource: async () => {},
       validateResource: async () => {},
@@ -512,14 +512,14 @@ describe("whiteboard mcp instructions", () => {
       expect(restarted.result.content[0].text).toContain("trace");
     } finally {
       await mcp.close();
-      store.close();
+      await store.close();
     }
   });
 
   it("tells a session that listed tools while down to reload them", async () => {
     let up = false;
 
-    const store = new ReviewStore(":memory:", {
+    const store = await ReviewStore.open(":memory:", {
       validatePins: async () => {},
       validateSource: async () => {},
       validateResource: async () => {},
@@ -565,12 +565,12 @@ describe("whiteboard mcp instructions", () => {
       expect(await instructions(5)).not.toMatch(/^Whiteboard is running now/);
     } finally {
       await mcp.close();
-      store.close();
+      await store.close();
     }
   });
 
   it("uses the live scratchpad catalog description and preserves tool errors", async () => {
-    const store = new ReviewStore(":memory:", {
+    const store = await ReviewStore.open(":memory:", {
       validatePins: async () => {},
       validateSource: async () => {},
       validateResource: async () => {},
@@ -631,7 +631,7 @@ describe("whiteboard mcp instructions", () => {
       expect(failed.result.content[0].text).toBe("server failed");
     } finally {
       await mcp.close();
-      store.close();
+      await store.close();
     }
   });
 });

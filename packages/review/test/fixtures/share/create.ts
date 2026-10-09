@@ -45,7 +45,7 @@ export async function createShareFixture(root: string) {
 
   const sourceFile = "answer.ts";
   const sourceText = "return 42;";
-  const local = openLocalReviewStore(path.join(root, "sender.db"));
+  const local = await openLocalReviewStore(path.join(root, "sender.db"));
   const registered = await local.data.register(repo);
   const pins = { repositoryId: registered.id, base, head };
 

@@ -24,7 +24,7 @@ it("commits and uploads through a real headless server and CLI without Desktop, 
   const root = await mkdtemp(path.join(tmpdir(), "review-headless-sharing-"));
   const fixture = await createShareFixture(root);
   const stateDir = path.join(root, "server");
-  const pins = fixture.store.read(fixture.reviewId).pins;
+  const pins = (await fixture.store.read(fixture.reviewId)).pins;
 
   vi.spyOn(repository, "readShareRepository").mockResolvedValue(
     fixture.repository,

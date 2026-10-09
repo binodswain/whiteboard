@@ -25,7 +25,10 @@ it.each([
     const devHome = path.join(root, "review");
     vi.stubEnv("DEV_REVIEW_HOME", devHome);
     await mkdir(devHome, { recursive: true });
-    const local = openLocalReviewStore(path.join(devHome, "review-api.db"));
+
+    const local = await openLocalReviewStore(
+      path.join(devHome, "review-api.db"),
+    );
 
     const server = createGlobalReviewServer({
       reviewStore: local.store,

@@ -17,7 +17,7 @@ const temporaryRoot = await mkdtemp(
   path.join(os.tmpdir(), "native-tutorial-check-"),
 );
 
-const local = openLocalReviewStore(path.join(temporaryRoot, "review.db"));
+const local = await openLocalReviewStore(path.join(temporaryRoot, "review.db"));
 
 try {
   checkSampleTypeScript(path.join(tutorialRoot, "sample-service"));

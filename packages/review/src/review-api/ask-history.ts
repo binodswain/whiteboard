@@ -1,5 +1,3 @@
-import type { DatabaseSync } from "node:sqlite";
-
 import {
   type AskAgentId,
   type AskEntry,
@@ -10,6 +8,8 @@ import {
   askOfferSchema,
 } from "@review/ask/thread-state.js";
 import { z } from "zod";
+
+import type { MetadataStore } from "./storage/metadata-store.js";
 
 /** A saved Ask conversation: its history entry, and how to reopen it. */
 export const askRecordSchema = askHistoryEntrySchema.extend({
@@ -64,179 +64,157 @@ const rowSchema = z
 /** Saved Ask conversations, per review. Shared reviews are not in
  * `reviews`, so there is no foreign key; deleting a review deletes its rows. */
 export class AskHistory {
-  constructor(private readonly db: DatabaseSync) {
-    db.exec(`CREATE TABLE IF NOT EXISTS ask_conversations(
-      id TEXT PRIMARY KEY,
-      review_id TEXT NOT NULL,
-      agent TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      head TEXT NOT NULL,
-      cwd TEXT NOT NULL,
-      selection TEXT NOT NULL,
-      title TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      entries TEXT,
-      bypass INTEGER NOT NULL DEFAULT 0,
-      UNIQUE(agent, session_id));
-    CREATE INDEX IF NOT EXISTS ask_conversations_review ON ask_conversations(review_id, updated_at);`);
+  constructor(private readonly meta: MetadataStore) {}
 
-    // Conversations saved before bypassing permissions lack the column.
-    if (
-      !db
-        .prepare("PRAGMA table_info(ask_conversations)")
-        .all()
-        .some((column) => String(column.name) === "bypass")
-    )
-      db.exec(
-        "ALTER TABLE ask_conversations ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0",
-      );
-
-    // What each agent offered last, so a new question can pick a model and
-    // effort, and a command, before its agent starts.
-    db.exec(
-      "CREATE TABLE IF NOT EXISTS ask_agent_offers(agent TEXT PRIMARY KEY, offer TEXT NOT NULL)",
+  async save(record: AskRecord) {
+    await this.meta.run(
+      `INSERT INTO ask_conversations(id,review_id,agent,session_id,version,head,cwd,selection,title,created_at,updated_at,bypass)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET review_id=excluded.review_id,agent=excluded.agent,session_id=excluded.session_id,
+        version=excluded.version,head=excluded.head,cwd=excluded.cwd,selection=excluded.selection,title=excluded.title,
+        created_at=excluded.created_at,updated_at=excluded.updated_at,bypass=excluded.bypass`,
+      record.id,
+      record.reviewId,
+      record.agent,
+      record.sessionId,
+      record.version,
+      record.head,
+      record.cwd,
+      JSON.stringify(record.selection),
+      record.title,
+      record.createdAt,
+      record.updatedAt,
+      record.bypass ? 1 : 0,
     );
-    // And with each model it ran, since the efforts on offer depend on it.
-    db.exec(
-      "CREATE TABLE IF NOT EXISTS ask_agent_model_offers(agent TEXT NOT NULL, model TEXT NOT NULL, offer TEXT NOT NULL, PRIMARY KEY(agent, model))",
-    );
-  }
-
-  save(record: AskRecord) {
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO ask_conversations(id,review_id,agent,session_id,version,head,cwd,selection,title,created_at,updated_at,bypass)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        record.id,
-        record.reviewId,
-        record.agent,
-        record.sessionId,
-        record.version,
-        record.head,
-        record.cwd,
-        JSON.stringify(record.selection),
-        record.title,
-        record.createdAt,
-        record.updatedAt,
-        record.bypass ? 1 : 0,
-      );
   }
 
   /** Whether reopening the conversation bypasses permissions. */
-  setBypass(id: string, bypass: boolean) {
-    this.db
-      .prepare("UPDATE ask_conversations SET bypass=? WHERE id=?")
-      .run(bypass ? 1 : 0, id);
+  async setBypass(id: string, bypass: boolean) {
+    await this.meta.run(
+      "UPDATE ask_conversations SET bypass=? WHERE id=?",
+      bypass ? 1 : 0,
+      id,
+    );
   }
 
   /** Points a conversation at a new session, when its agent could not
    * reopen the one it had. */
-  updateSession(id: string, sessionId: string) {
-    this.db
-      .prepare("UPDATE ask_conversations SET session_id=? WHERE id=?")
-      .run(sessionId, id);
+  async updateSession(id: string, sessionId: string) {
+    await this.meta.run(
+      "UPDATE ask_conversations SET session_id=? WHERE id=?",
+      sessionId,
+      id,
+    );
   }
 
   /** Keeps what the panel shows, so a reopen need not wait on the agent. */
-  saveEntries(id: string, entries: AskEntry[]) {
-    this.db
-      .prepare("UPDATE ask_conversations SET entries=? WHERE id=?")
-      .run(JSON.stringify(entries), id);
+  async saveEntries(id: string, entries: AskEntry[]) {
+    await this.meta.run(
+      "UPDATE ask_conversations SET entries=? WHERE id=?",
+      JSON.stringify(entries),
+      id,
+    );
   }
 
   /** The agent's name for the conversation, which the list shows. */
-  rename(id: string, title: string) {
-    this.db
-      .prepare("UPDATE ask_conversations SET title=? WHERE id=?")
-      .run(title.slice(0, 200), id);
+  async rename(id: string, title: string) {
+    await this.meta.run(
+      "UPDATE ask_conversations SET title=? WHERE id=?",
+      title.slice(0, 200),
+      id,
+    );
   }
 
-  saveOffer(agent: AskAgentId, offer: AskOffer) {
-    this.db
-      .prepare(
-        "INSERT OR REPLACE INTO ask_agent_offers(agent, offer) VALUES(?, ?)",
-      )
-      .run(agent, JSON.stringify(offer));
-    this.saveModelOffer(agent, offer);
+  async saveOffer(agent: AskAgentId, offer: AskOffer) {
+    await this.meta.run(
+      "INSERT INTO ask_agent_offers(agent, offer) VALUES(?, ?) ON CONFLICT(agent) DO UPDATE SET offer=excluded.offer",
+      agent,
+      JSON.stringify(offer),
+    );
+    await this.saveModelOffer(agent, offer);
   }
 
   /** Keeps what the agent offers with the offer's model, without making
    * it what the agent offered last. */
-  saveModelOffer(agent: AskAgentId, offer: AskOffer) {
+  async saveModelOffer(agent: AskAgentId, offer: AskOffer) {
     const model = offer.choices.model?.current;
 
     if (!model) return;
-    this.db
-      .prepare(
-        "INSERT OR REPLACE INTO ask_agent_model_offers(agent, model, offer) VALUES(?, ?, ?)",
-      )
-      .run(agent, model, JSON.stringify(offer));
+    await this.meta.run(
+      "INSERT INTO ask_agent_model_offers(agent, model, offer) VALUES(?, ?, ?) ON CONFLICT(agent,model) DO UPDATE SET offer=excluded.offer",
+      agent,
+      model,
+      JSON.stringify(offer),
+    );
   }
 
   /** What the agent offered last, or last with the model given. */
-  offer(agent: AskAgentId, model?: string): AskOffer | undefined {
+  async offer(
+    agent: AskAgentId,
+    model?: string,
+  ): Promise<AskOffer | undefined> {
     const row = z
       .object({ offer: z.string() })
       .safeParse(
         model === undefined
-          ? this.db
-              .prepare("SELECT offer FROM ask_agent_offers WHERE agent=?")
-              .get(agent)
-          : this.db
-              .prepare(
-                "SELECT offer FROM ask_agent_model_offers WHERE agent=? AND model=?",
-              )
-              .get(agent, model),
+          ? await this.meta.get(
+              "SELECT offer FROM ask_agent_offers WHERE agent=?",
+              agent,
+            )
+          : await this.meta.get(
+              "SELECT offer FROM ask_agent_model_offers WHERE agent=? AND model=?",
+              agent,
+              model,
+            ),
       ).data;
 
     return row && askOfferSchema.safeParse(JSON.parse(row.offer)).data;
   }
 
-  touch(id: string, at = new Date().toISOString()) {
-    this.db
-      .prepare("UPDATE ask_conversations SET updated_at=? WHERE id=?")
-      .run(at, id);
+  async touch(id: string, at = new Date().toISOString()) {
+    await this.meta.run(
+      "UPDATE ask_conversations SET updated_at=? WHERE id=?",
+      at,
+      id,
+    );
   }
 
   /** Newest first. */
-  list(reviewId: string): AskHistoryEntry[] {
-    return this.db
-      .prepare(
-        "SELECT * FROM ask_conversations WHERE review_id=? ORDER BY updated_at DESC",
-      )
-      .all(reviewId)
-      .map((row) => {
-        const {
-          reviewId: _reviewId,
-          sessionId: _sessionId,
-          version: _version,
-          cwd: _cwd,
-          entries,
-          bypass: _bypass,
-          ...entry
-        } = rowSchema.parse(row);
+  async list(reviewId: string): Promise<AskHistoryEntry[]> {
+    const rows = await this.meta.all(
+      "SELECT * FROM ask_conversations WHERE review_id=? ORDER BY updated_at DESC",
+      reviewId,
+    );
 
-        const question = entries?.find((entry) => entry.kind === "user")?.text;
+    return rows.map((row) => {
+      const {
+        reviewId: _reviewId,
+        sessionId: _sessionId,
+        version: _version,
+        cwd: _cwd,
+        entries,
+        bypass: _bypass,
+        ...entry
+      } = rowSchema.parse(row);
 
-        if (question?.trim()) entry.question = question;
+      const question = entries?.find((entry) => entry.kind === "user")?.text;
 
-        return entry;
-      });
+      if (question?.trim()) entry.question = question;
+
+      return entry;
+    });
   }
 
-  get(id: string): AskRecord | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM ask_conversations WHERE id=?")
-      .get(id);
+  async get(id: string): Promise<AskRecord | undefined> {
+    const row = await this.meta.get(
+      "SELECT * FROM ask_conversations WHERE id=?",
+      id,
+    );
 
     return row ? rowSchema.parse(row) : undefined;
   }
 
-  delete(id: string) {
-    this.db.prepare("DELETE FROM ask_conversations WHERE id=?").run(id);
+  async delete(id: string) {
+    await this.meta.run("DELETE FROM ask_conversations WHERE id=?", id);
   }
 }

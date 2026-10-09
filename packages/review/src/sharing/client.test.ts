@@ -23,7 +23,7 @@ it("uploads concurrently, retries without overwriting stored bytes, and keeps ac
   const fixture = await createShareFixture(root);
   cleanup.push(async () => {
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
   });
 
   const bundle = await exportShare(fixture),
@@ -208,7 +208,7 @@ it.each([409, 503])(
     const fixture = await createShareFixture(root);
     cleanup.push(async () => {
       await fixture.data.close();
-      fixture.store.close();
+      await fixture.store.close();
     });
     const bundle = await exportShare(fixture);
     const shareId = randomUUID();
@@ -261,7 +261,7 @@ it("bounds concurrent downloads and still rejects corrupt objects", async () => 
   const fixture = await createShareFixture(root);
   cleanup.push(async () => {
     await fixture.data.close();
-    fixture.store.close();
+    await fixture.store.close();
   });
   const bundle = await exportShare(fixture);
   let release!: () => void;

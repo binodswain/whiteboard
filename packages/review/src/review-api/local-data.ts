@@ -81,6 +81,10 @@ import {
   readPullRequest,
 } from "./pull-request.js";
 import {
+  type MetadataStore,
+  isMetadataStore,
+} from "./storage/metadata-store.js";
+import {
   type ResolvedPullRequest,
   ReviewStore,
   type Snapshot,
@@ -154,6 +158,16 @@ interface RepositoryVcs {
   vcs?: LocalVcs;
 }
 
+export interface LocalReviewDataOptions {
+  blobReaderIdleTimeoutMs?: number;
+  /** A SQLite sidecar path, ":memory:", or a shared metadata backend. */
+  workspaceDatabase?: string | MetadataStore;
+  manageWorkspaces?: boolean;
+  watch?: typeof watch;
+  /** gh, git and GitHub API access for pull request targets. */
+  pullRequests?: PullRequestDeps;
+}
+
 /** Local source/resource boundary, including Desktop-only local language context. */
 export class LocalReviewData {
   private readonly workspaceManager?: ReviewWorkspaces;
@@ -168,22 +182,24 @@ export class LocalReviewData {
     return this.workspaceManager;
   }
 
-  currentEnvironmentIssues(snapshot: Snapshot) {
+  async currentEnvironmentIssues(snapshot: Snapshot) {
     if (snapshot.target?.kind !== "commits" || !snapshot.pins) return [];
     const pins = snapshot.pins;
 
-    return this.workspaces.list(snapshot.reviewId).flatMap((environment) => {
-      const side =
-        environment.commit === pins.head
-          ? "head"
-          : environment.commit === pins.base
-            ? "base"
-            : undefined;
+    return (await this.workspaces.list(snapshot.reviewId)).flatMap(
+      (environment) => {
+        const side =
+          environment.commit === pins.head
+            ? "head"
+            : environment.commit === pins.base
+              ? "base"
+              : undefined;
 
-      return side && environment.issue
-        ? [{ side, message: environment.issue }]
-        : [];
-    });
+        return side && environment.issue
+          ? [{ side, message: environment.issue }]
+          : [];
+      },
+    );
   }
 
   async environmentIssues(snapshot: Snapshot, retryFailed = false) {
@@ -245,7 +261,10 @@ export class LocalReviewData {
   /** Desktop language services borrow the registered checkout, never create one. */
   async liveFile(repositoryId: string, file: string, text: string) {
     try {
-      const rootPath = await realpath(this.store.repositoryPath(repositoryId));
+      const rootPath = await realpath(
+        await this.store.repositoryPath(repositoryId),
+      );
+
       const localPath = await localSourcePath(rootPath, file);
 
       if ((await checkoutFs.readFile(localPath, "utf8")) === text)
@@ -308,7 +327,7 @@ export class LocalReviewData {
     let rootPath: string;
 
     try {
-      rootPath = await realpath(this.store.repositoryPath(repositoryId));
+      rootPath = await realpath(await this.store.repositoryPath(repositoryId));
     } catch (error) {
       if (error instanceof ReviewInputError && error.status !== 404)
         throw error;
@@ -348,7 +367,7 @@ export class LocalReviewData {
     const { pins } = await this.resolveSource(snapshot);
 
     const rootPath = pins.worktreeRevision
-      ? await realpath(this.store.repositoryPath(pins.repositoryId))
+      ? await realpath(await this.store.repositoryPath(pins.repositoryId))
       : (await this.workspaces.source(snapshot.reviewId, pins, "head"))
           .rootPath;
 
@@ -378,7 +397,7 @@ export class LocalReviewData {
       source.anchor,
     );
 
-    const repository = this.store.repositoryPath(pins.repositoryId);
+    const repository = await this.store.repositoryPath(pins.repositoryId);
     const side = source.side ?? "head";
 
     const live =
@@ -522,7 +541,7 @@ export class LocalReviewData {
 
   /** Pins a reference names itself, checked against the registered checkout. */
   async anchorSourcePins(anchor: SourcePins): Promise<Pins> {
-    if (!existsSync(this.store.repositoryPath(anchor.repositoryId)))
+    if (!existsSync(await this.store.repositoryPath(anchor.repositoryId)))
       throw unavailableCheckout();
 
     return anchorPins({ pins: anchor }, undefined);
@@ -563,22 +582,27 @@ export class LocalReviewData {
     Promise<LocalVcsCommitSummary[]>
   >();
 
-  constructor(
+  private constructor(
     private readonly store: ReviewStore,
-    private readonly options: {
-      blobReaderIdleTimeoutMs?: number;
-      workspaceDatabase?: string;
-      manageWorkspaces?: boolean;
-      watch?: typeof watch;
-      /** gh, git and GitHub API access for pull request targets. */
-      pullRequests?: PullRequestDeps;
-    } = {},
+    private readonly options: LocalReviewDataOptions = {},
+    workspaceManager?: ReviewWorkspaces,
   ) {
-    if (options.manageWorkspaces !== false)
-      this.workspaceManager = new ReviewWorkspaces(
-        options.workspaceDatabase ?? ":memory:",
-        store,
-      );
+    this.workspaceManager = workspaceManager;
+  }
+
+  static async open(
+    store: ReviewStore,
+    options: LocalReviewDataOptions = {},
+  ): Promise<LocalReviewData> {
+    const workspaceManager =
+      options.manageWorkspaces === false
+        ? undefined
+        : await ReviewWorkspaces.open(
+            options.workspaceDatabase ?? ":memory:",
+            store,
+          );
+
+    return new LocalReviewData(store, options, workspaceManager);
   }
 
   async *structuralChanges({
@@ -616,7 +640,7 @@ export class LocalReviewData {
     await this.workspaceManager?.released(reviewId);
 
     const rootPath = await ensureReviewPinnedCheckout({
-      rootPath: this.store.repositoryPath(pins.repositoryId),
+      rootPath: await this.store.repositoryPath(pins.repositoryId),
       ref: pins.head,
       reviewUuid: reviewId,
     });
@@ -753,7 +777,7 @@ export class LocalReviewData {
   }
 
   /** Detected once; dropped when the root vanishes or detection found nothing. */
-  private vcs(repositoryId: string): Promise<LocalVcs | null> {
+  private async vcs(repositoryId: string): Promise<LocalVcs | null> {
     const cached = this.repositories.get(repositoryId);
 
     if (cached && (!cached.vcs || existsSync(cached.vcs.rootPath)))
@@ -761,14 +785,6 @@ export class LocalReviewData {
 
     this.closeReader(repositoryId);
     this.forgetWorktree(repositoryId);
-    const rootPath = this.store.repositoryPath(repositoryId);
-
-    // Detection in a missing directory spawns and fails as "tools missing".
-    if (!existsSync(rootPath)) {
-      this.repositories.delete(repositoryId);
-
-      return Promise.resolve(null);
-    }
 
     const forget = () => {
       this.repositories.delete(repositoryId);
@@ -776,7 +792,18 @@ export class LocalReviewData {
     };
 
     const entry: RepositoryVcs = {
-      detection: detectLocalVcs(rootPath).then(
+      detection: (async () => {
+        const rootPath = await this.store.repositoryPath(repositoryId);
+
+        // Detection in a missing directory spawns and fails as "tools missing".
+        if (!existsSync(rootPath)) {
+          this.repositories.delete(repositoryId);
+
+          return null;
+        }
+
+        return detectLocalVcs(rootPath);
+      })().then(
         (vcs) => {
           if (vcs) entry.vcs = vcs;
           else forget();
@@ -844,7 +871,7 @@ export class LocalReviewData {
     const vcs = await this.vcs(repositoryId);
 
     if (vcs) return { rootPath: vcs.rootPath, kind: vcs.kind };
-    const rootPath = this.store.repositoryPath(repositoryId);
+    const rootPath = await this.store.repositoryPath(repositoryId);
 
     // local-vcs would report a missing root as a path-bearing 500.
     if (!existsSync(rootPath)) throw unavailableCheckout();
@@ -868,7 +895,7 @@ export class LocalReviewData {
 
     if (!vcs) throw new ReviewInputError("Choose a Git or jj repository.");
 
-    const repository = this.store.registerRepository(
+    const repository = await this.store.registerRepository(
       await realpath(vcs.rootPath),
     );
 
@@ -906,7 +933,9 @@ export class LocalReviewData {
 
     if (!snapshot.pins) return undefined;
 
-    if (!existsSync(this.store.repositoryPath(snapshot.pins.repositoryId)))
+    if (
+      !existsSync(await this.store.repositoryPath(snapshot.pins.repositoryId))
+    )
       throw unavailableCheckout();
 
     return snapshot.pins;
@@ -1103,7 +1132,7 @@ export class LocalReviewData {
     repository: { id?: string; preferred?: string },
     deps: PullRequestDeps,
   ) {
-    const registered = this.store.repositories();
+    const registered = await this.store.repositories();
 
     const candidates = repository.id
       ? registered.filter((entry) => entry.id === repository.id)
@@ -1116,7 +1145,7 @@ export class LocalReviewData {
       throw new ReviewInputError("Repository is not registered.", 404);
 
     for (const { id } of candidates) {
-      if (!existsSync(this.store.repositoryPath(id))) continue;
+      if (!existsSync(await this.store.repositoryPath(id))) continue;
       const vcs = await this.vcs(id);
       const gitDir = vcs && (await gitCommonDir(vcs.rootPath));
 
@@ -1469,23 +1498,25 @@ export class LocalReviewData {
           current.partial = value;
 
           if (!this.closed)
-            this.store.setDiffStats(
-              pins,
-              {
-                fileCount: value.files.length,
-                additions: value.files.reduce(
-                  (sum, file) =>
-                    sum + structuralChangeCounts(file.changed).added,
-                  0,
-                ),
-                deletions: value.files.reduce(
-                  (sum, file) =>
-                    sum + structuralChangeCounts(file.changed).removed,
-                  0,
-                ),
-              },
-              mode,
-            );
+            void this.store
+              .setDiffStats(
+                pins,
+                {
+                  fileCount: value.files.length,
+                  additions: value.files.reduce(
+                    (sum, file) =>
+                      sum + structuralChangeCounts(file.changed).added,
+                    0,
+                  ),
+                  deletions: value.files.reduce(
+                    (sum, file) =>
+                      sum + structuralChangeCounts(file.changed).removed,
+                    0,
+                  ),
+                },
+                mode,
+              )
+              .catch(() => {});
           settled("ready");
         },
         (error) => settled("error", error),
@@ -1604,7 +1635,7 @@ export class LocalReviewData {
       mapVersionId: resourceId,
     });
 
-    const resource = this.store.resource(resourceId);
+    const resource = await this.store.resource(resourceId);
 
     // SAFETY: map resources are normalized and validated by upload before storage.
     const saved = JSON.parse(Buffer.from(resource.data).toString()) as Pick<
@@ -1657,7 +1688,7 @@ export class LocalReviewData {
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Upload boundary: uploadSchema.parse below validates incoming JSON.
   async upload(value: unknown) {
     const input = uploadSchema.parse(value);
-    this.store.repositoryPath(input.repositoryId);
+    await this.store.repositoryPath(input.repositoryId);
 
     let mimeType = "application/json",
       data: Uint8Array;
@@ -1741,7 +1772,7 @@ export class LocalReviewData {
 
     if (!reference) return;
     const { id, kind } = reference;
-    const resource = this.store.resource(id);
+    const resource = await this.store.resource(id);
 
     if (
       (pins && resource.repositoryId !== pins.repositoryId) ||
@@ -1751,7 +1782,7 @@ export class LocalReviewData {
         "Resource belongs to a different repository or component type.",
       );
 
-    if (!pins) this.store.repositoryPath(resource.repositoryId);
+    if (!pins) await this.store.repositoryPath(resource.repositoryId);
 
     if (block.type === "trace_quote") {
       const trace = traceSchema.parse(
@@ -1803,16 +1834,11 @@ function inputError<T>(run: () => T): T {
   }
 }
 
-export function openLocalReviewStore(
-  databasePath: string,
-  options: {
-    blobReaderIdleTimeoutMs?: number;
-    manageWorkspaces?: boolean;
-    watch?: typeof watch;
-    pullRequests?: PullRequestDeps;
-  } = {},
+export async function openLocalReviewStore(
+  source: string | MetadataStore,
+  options: Omit<LocalReviewDataOptions, "workspaceDatabase"> = {},
 ) {
-  const store: ReviewStore = new ReviewStore(databasePath, {
+  const store: ReviewStore = await ReviewStore.open(source, {
     projectSource: (snapshot, pins) => data.projectSource(snapshot, pins),
     resolveTarget: (target, pinned) => data.resolveTarget(target, pinned),
     resolvePullRequest: (url, repository) =>
@@ -1830,12 +1856,15 @@ export function openLocalReviewStore(
   let data: LocalReviewData;
 
   try {
-    data = new LocalReviewData(store, {
+    data = await LocalReviewData.open(store, {
       ...options,
-      workspaceDatabase: `${databasePath}.workspaces`,
+      // A file path keeps its sidecar; a shared backend keeps the leases beside it.
+      workspaceDatabase: isMetadataStore(source)
+        ? source
+        : `${source}.workspaces`,
     });
   } catch (error) {
-    void store.close();
+    void store.close().catch(() => {});
     throw error;
   }
 
