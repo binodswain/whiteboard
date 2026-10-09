@@ -134,3 +134,32 @@ describe("GET /setup-info", () => {
     }
   });
 });
+
+describe("POST /internal/jobs/run", () => {
+  it("requires the configured job bearer secret", async () => {
+    const runJob = vi.fn<() => Promise<boolean>>(async () => true);
+
+    const server = createReviewServerApp({
+      token: TOKEN,
+      instanceId: "test-instance",
+      serverId: "test-server",
+      relay: new GlobalReviewDesktopVerbRelay(),
+      deployment: publicDeploymentConfig(loadDeploymentConfig({})),
+      jobSecret: "job-secret",
+      runJob,
+    });
+
+    expect(
+      (await server.request("/internal/jobs/run", { method: "POST" })).status,
+    ).toBe(401);
+
+    const response = await server.request("/internal/jobs/run", {
+      method: "POST",
+      headers: { authorization: "Bearer job-secret" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, ran: true });
+    expect(runJob).toHaveBeenCalledOnce();
+  });
+});

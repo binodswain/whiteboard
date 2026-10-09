@@ -58,4 +58,9 @@ export const POSTGRES_MIGRATIONS: {
       review_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE INDEX jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);`,
   },
+  {
+    version: 3,
+    name: "review_job_url",
+    sql: "ALTER TABLE jobs_jobs ADD COLUMN url TEXT",
+  },
 ];

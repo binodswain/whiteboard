@@ -71,7 +71,7 @@ const REVIEW_SCHEMA = `
   CREATE TABLE IF NOT EXISTS jobs_jobs(
     id TEXT PRIMARY KEY, job_key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, input TEXT NOT NULL,
     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER,
-    review_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    review_id TEXT, url TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);`;
 
 /** The `.workspaces` sidecar's tables, byte-for-byte what the synchronous
@@ -130,6 +130,15 @@ export class SqliteMetadataStore {
       this.db.exec(
         "ALTER TABLE ask_conversations ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0",
       );
+
+    if (
+      this.schema === "review" &&
+      !this.db
+        .prepare("PRAGMA table_info(jobs_jobs)")
+        .all()
+        .some((column) => String(column.name) === "url")
+    )
+      this.db.exec("ALTER TABLE jobs_jobs ADD COLUMN url TEXT");
   }
 
   /** Serializes work on the one connection, as the synchronous driver did.

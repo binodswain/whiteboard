@@ -47,11 +47,14 @@ export function createGitHubRepoSource(
 
       const tempRoot = options.cacheDir ?? os.tmpdir();
       await mkdir(tempRoot, { recursive: true });
+
       const directory = persistentDir
         ? path.resolve(persistentDir)
         : await mkdtemp(path.join(tempRoot, "whiteboard-repo-"));
+
       const persistent = Boolean(persistentDir);
       await mkdir(directory, { recursive: true });
+
       const isInitialized = await stat(path.join(directory, ".git")).then(
         () => true,
         () => false,
@@ -100,6 +103,7 @@ export function createGitHubRepoSource(
 
         if (!isInitialized) await git("init", "--quiet");
         const remote = options.remoteUrl?.(canonicalRepo) ?? canonicalRepo;
+
         if (isInitialized) await git("remote", "set-url", "origin", remote);
         else await git("remote", "add", "origin", remote);
 

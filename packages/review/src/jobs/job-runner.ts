@@ -1,13 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { MetadataStore } from "@review/review-api/storage/metadata-store.js";
+import type {
+  MetadataColumn,
+  MetadataRow,
+  MetadataStore,
+} from "@review/review-api/storage/metadata-store.js";
+import { z } from "zod";
 
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
+
 export type PrepareReviewInput = {
   repo: string;
   baseSha: string;
   headSha: string;
 };
+
 export type JobRecord = {
   id: string;
   type: "prepare_review";
@@ -15,8 +22,10 @@ export type JobRecord = {
   status: JobStatus;
   attempts: number;
   reviewId?: string;
+  url?: string;
   error?: string;
 };
+
 export type JobResult = { reviewId: string; url?: string };
 
 export interface JobRunner {
@@ -27,16 +36,40 @@ export interface JobRunner {
 
 export type PrepareReview = (input: PrepareReviewInput) => Promise<JobResult>;
 
-function record(row: Record<string, unknown>): JobRecord {
-  return {
+const prepareReviewInputSchema = z.strictObject({
+  repo: z.string().min(1),
+  baseSha: z.string().min(1),
+  headSha: z.string().min(1),
+});
+
+const jobStatusSchema = z.enum(["pending", "running", "succeeded", "failed"]);
+
+type JobSqlRow = MetadataRow & {
+  id: string;
+  input: string;
+  status: string;
+  attempts: MetadataColumn;
+  review_id: MetadataColumn;
+  url: MetadataColumn;
+  error: MetadataColumn;
+};
+
+function record(row: JobSqlRow): JobRecord {
+  const result: JobRecord = {
     id: String(row.id),
     type: "prepare_review",
-    input: JSON.parse(String(row.input)) as PrepareReviewInput,
-    status: String(row.status) as JobStatus,
+    input: prepareReviewInputSchema.parse(JSON.parse(row.input)),
+    status: jobStatusSchema.parse(row.status),
     attempts: Number(row.attempts),
-    ...(row.review_id ? { reviewId: String(row.review_id) } : {}),
-    ...(row.error ? { error: String(row.error) } : {}),
   };
+
+  if (row.review_id) result.reviewId = String(row.review_id);
+
+  if (row.url) result.url = String(row.url);
+
+  if (row.error) result.error = String(row.error);
+
+  return result;
 }
 
 export function createQueueJobRunner(
@@ -52,6 +85,7 @@ export function createQueueJobRunner(
       const key = createHash("sha256")
         .update(JSON.stringify(input))
         .digest("hex");
+
       const now = new Date().toISOString();
       const id = randomUUID();
       await store.run(
@@ -63,72 +97,107 @@ export function createQueueJobRunner(
         now,
         now,
       );
-      const row = await store.get<Record<string, unknown>>(
+
+      const row = await store.get<JobSqlRow>(
         "SELECT * FROM jobs_jobs WHERE job_key=?",
         key,
       );
+
       if (!row) throw new Error("Unable to persist review job.");
+
       return record(row);
     },
     async get(jobId) {
-      const row = await store.get<Record<string, unknown>>(
+      const row = await store.get<JobSqlRow>(
         "SELECT * FROM jobs_jobs WHERE id=?",
         jobId,
       );
+
       return row ? record(row) : undefined;
     },
     async runNext() {
-      const claimed:
-        | (Record<string, unknown> & { attempts: number })
-        | undefined = await store.transaction(async () => {
-        const now = Date.now();
-        const row = await store.get<Record<string, unknown>>(
-          `SELECT * FROM jobs_jobs WHERE status='pending' OR (status='running' AND lease_until < ?) ORDER BY created_at LIMIT 1`,
-          now,
-        );
-        if (!row) return undefined;
-        const attempts = Number(row.attempts) + 1;
-        if (attempts > maxAttempts) {
-          await store.run(
-            "UPDATE jobs_jobs SET status='failed',error=?,lease_until=NULL,updated_at=? WHERE id=?",
-            "Worker lease expired; retry limit reached.",
+      const claimed: (JobSqlRow & { attempts: number }) | undefined =
+        await store.transaction(async () => {
+          const now = Date.now();
+
+          const row = await store.get<JobSqlRow>(
+            `SELECT * FROM jobs_jobs WHERE status='pending' OR (status='running' AND lease_until < ?) ORDER BY created_at LIMIT 1`,
+            now,
+          );
+
+          if (!row) return undefined;
+          const attempts = Number(row.attempts) + 1;
+
+          if (attempts > maxAttempts) {
+            await store.run(
+              "UPDATE jobs_jobs SET status='failed',error=?,lease_until=NULL,updated_at=? WHERE id=?",
+              "Worker lease expired; retry limit reached.",
+              new Date().toISOString(),
+              String(row.id),
+            );
+
+            return undefined;
+          }
+
+          const result = await store.run(
+            `UPDATE jobs_jobs SET status='running',attempts=?,lease_until=?,error=NULL,updated_at=? WHERE id=? AND (status='pending' OR lease_until < ?)`,
+            attempts,
+            now + leaseMs,
             new Date().toISOString(),
             String(row.id),
+            now,
           );
-          return undefined;
-        }
-        const result = await store.run(
-          `UPDATE jobs_jobs SET status='running',attempts=?,lease_until=?,error=NULL,updated_at=? WHERE id=? AND (status='pending' OR lease_until < ?)`,
-          attempts,
-          now + leaseMs,
-          new Date().toISOString(),
-          String(row.id),
-          now,
-        );
-        return result.changes ? { ...row, attempts } : undefined;
-      });
+
+          return result.changes ? { ...row, attempts } : undefined;
+        });
+
       if (!claimed) return false;
+
+      const heartbeat = setInterval(
+        () => {
+          void store
+            .run(
+              "UPDATE jobs_jobs SET lease_until=?,updated_at=? WHERE id=? AND status='running' AND attempts=?",
+              Date.now() + leaseMs,
+              new Date().toISOString(),
+              String(claimed.id),
+              claimed.attempts,
+            )
+            .catch(() => {});
+        },
+        Math.max(1, Math.floor(leaseMs / 3)),
+      );
+
+      heartbeat.unref();
+
       try {
         const output = await prepare(
-          JSON.parse(String(claimed.input)) as PrepareReviewInput,
+          prepareReviewInputSchema.parse(JSON.parse(claimed.input)),
         );
+
         await store.run(
-          "UPDATE jobs_jobs SET status='succeeded',review_id=?,lease_until=NULL,error=NULL,updated_at=? WHERE id=? AND status='running'",
+          "UPDATE jobs_jobs SET status='succeeded',review_id=?,url=?,lease_until=NULL,error=NULL,updated_at=? WHERE id=? AND status='running' AND attempts=?",
           output.reviewId,
+          output.url ?? null,
           new Date().toISOString(),
           String(claimed.id),
+          claimed.attempts,
         );
       } catch (cause) {
         const error = cause instanceof Error ? cause.message : String(cause);
         const failed = Number(claimed.attempts) >= maxAttempts;
         await store.run(
-          "UPDATE jobs_jobs SET status=?,lease_until=NULL,error=?,updated_at=? WHERE id=? AND status='running'",
+          "UPDATE jobs_jobs SET status=?,lease_until=NULL,error=?,updated_at=? WHERE id=? AND status='running' AND attempts=?",
           failed ? "failed" : "pending",
           error,
           new Date().toISOString(),
           String(claimed.id),
+          claimed.attempts,
         );
+      } finally {
+        clearInterval(heartbeat);
       }
+
       return true;
     },
   };
@@ -139,13 +208,22 @@ export function createInlineJobRunner(
   prepare: PrepareReview,
 ): JobRunner {
   const queue = createQueueJobRunner(store, prepare);
+
   return {
     async submit(input) {
       const job = await queue.submit(input);
+
       if (job.status === "pending" || job.status === "running") {
-        await queue.runNext();
-        return (await queue.get(job.id)) ?? job;
+        let current = job;
+
+        while (current.status === "pending" || current.status === "running") {
+          await queue.runNext();
+          current = (await queue.get(job.id)) ?? current;
+        }
+
+        return current;
       }
+
       return job;
     },
     get: (id) => queue.get(id),

@@ -10,6 +10,12 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
 import {
+  type JobRunner,
+  type PrepareReviewInput,
+  createInlineJobRunner,
+  createQueueJobRunner,
+} from "@review/jobs/job-runner.js";
+import {
   readBuildCommit,
   readReviewPackageVersion,
 } from "@review/package-paths.js";
@@ -27,6 +33,7 @@ import {
 import type { LocalReviewData } from "@review/review-api/local-data.js";
 import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
+import { reviewServerStateDir } from "@review/server-discovery.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
 import { type Context, Hono } from "hono";
@@ -56,6 +63,25 @@ const version = readReviewPackageVersion(import.meta.url);
 
 const commit = readBuildCommit(import.meta.url);
 
+function githubCachePath(repository: string) {
+  const match = repository.match(
+    /(?:github\.com[/:])?([^/]+)\/([^/]+?)(?:\.git)?$/i,
+  );
+
+  if (
+    !match ||
+    !/^[A-Za-z0-9_.-]+$/.test(match[1]!) ||
+    !/^[A-Za-z0-9_.-]+$/.test(match[2]!) ||
+    match[1] === "." ||
+    match[1] === ".." ||
+    match[2] === "." ||
+    match[2] === ".."
+  )
+    throw new ReviewInputError("Repository must be a GitHub owner/repository.");
+
+  return path.join(reviewServerStateDir(), "repos", match[1]!, match[2]!);
+}
+
 /**
  * What every review server shares: CORS, an open /health, token auth, and
  * the /control relay a Desktop attaches to, with errors answered as JSON.
@@ -70,6 +96,8 @@ export function createReviewServerApp(input: {
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
   deployment: ReturnType<typeof publicDeploymentConfig>;
+  jobSecret?: string;
+  runJob?: () => Promise<boolean>;
 }): Hono<ReviewHonoEnv> {
   const app = new Hono<ReviewHonoEnv>();
   app.use("*", async (context, next) => {
@@ -118,6 +146,13 @@ export function createReviewServerApp(input: {
 
     const path = new URL(context.req.url).pathname;
 
+    if (
+      path === "/internal/jobs/run" &&
+      input.jobSecret &&
+      context.req.header("authorization") === `Bearer ${input.jobSecret}`
+    )
+      return next();
+
     const reviewApiPath =
       path === "/reviews-api" || path.startsWith("/reviews-api/");
 
@@ -152,6 +187,18 @@ export function createReviewServerApp(input: {
     );
 
     return serverJson(accepted ? 200 : 404, { ok: accepted });
+  });
+  app.post("/internal/jobs/run", async (context) => {
+    if (!input.jobSecret)
+      return serverJson(404, { ok: false, error: "Not found." });
+
+    if (context.req.header("authorization") !== `Bearer ${input.jobSecret}`)
+      return serverJson(401, { ok: false, error: "Unauthorized" });
+
+    return serverJson(200, {
+      ok: true,
+      ran: (await input.runJob?.()) ?? false,
+    });
   });
   app.notFound(() => serverJson(404, { ok: false, error: "Not found." }));
   app.onError((error) => {
@@ -221,6 +268,75 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
         })
       : createLocalRepoSource();
 
+  let api: ReturnType<typeof createReviewApi>;
+
+  const prepareReview = async ({
+    repo,
+    baseSha,
+    headSha,
+  }: PrepareReviewInput) => {
+    const persistentDir =
+      deploymentConfig.repoSource === "github"
+        ? githubCachePath(repo)
+        : undefined;
+
+    const checkout = await repoSource.checkout({
+      repo,
+      baseSha,
+      headSha,
+      ...(persistentDir && { persistentDir }),
+    });
+
+    try {
+      const response = await api.fetch(
+        new Request("http://whiteboard.invalid/commands", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            operation: {
+              type: "create",
+              title: `${repo} ${headSha.slice(0, 7)}`,
+              target: {
+                kind: "commits",
+                repositoryPath: checkout.dir,
+                base: baseSha,
+                head: headSha,
+              },
+              open: false,
+            },
+          }),
+        }),
+      );
+
+      const result = z
+        .object({
+          reviewId: z.string().optional(),
+          error: z.string().optional(),
+        })
+        .safeParse(await response.json());
+
+      if (!response.ok || !result.success || !result.data.reviewId)
+        throw new Error(
+          (result.success ? result.data.error : undefined) ??
+            `Review creation failed (${response.status}).`,
+        );
+
+      return {
+        reviewId: result.data.reviewId,
+        ...(input.headlessOpenUrl && {
+          url: input.headlessOpenUrl(result.data.reviewId),
+        }),
+      };
+    } finally {
+      if (!persistentDir) await checkout.dispose();
+    }
+  };
+
+  const jobs: JobRunner =
+    deploymentConfig.jobs === "inline"
+      ? createInlineJobRunner(store.metadataStore(), prepareReview)
+      : createQueueJobRunner(store.metadataStore(), prepareReview);
+
   const app = createReviewServerApp({
     token: input.token,
     instanceId: input.instanceId,
@@ -229,6 +345,8 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: input.localBrowserPort,
     deployment,
+    jobSecret: process.env.WHITEBOARD_JOB_SECRET,
+    runJob: () => jobs.runNext(),
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -236,7 +354,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const askThreads =
     input.ask && new AskThreads(launchAskAgent, input.ask.tools);
 
-  const api = createReviewApi(
+  api = createReviewApi(
     store,
     data,
     callbacks.open,
@@ -250,6 +368,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     input.localBrowserAuth,
     input.webSettings,
     input.headlessOpenUrl,
+    jobs,
   );
 
   // A shared store mounts the publisher with the rest of sharing.

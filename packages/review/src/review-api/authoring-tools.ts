@@ -77,6 +77,42 @@ export function authoringTools(
 
   return [
     REVIEW_STATUS_TOOL,
+    {
+      name: "generate_review",
+      description:
+        "Prepare a review for immutable commits and return its job status. Local mode completes inline; hosted queue mode returns a jobId to poll with review_job_status.",
+      inputSchema: {
+        ...z.toJSONSchema(
+          z.strictObject({
+            repository: z
+              .string()
+              .min(1)
+              .describe(
+                "GitHub owner/repository or an absolute local repository path.",
+              ),
+            base: z.string().min(1).describe("Base commit SHA."),
+            head: z.string().min(1).describe("Head commit SHA."),
+          }),
+          { io: "input" },
+        ),
+        type: "object" as const,
+      },
+      method: "POST" as const,
+      path: "/jobs",
+    },
+    {
+      name: "review_job_status",
+      description:
+        "Read the status, review link, or failure for a review preparation job.",
+      inputSchema: {
+        ...z.toJSONSchema(z.strictObject({ jobId: z.string().min(1) }), {
+          io: "input",
+        }),
+        type: "object" as const,
+      },
+      method: "GET" as const,
+      path: "/jobs/:jobId",
+    },
     tool(
       "capabilities",
       "Discover whether Desktop is available and optional software-map generation is enabled. Read before authoring.",
