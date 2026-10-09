@@ -15,11 +15,17 @@ import { ReviewApiClient } from "@review/review-api/client.js";
 import { callPublicTool, publicTool } from "@review/review-api/public-tools.js";
 import { Hono } from "hono";
 
-/** A session-backed Streamable HTTP endpoint with idle-session cleanup. */
+/**
+ * A Streamable HTTP endpoint. Local mode keeps a session per client, with
+ * idle-session cleanup. Stateless mode (WHITEBOARD_MODE=remote by default)
+ * serves each request on a fresh server, so any replica can answer it.
+ */
 export function createHttpMcpApp(input: {
   api: Hono;
   scratchpad: () => boolean;
+  stateless?: boolean;
 }) {
+  const stateless = input.stateless ?? process.env.WHITEBOARD_MODE === "remote";
   const app = new Hono();
 
   const sessions = new Map<
@@ -31,7 +37,141 @@ export function createHttpMcpApp(input: {
     }
   >();
 
+  const createServer = () => {
+    const server = new Server(
+      { name: "whiteboard", version: "1.0.0" },
+      { capabilities: { tools: { listChanged: true } } },
+    );
+
+    // SAFETY: authoringTools emits the shared AuthoringTool contract used by stdio MCP.
+    const tools = authoringTools(input.scratchpad(), false).map((tool) =>
+      publicTool(tool as AuthoringTool),
+    );
+
+    const client = new ReviewApiClient(
+      { serverUrl: "http://whiteboard.invalid" },
+      async (url, init) => {
+        const route =
+          url.replace("http://whiteboard.invalid/reviews-api", "") || "/";
+
+        return input.api.fetch(
+          new Request(`http://whiteboard.invalid${route}`, init),
+        );
+      },
+    );
+
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: tools.map(({ name, description, inputSchema }) => ({
+        name,
+        description,
+        inputSchema,
+      })),
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      const tool = tools.find(({ name }) => name === request.params.name);
+
+      if (!tool)
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Unknown Whiteboard tool: ${request.params.name}`,
+            },
+          ],
+        };
+      const args = { ...(request.params.arguments ?? {}) };
+
+      try {
+        if (
+          (tool.commandType === "create" ||
+            tool.commandType === "set_target") &&
+          isJsonObject(args.target)
+        ) {
+          const target = args.target;
+
+          if (
+            (target.kind === "worktree" || target.kind === "commits") &&
+            !("repositoryPath" in target) &&
+            !("repositoryId" in target)
+          ) {
+            let root: string | undefined;
+
+            if (server.getClientCapabilities()?.roots) {
+              try {
+                const roots = await server.listRoots({}, { timeout: 3000 });
+
+                const uri = roots.roots.find(({ uri }) =>
+                  uri.startsWith("file://"),
+                )?.uri;
+
+                if (uri) {
+                  const path = decodeURIComponent(new URL(uri).pathname);
+                  root = detectLocalVcsSync(path)?.rootPath;
+                }
+              } catch {
+                /* The error below explains the required explicit path. */
+              }
+            }
+
+            if (!root)
+              throw new Error(
+                "Pass repositoryPath as the absolute path of the repository you are working in; no usable file:// MCP root was provided.",
+              );
+            args.target = { ...target, repositoryPath: root };
+          }
+        }
+
+        const result = await callPublicTool(client, tool, args, extra.signal);
+
+        return {
+          content: [
+            // SAFETY: callPublicTool returns JSON data or the shared plain-text wrapper.
+            { type: "text", text: toolResultText(tool, result as never) },
+          ],
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        };
+      }
+    });
+
+    return server;
+  };
+
   app.all("/", async (context) => {
+    if (stateless) {
+      // A stateless transport serves one request, and a GET would need a stream
+      // that closes with the request, so it is not offered.
+      if (context.req.method === "GET")
+        return new Response(null, {
+          status: 405,
+          headers: { Allow: "POST, DELETE" },
+        });
+
+      const server = createServer();
+
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+
+      await server.connect(transport);
+
+      try {
+        return await transport.handleRequest(context.req.raw);
+      } finally {
+        await server.close();
+      }
+    }
+
     for (const [id, session] of sessions) {
       if (Date.now() - session.touchedAt > 30 * 60_000) {
         sessions.delete(id);
@@ -54,118 +194,7 @@ export function createHttpMcpApp(input: {
       );
 
     if (!session) {
-      const server = new Server(
-        { name: "whiteboard", version: "1.0.0" },
-        { capabilities: { tools: { listChanged: true } } },
-      );
-
-      // SAFETY: authoringTools emits the shared AuthoringTool contract used by stdio MCP.
-      const tools = authoringTools(input.scratchpad(), false).map((tool) =>
-        publicTool(tool as AuthoringTool),
-      );
-
-      const client = new ReviewApiClient(
-        { serverUrl: "http://whiteboard.invalid" },
-        async (url, init) => {
-          const route =
-            url.replace("http://whiteboard.invalid/reviews-api", "") || "/";
-
-          return input.api.fetch(
-            new Request(`http://whiteboard.invalid${route}`, init),
-          );
-        },
-      );
-
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({
-        tools: tools.map(({ name, description, inputSchema }) => ({
-          name,
-          description,
-          inputSchema,
-        })),
-      }));
-      server.setRequestHandler(
-        CallToolRequestSchema,
-        async (request, extra) => {
-          const tool = tools.find(({ name }) => name === request.params.name);
-
-          if (!tool)
-            return {
-              isError: true,
-              content: [
-                {
-                  type: "text",
-                  text: `Unknown Whiteboard tool: ${request.params.name}`,
-                },
-              ],
-            };
-          const args = { ...(request.params.arguments ?? {}) };
-
-          try {
-            if (
-              (tool.commandType === "create" ||
-                tool.commandType === "set_target") &&
-              isJsonObject(args.target)
-            ) {
-              const target = args.target;
-
-              if (
-                (target.kind === "worktree" || target.kind === "commits") &&
-                !("repositoryPath" in target) &&
-                !("repositoryId" in target)
-              ) {
-                let root: string | undefined;
-
-                if (server.getClientCapabilities()?.roots) {
-                  try {
-                    const roots = await server.listRoots({}, { timeout: 3000 });
-
-                    const uri = roots.roots.find(({ uri }) =>
-                      uri.startsWith("file://"),
-                    )?.uri;
-
-                    if (uri) {
-                      const path = decodeURIComponent(new URL(uri).pathname);
-                      root = detectLocalVcsSync(path)?.rootPath;
-                    }
-                  } catch {
-                    /* The error below explains the required explicit path. */
-                  }
-                }
-
-                if (!root)
-                  throw new Error(
-                    "Pass repositoryPath as the absolute path of the repository you are working in; no usable file:// MCP root was provided.",
-                  );
-                args.target = { ...target, repositoryPath: root };
-              }
-            }
-
-            const result = await callPublicTool(
-              client,
-              tool,
-              args,
-              extra.signal,
-            );
-
-            return {
-              content: [
-                // SAFETY: callPublicTool returns JSON data or the shared plain-text wrapper.
-                { type: "text", text: toolResultText(tool, result as never) },
-              ],
-            };
-          } catch (error) {
-            return {
-              isError: true,
-              content: [
-                {
-                  type: "text",
-                  text: error instanceof Error ? error.message : String(error),
-                },
-              ],
-            };
-          }
-        },
-      );
+      const server = createServer();
       let transport!: WebStandardStreamableHTTPServerTransport;
       transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
