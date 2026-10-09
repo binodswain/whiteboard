@@ -1,0 +1,24 @@
+services:
+  whiteboard:
+    build:
+      context: .
+      target: runtime
+      args:
+        AGENT: ${AGENT:-none}
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - whiteboard-data:/data
+      - ${REPOSITORY:-.}:/workspace
+    environment:
+      HOME: /tmp
+      WHITEBOARD_TOKEN: ${WHITEBOARD_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GH_ENTERPRISE_TOKEN: ${GH_ENTERPRISE_TOKEN:-}
+      GH_HOST: ${GH_HOST:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    restart: unless-stopped
+volumes:
+  whiteboard-data:
