@@ -282,23 +282,52 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         "--state-dir <path>",
         "directory for saved reviews and server discovery",
       )
+      .addOption(
+        new Option(
+          "--host <address>",
+          "address to bind (0.0.0.0 listens on every interface)",
+        ).env("WHITEBOARD_HOST"),
+      )
       .option(
         "--port <port>",
-        "loopback port (0 chooses an available port)",
+        "port to listen on (0 chooses an available port)",
         "0",
+      )
+      .addOption(
+        new Option(
+          "--web <dir>",
+          "serve a built web canvas directory on the same origin",
+        ).env("WHITEBOARD_WEB_DIR"),
+      )
+      .addOption(
+        new Option(
+          "--token <value>",
+          "pin the server token instead of generating one (32+ characters)",
+        ).env("WHITEBOARD_TOKEN"),
       )
       .option(
         "--software-maps",
         "allow the authoring skill to generate optional software maps",
       )
+      .addOption(
+        new Option(
+          "--ask",
+          "let reviewers send selections to an installed coding agent (env WHITEBOARD_ASK; default when one is found)",
+        ),
+      )
+      .addOption(new Option("--no-ask", "serve without Ask"))
       // Batch authoring was removed; name that instead of "unknown option".
       .addOption(new Option("--authoring-mode <mode>").hideHelp()),
     "plain",
   ).action(async (_options, command: Command) => {
     const options = command.optsWithGlobals<{
       stateDir?: string;
+      host?: string;
       port: string;
+      web?: string;
+      token?: string;
       softwareMaps?: boolean;
+      ask?: boolean;
       authoringMode?: string;
       json?: boolean;
     }>();
@@ -313,7 +342,27 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       throw new ReviewCliUsageError(
         "--port must be an integer between 0 and 65535.",
       );
+
+    // Docker passes an empty ${WHITEBOARD_TOKEN:-} to mean "generate one".
+    const token = options.token || undefined;
+
+    if (token !== undefined && token.length < 32)
+      throw new ReviewCliUsageError(
+        "--token must be at least 32 characters long.",
+      );
+
+    const webDir = options.web ? path.resolve(cwd, options.web) : undefined;
+
+    if (webDir && !existsSync(path.join(webDir, "index.html")))
+      throw new ReviewCliUsageError(
+        `--web must name a built web canvas directory; ${webDir} has no index.html.`,
+      );
+
     const stateDir = reviewServerStateDir(authoringEnv(options.stateDir));
+    // An explicit flag wins over the env; with neither, the server runs Ask
+    // only when it detects an installed agent.
+    const askEnv = env.WHITEBOARD_ASK?.trim();
+    const ask = options.ask ?? (askEnv ? isEnabledEnvValue(askEnv) : undefined);
     const controller = new AbortController();
     const stop = () => controller.abort();
     process.once("SIGINT", stop);
@@ -324,14 +373,23 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       await runHeadlessServer({
         stateDir,
         port,
+        host: options.host?.trim() || undefined,
+        webDir,
+        token,
         softwareMapEnabled: options.softwareMaps,
+        ask,
         signal: controller.signal,
         telemetry,
-        onReady: ({ url, serverPid }) => {
+        onReady: ({ url, serverPid, token }) => {
+          // The fragment never reaches the server, so the token can ride in
+          // the printed URL the way Jupyter's does.
+          const openUrl = webDir ? `${url}/#token=${token}` : undefined;
           input.stdout.write(
             options.json
-              ? `${JSON.stringify({ event: "server.ready", url, serverPid, stateDir })}\n`
-              : `Whiteboard server ready at ${url}\nSaved reviews: ${stateDir}\n`,
+              ? `${JSON.stringify({ event: "server.ready", url, ...(openUrl && { openUrl }), serverPid, stateDir })}\n`
+              : `Whiteboard server ready at ${url}\n` +
+                  (openUrl ? `Open ${openUrl}\n` : "") +
+                  `Saved reviews: ${stateDir}\n`,
           );
         },
       });
@@ -1446,6 +1504,10 @@ async function attemptTelemetry(fn: () => Promise<void>): Promise<void> {
 
 function commanderErrorMessage(error: CommanderError): string {
   return error.message.replace(/^error:\s*/i, "");
+}
+
+function isEnabledEnvValue(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true";
 }
 
 function formatCliError(cause: unknown): string {

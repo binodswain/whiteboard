@@ -103,6 +103,7 @@ export const ReviewRuntimeConfigSchema = z.strictObject({
   appVersion: requiredString.max(100),
   theme: reviewThemeSchema,
   host: z.literal("desktop"),
+  surface: z.enum(["desktop", "web"]).default("desktop"),
 });
 
 export type ReviewRuntimeConfig = z.infer<typeof ReviewRuntimeConfigSchema>;

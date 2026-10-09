@@ -9,6 +9,7 @@ import type { Plugin } from "vite";
 import { configDefaults, defineConfig } from "vitest/config";
 
 import { reviewTestAliases } from "../test-config";
+import { libavoidWasmAsset } from "./libavoid-wasm";
 import { stylexOptions } from "./stylex-options";
 
 const require = createRequire(import.meta.url);
@@ -76,7 +77,7 @@ export default defineConfig({
         },
       },
       {
-        plugins: [stylexDevCss(), react()],
+        plugins: [libavoidWasmAsset(), stylexDevCss(), react()],
         resolve: { alias, dedupe: ["react", "react-dom"] },
         test: {
           name: "browser",

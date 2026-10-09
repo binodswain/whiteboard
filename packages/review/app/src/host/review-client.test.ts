@@ -11,6 +11,7 @@ const injectedConfig = {
   appVersion: "0.0.13",
   theme: "dark",
   host: "desktop",
+  surface: "desktop",
 } satisfies ReviewRuntimeConfig;
 
 afterEach(() => {

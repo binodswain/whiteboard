@@ -47,6 +47,89 @@ afterEach(async () => {
 });
 
 describe("CodePeek native editor", () => {
+  it("renders API file content as selectable read-only code on the web", async () => {
+    session = createTestSession("web-session", "web");
+
+    const fetch = vi.spyOn(session, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ text: "zero\none\ntwo\nthree" })),
+    );
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      renderWithSession(
+        <CodePeekCard
+          source={selectSource({
+            side: "head",
+            file: "src/current.ts",
+            fromLine: 2,
+            toLine: 3,
+          })}
+          lenses={testLenses}
+        />,
+      );
+    });
+
+    await vi.waitFor(() =>
+      expect(container.querySelector("pre")?.textContent).toContain(
+        "2  one\n3  two",
+      ),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/file?side=head&file=src%2Fcurrent.ts",
+    );
+    expect(container.querySelector("[data-review-inline-editor]")).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("renders map and grouped code peeks from the API on the web", async () => {
+    session = createTestSession("web-session", "web");
+
+    const fetch = vi.spyOn(session, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ text: "zero\none\ntwo\nthree" })),
+    );
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      renderWithSession(
+        <>
+          <CodePeek
+            file="src/map.ts"
+            fromLine={2}
+            toLine={3}
+            graph="head"
+            lenses={testLenses}
+          />
+          <CodePeekGroup
+            peeks={[
+              {
+                file: "src/group.ts",
+                fromLine: 2,
+                toLine: 3,
+                side: "head",
+              },
+            ]}
+            lenses={testLenses}
+          />
+        </>,
+      );
+    });
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll("pre")).toHaveLength(2),
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(
+      container.querySelectorAll("[data-code-rendering='inline-editor']"),
+    ).toHaveLength(0);
+  });
+
   it("renders one native editor per authored file in a grouped side peek", async () => {
     const container = document.createElement("div");
     document.body.append(container);
@@ -289,9 +372,12 @@ function renderWithSession(node: ReactNode) {
   );
 }
 
-function createTestSession(reviewId = "test"): ReviewSession {
+function createTestSession(
+  reviewId = "test",
+  surface: "desktop" | "web" = "desktop",
+): ReviewSession {
   return testReviewSession(
-    { reviewId, token: "" },
+    { reviewId, token: "", surface },
     {
       diffView: {
         files: async () => [],

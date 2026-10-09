@@ -113,6 +113,38 @@ export function ReviewFindProvider({
     return () => host?.attach(null);
   }, [controller, host]);
 
+  useEffect(() => {
+    if (session?.config.surface !== "web") return;
+
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+
+    const keydown = (event: KeyboardEvent) => {
+      const modifier = mac
+        ? event.metaKey && !event.ctrlKey
+        : event.ctrlKey && !event.metaKey;
+
+      const target = event.target;
+
+      if (
+        !modifier ||
+        event.shiftKey ||
+        event.altKey ||
+        event.key.toLowerCase() !== "f" ||
+        (target instanceof HTMLElement && target.isContentEditable) ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement
+      )
+        return;
+
+      event.preventDefault();
+      controller.showFind();
+    };
+
+    window.addEventListener("keydown", keydown);
+
+    return () => window.removeEventListener("keydown", keydown);
+  }, [controller, session]);
+
   // Layout, so a new document's editors never see the old query: their
   // registrations queue a search that runs after this closes.
   useLayoutEffect(() => {
