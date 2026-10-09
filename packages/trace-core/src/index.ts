@@ -116,6 +116,8 @@ export {
   traceSettingsPath,
 } from "./trace-storage/s3-config";
 
+export { S3ObjectClient } from "./trace-storage/s3-client";
+
 export {
   type CliInputStream,
   collectingWritable,

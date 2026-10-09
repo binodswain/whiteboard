@@ -1,25 +1,8 @@
-import { execFile } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
-import {
-  type JsonValue,
-  jsonArray,
-  jsonNumber,
-  jsonObject,
-  jsonString,
-  parseJsonText,
-} from "@dev.fast/json";
+import { type JsonValue, parseJsonText } from "@dev.fast/json";
 import {
   type ByCommitEntry,
   type SessionMeta,
@@ -28,7 +11,7 @@ import {
   sessionMetaSchema,
 } from "@dev.fast/trace-protocol";
 
-import { errorMessage } from "../error-message";
+import { S3ObjectClient } from "./s3-client";
 import {
   type S3ConfigScope,
   type S3Credentials,
@@ -60,18 +43,17 @@ import type {
  * Objects only grow: a transcript is re-uploaded when the local copy is
  * larger than the stored one, and a by-commit entry is written once.
  */
-
-const execFileAsync = promisify(execFile);
-
 export class S3TraceStorage implements TraceStorage {
   readonly kind = "s3" as const;
   readonly target: S3StorageTarget;
+  private readonly objects: S3ObjectClient;
 
   private constructor(
     private readonly config: S3Credentials | null,
     private readonly mockRoot: string | null,
-    private readonly env: NodeJS.ProcessEnv,
+    env: NodeJS.ProcessEnv,
   ) {
+    this.objects = new S3ObjectClient(config, mockRoot, env);
     this.target = config
       ? {
           kind: "s3",
@@ -124,24 +106,16 @@ export class S3TraceStorage implements TraceStorage {
 
   /** A non-mutating reachability check of the configured bucket. */
   async readiness(): Promise<TraceStorageReadiness> {
-    if (!this.config) return { ready: true };
-
-    try {
-      await this.aws(["s3api", "head-bucket", "--bucket", this.config.bucket], {
-        timeout: 15_000,
-      });
-
-      return { ready: true };
-    } catch (error) {
-      return { ready: false, reason: errorMessage(error) };
-    }
+    return this.objects.readiness();
   }
 
   async describeObject(
     sessionId: string,
     traceName: string,
   ): Promise<TraceObjectInfo | null> {
-    const size = await this.headObjectSize(objectKey(sessionId, traceName));
+    const size = await this.objects.headObjectSize(
+      objectKey(sessionId, traceName),
+    );
 
     return size === null ? null : { size, contentId: `size:${size}` };
   }
@@ -152,7 +126,10 @@ export class S3TraceStorage implements TraceStorage {
     destinationPath: string,
   ): Promise<TraceObjectInfo | null> {
     if (
-      !(await this.getObject(objectKey(sessionId, traceName), destinationPath))
+      !(await this.objects.getObject(
+        objectKey(sessionId, traceName),
+        destinationPath,
+      ))
     ) {
       return null;
     }
@@ -166,50 +143,12 @@ export class S3TraceStorage implements TraceStorage {
     const prefix = `by-session/${sessionId}/subagents/`;
     const names = new Set<string>();
 
-    if (this.mockRoot !== null || !this.config) {
-      if (this.mockRoot) {
-        const dir = path.join(this.mockRoot, prefix);
+    for (const key of await this.objects.listKeys(prefix)) {
+      if (key.startsWith(prefix) && key.endsWith(".jsonl")) {
+        const name = key.slice(prefix.length, -6);
 
-        if (existsSync(dir)) {
-          try {
-            for (const entry of readdirSync(dir)) {
-              if (entry.endsWith(".jsonl")) names.add(entry.slice(0, -6));
-            }
-          } catch {
-            // Ignore mock readdir errors
-          }
-        }
+        if (name) names.add(name);
       }
-
-      return [...names].sort();
-    }
-
-    try {
-      const proc = await this.aws(
-        [
-          "s3api",
-          "list-objects-v2",
-          "--bucket",
-          this.config.bucket,
-          "--prefix",
-          prefix,
-        ],
-        { timeout: 10_000 },
-      );
-
-      const listing = jsonObject(parseJsonText(proc.stdout));
-
-      for (const item of jsonArray(listing?.Contents) ?? []) {
-        const key = jsonString(jsonObject(item)?.Key);
-
-        if (key && key.startsWith(prefix) && key.endsWith(".jsonl")) {
-          const name = key.slice(prefix.length, -6);
-
-          if (name) names.add(name);
-        }
-      }
-    } catch {
-      // Ignore remote list failure
     }
 
     return [...names].sort();
@@ -278,7 +217,7 @@ export class S3TraceStorage implements TraceStorage {
       ts: new Date().toISOString(),
     };
 
-    const saved = await this.putBuffer(
+    const saved = await this.objects.putBuffer(
       metaKey(input.sessionId),
       Buffer.from(JSON.stringify(meta, null, 2), "utf8"),
     );
@@ -309,7 +248,7 @@ export class S3TraceStorage implements TraceStorage {
       ts: new Date().toISOString(),
     });
 
-    const saved = await this.putBuffer(
+    const saved = await this.objects.putBuffer(
       commitKey(commit),
       Buffer.from(JSON.stringify(entry, null, 2), "utf8"),
     );
@@ -323,69 +262,6 @@ export class S3TraceStorage implements TraceStorage {
 
   // --- transport -----------------------------------------------------------
 
-  private async headObjectSize(key: string): Promise<number | null> {
-    if (!this.config) {
-      if (!this.mockRoot) return null;
-
-      try {
-        const stats = statSync(path.join(this.mockRoot, key));
-
-        return stats.isFile() ? stats.size : null;
-      } catch {
-        return null;
-      }
-    }
-
-    try {
-      const proc = await this.aws(
-        ["s3api", "head-object", "--bucket", this.config.bucket, "--key", key],
-        { timeout: 10_000 },
-      );
-
-      return (
-        jsonNumber(jsonObject(parseJsonText(proc.stdout))?.ContentLength) ??
-        null
-      );
-    } catch {
-      return null;
-    }
-  }
-
-  private async getObject(key: string, destPath: string): Promise<boolean> {
-    mkdirSync(path.dirname(destPath), { recursive: true });
-
-    if (!this.config) {
-      if (!this.mockRoot) return false;
-
-      try {
-        writeFileSync(destPath, readFileSync(path.join(this.mockRoot, key)));
-
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    try {
-      await this.aws(
-        [
-          "s3api",
-          "get-object",
-          "--bucket",
-          this.config.bucket,
-          "--key",
-          key,
-          destPath,
-        ],
-        { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 },
-      );
-
-      return existsSync(destPath);
-    } catch {
-      return false;
-    }
-  }
-
   private async getJson(key: string): Promise<JsonValue | null> {
     const tmpPath = path.join(
       tmpdir(),
@@ -393,7 +269,7 @@ export class S3TraceStorage implements TraceStorage {
     );
 
     try {
-      if (!(await this.getObject(key, tmpPath))) return null;
+      if (!(await this.objects.getObject(key, tmpPath))) return null;
 
       return parseJsonText(readFileSync(tmpPath, "utf8"));
     } catch {
@@ -403,101 +279,17 @@ export class S3TraceStorage implements TraceStorage {
     }
   }
 
-  private async putFile(key: string, filePath: string): Promise<boolean> {
-    if (!this.config) {
-      if (!this.mockRoot) return false;
-
-      try {
-        const target = path.join(this.mockRoot, key);
-        mkdirSync(path.dirname(target), { recursive: true });
-        writeFileSync(target, readFileSync(filePath));
-
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    try {
-      await this.aws(
-        [
-          "s3",
-          "cp",
-          "--only-show-errors",
-          filePath,
-          `s3://${this.config.bucket}/${key}`,
-        ],
-        { timeout: 60_000 },
-      );
-
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async putBuffer(key: string, content: Buffer): Promise<boolean> {
-    if (!this.config) {
-      if (!this.mockRoot) return false;
-
-      try {
-        const target = path.join(this.mockRoot, key);
-        mkdirSync(path.dirname(target), { recursive: true });
-        writeFileSync(target, content);
-
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    const tempFile = path.join(
-      tmpdir(),
-      `put-${process.pid}-${Math.random().toString(36).slice(2)}.tmp`,
-    );
-
-    writeFileSync(tempFile, content);
-
-    try {
-      return await this.putFile(key, tempFile);
-    } finally {
-      rmSync(tempFile, { force: true });
-    }
-  }
-
   private async putIfGrown(key: string, filePath: string): Promise<boolean> {
-    const remoteSize = await this.headObjectSize(key);
+    const remoteSize = await this.objects.headObjectSize(key);
     const localSize = statSync(filePath).size;
 
     if (remoteSize !== null && localSize <= remoteSize) return false;
 
-    if (!(await this.putFile(key, filePath))) {
+    if (!(await this.objects.putFile(key, filePath))) {
       throw new Error(`Failed to upload ${key} to S3/R2 storage.`);
     }
 
     return true;
-  }
-
-  private aws(
-    args: string[],
-    options: { timeout: number; maxBuffer?: number },
-  ): Promise<{ stdout: string; stderr: string }> {
-    const config = this.config;
-
-    if (!config) throw new Error("S3 trace storage is not configured.");
-
-    return execFileAsync(
-      "aws",
-      ["--region", config.region, "--endpoint-url", config.endpoint, ...args],
-      {
-        ...options,
-        env: {
-          ...this.env,
-          AWS_ACCESS_KEY_ID: config.accessKeyId,
-          AWS_SECRET_ACCESS_KEY: config.secretAccessKey,
-        },
-      },
-    );
   }
 }
 
