@@ -1,10 +1,19 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import path from "node:path";
 
 import { isObjectValue } from "@dev.fast/json";
-import { withFileLock, writePrivateJsonAtomic } from "@dev.fast/trace-core";
+import {
+  shellQuote,
+  withFileLock,
+  writePrivateJsonAtomic,
+} from "@dev.fast/trace-core";
+import { detectAskAgents } from "@review/ask/agents.js";
+import type { AskTools } from "@review/ask/threads.js";
+import { findReviewPackageRoot } from "@review/package-paths.js";
 import { openReviewProfile } from "@review/review-api/profile.js";
 import {
   type ReviewServerDiscovery,
@@ -32,6 +41,9 @@ interface HeadlessServerInput {
   /** Pin the auth token; a fresh one is generated when omitted. */
   token?: string;
   softwareMapEnabled?: boolean;
+  /** Ask reviewers through an installed agent CLI; unset runs Ask when one
+   * is detected. */
+  ask?: boolean;
   signal: AbortSignal;
   /** The CLI's instance, already on the `headless` surface. */
   telemetry?: Pick<ReviewTelemetryCapture, "captureUiEvent">;
@@ -100,7 +112,10 @@ async function serve(input: HeadlessServerInput) {
 
   const relay = new GlobalReviewDesktopVerbRelay();
 
-  const { app, api } = createWhiteboardCore({
+  const ask =
+    input.ask ?? (await detectAskAgents()).some((agent) => agent.available);
+
+  const core = createWhiteboardCore({
     profile: local,
     relay,
     token: discovery.token,
@@ -109,7 +124,10 @@ async function serve(input: HeadlessServerInput) {
     // The scratchpad is the laptop's alone, even with a Desktop attached.
     scratchpad: () => false,
     status: () => ({ key: "headless", home: input.stateDir }),
+    ask: ask ? { tools: headlessAskTools(input.stateDir) } : undefined,
   });
+
+  const { app, api } = core;
 
   app.route("/reviews-api", api);
 
@@ -158,6 +176,8 @@ async function serve(input: HeadlessServerInput) {
       if (published)
         await rm(reviewServerDiscoveryPath(input.stateDir), { force: true });
     } finally {
+      // Ask agents run as this server's children; they stop with it.
+      core.close();
       // An attached Desktop's stream would otherwise hold the close open.
       relay.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -182,4 +202,56 @@ function isLoopbackAddress(bound: string) {
   const ipv4 = bound.startsWith("::ffff:") ? bound.slice(7) : bound;
 
   return ipv4 === "::1" || ipv4.startsWith("127.");
+}
+
+/** The package's built CLI, when there is one to advertise; a checkout run
+ * from source has none, and its Ask sessions go without Whiteboard's tools. */
+function whiteboardCliPath(): string | undefined {
+  const cli = path.join(
+    findReviewPackageRoot(import.meta.url),
+    "dist",
+    "cli.js",
+  );
+
+  return existsSync(cli) ? cli : undefined;
+}
+
+/** Whiteboard's tools for the server's Ask sessions: `whiteboard mcp` over
+ * stdio, or `whiteboard api` from the agent's shell — each pointed at this
+ * state directory so no other running Whiteboard answers the agent. */
+export function headlessAskTools(
+  stateDir: string,
+  cliPath: string | null = whiteboardCliPath() ?? null,
+): AskTools {
+  const cli = cliPath ?? undefined;
+  const cliEnv = () => [
+    { name: "DEV_REVIEW_SERVER_DIR", value: stateDir },
+    ...(process.versions.electron
+      ? [{ name: "ELECTRON_RUN_AS_NODE", value: "1" }]
+      : []),
+    ...(process.env.DEV_REVIEW_HOME
+      ? [{ name: "DEV_REVIEW_HOME", value: process.env.DEV_REVIEW_HOME }]
+      : []),
+  ];
+
+  return {
+    mcpServers: () =>
+      cli
+        ? [
+            {
+              name: "whiteboard",
+              command: process.execPath,
+              args: [cli, "mcp"],
+              env: cliEnv(),
+            },
+          ]
+        : [],
+    cli: () =>
+      cli &&
+      [
+        ...cliEnv().map(({ name, value }) => `${name}=${shellQuote(value)}`),
+        shellQuote(process.execPath),
+        shellQuote(cli),
+      ].join(" "),
+  };
 }
