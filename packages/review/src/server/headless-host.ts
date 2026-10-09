@@ -224,7 +224,7 @@ async function persistedServerToken(stateDir: string) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
 
   try {
-    const token = await readFile(tokenPath, "utf8");
+    const token = (await readFile(tokenPath, "utf8")).trim();
 
     if (token.length < 32)
       throw new Error(`The persisted server token in ${tokenPath} is invalid.`);
@@ -250,7 +250,7 @@ async function persistedServerToken(stateDir: string) {
       throw error;
   }
 
-  const persistedToken = await readFile(tokenPath, "utf8");
+  const persistedToken = (await readFile(tokenPath, "utf8")).trim();
 
   if (persistedToken.length < 32)
     throw new Error(`The persisted server token in ${tokenPath} is invalid.`);

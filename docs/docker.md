@@ -24,6 +24,20 @@ For a non-default port, set `WHITEBOARD_PORT` in `.env` and pass it to the start
 WHITEBOARD_PORT=3307 pnpm docker:up
 ```
 
+## Upgrading from the `/workspace` setup
+
+The new bind-mounted data directory replaces the old named volume. Before starting, `pnpm docker:up` copies data from `whiteboard_whiteboard-data` (or a single project-prefixed `*_whiteboard-data` volume) when the new directory has no `review-api.db`; it leaves the old volume untouched. To copy it manually:
+
+```sh
+DATA_DIR="${WHITEBOARD_DATA_DIR:-$HOME/.whiteboard/docker}"
+mkdir -p "$DATA_DIR"
+docker run --rm -v whiteboard_whiteboard-data:/from:ro -v "$DATA_DIR:/to" node:24-bookworm-slim sh -c 'cp -a /from/. /to/ && chown -R "$1:$2" /to' sh "$(id -u)" "$(id -g)"
+```
+
+If `WHITEBOARD_DATA_DIR` is set in `.env`, use that same path for `DATA_DIR` in the manual command.
+
+For a project-prefixed volume, replace `whiteboard_whiteboard-data` with its name from `docker volume ls`. Do not remove the old volume until you have verified the migrated reviews. `CODE_ROOT` replaces the former `REPOSITORY` setting. Existing reviews registered with the in-container path `/workspace` keep that saved path and may need to be recreated against the same-path checkout.
+
 ## Review a local repository
 
 `CODE_ROOT` is mounted at the same absolute path inside the container. A repository at `/Users/alice/code/service` on the host is therefore registered using `/Users/alice/code/service` in Whiteboard, not a remapped `/workspace` path. The same-path mount also allows Git worktrees to resolve `.git` metadata elsewhere under `CODE_ROOT`; Git safe-directory trust is scoped to this container image.

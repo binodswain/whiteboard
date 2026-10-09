@@ -1760,7 +1760,9 @@ export function createReviewApi(
 
       if (!existsSync(path))
         throw new ReviewInputError(
-          `Repository path ${JSON.stringify(path)} is outside the mounted CODE_ROOT or does not exist in the server. Set CODE_ROOT on the host to a directory containing this repository, then bind-mount it at the same absolute path inside the container.`,
+          process.env.CODE_ROOT?.trim()
+            ? `Repository path ${JSON.stringify(path)} is outside the mounted CODE_ROOT or does not exist in the server. Set CODE_ROOT on the host to a directory containing this repository, then bind-mount it at the same absolute path inside the container.`
+            : "Repository path does not exist.",
         );
 
       return data.register(path);

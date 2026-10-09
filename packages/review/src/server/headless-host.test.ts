@@ -196,6 +196,7 @@ it("reuses a private generated token across server restarts", async () => {
   expect((await stat(tokenPath)).mode & 0o777).toBe(0o600);
 
   await server.stop();
+  await writeFile(tokenPath, ` \n${token}\t\n`);
   server = await start(server.stateDir);
 
   expect(server.discovery.token).toBe(token);
@@ -203,6 +204,7 @@ it("reuses a private generated token across server restarts", async () => {
 
 it("explains how to mount a repository path unavailable to the server", async () => {
   const server = await start();
+  vi.stubEnv("CODE_ROOT", path.join(root, "mounted-code"));
 
   await expect(
     server.client.post("/commands", {
