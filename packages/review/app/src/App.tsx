@@ -56,6 +56,7 @@ import {
   topbarTabsMarker,
 } from "./markers.stylex";
 import { MissingCheckoutBanner } from "./missing-checkout-banner";
+import { CommentsControl } from "./review-comments";
 import { ReviewPanelHost } from "./review-components";
 import {
   ReviewProvider,
@@ -662,6 +663,7 @@ function ReviewLayoutContent({
                   Settings
                 </Button>
               )}
+              <CommentsControl />
               <ShareControl />
               <IconButton
                 xstyle={shellStyles.topbarItem}

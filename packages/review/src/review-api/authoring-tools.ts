@@ -5,6 +5,7 @@ import {
   activityEndSchema,
   activityUpdateSchema,
 } from "./activity.js";
+import { commentInputSchema } from "./comments.js";
 import { pathTargetSchema, publishedEditSchema } from "./document.js";
 import { instructionsQuerySchema } from "./instructions.js";
 import { uploadSchema } from "./local-data.js";
@@ -235,6 +236,34 @@ export function authoringTools(
       z.strictObject({ path: id }),
       "POST",
       "/repositories",
+    ),
+    tool(
+      "add_comment",
+      "Comment on a review: on a source range (anchor head/path#L10-L12 or base/path#L7), a diagram element (anchor element:<id>), or the whole review when anchor is omitted. Pass parentId to reply in a thread. The comment is authored as the server's user and reads in the viewer alongside readers' comments.",
+      z.strictObject({
+        ...review,
+        ...commentInputSchema.omit({ author: true }).shape,
+      }),
+      "POST",
+      "/:reviewId/comments",
+    ),
+    tool(
+      "list_comments",
+      "List a review's comment threads, with each thread's anchor, whether its lines changed in a later version (outdated), and whether it is resolved.",
+      z.strictObject(review),
+      "GET",
+      "/:reviewId/comments",
+    ),
+    tool(
+      "resolve_comment",
+      "Resolve or reopen the thread a comment belongs to (resolved defaults to true). Returns the review's comments.",
+      z.strictObject({
+        ...review,
+        commentId: id,
+        resolved: z.boolean().optional(),
+      }),
+      "POST",
+      "/:reviewId/comments/resolve",
     ),
     tool(
       "upload",

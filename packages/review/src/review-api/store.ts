@@ -23,6 +23,7 @@ import { z } from "zod";
 
 import { type ActivitySurface, ReviewActivity } from "./activity.js";
 import { AskHistory } from "./ask-history.js";
+import { ReviewComments } from "./comments.js";
 import {
   type Lens,
   applyLensEdit,
@@ -233,6 +234,12 @@ export interface ReviewProviders {
   /** Ids of references whose own pins no longer name a usable checkout. */
   unavailableAnchors?(snapshot: Snapshot): Promise<string[]>;
   validatePins(pins: Pins): Promise<void>;
+  /** A file's text at one side's commit, or undefined when it has none there. */
+  fileText?(
+    pins: Pins,
+    side: "base" | "head",
+    file: string,
+  ): Promise<string | undefined>;
   /** The files each side's commit changed from one set of pins to another,
    * or undefined when they can't be diffed commit to commit. */
   filesChangedBetween?(
@@ -254,6 +261,7 @@ export interface ReviewProviders {
 export class ReviewStore {
   readonly activity: ReviewActivity;
   readonly askHistory: AskHistory;
+  readonly comments: ReviewComments;
   private readonly meta: MetadataStore;
   metadataStore(): MetadataStore {
     return this.meta;
@@ -416,6 +424,7 @@ export class ReviewStore {
     this.meta = meta;
     this.activity = new ReviewActivity(meta, (id) => this.assertExists(id));
     this.askHistory = new AskHistory(meta);
+    this.comments = new ReviewComments(meta);
   }
 
   /** A store over an existing metadata backend or a SQLite file path. */
@@ -1041,6 +1050,7 @@ export class ReviewStore {
           async () => {
             for (const table of [
               "ask_conversations",
+              "review_comments",
               "authoring_presences",
               "review_coverage",
               "review_attention",
@@ -1293,6 +1303,31 @@ export class ReviewStore {
             snapshot.version,
             JSON.stringify(snapshot),
           );
+
+          if (
+            previous?.pins &&
+            snapshot.pins &&
+            this.providers.fileText &&
+            JSON.stringify(previous.pins) !== JSON.stringify(snapshot.pins)
+          ) {
+            const { fileText } = this.providers;
+            const previousPins = previous.pins;
+            const nextPins = snapshot.pins;
+
+            await this.comments.carryForward(
+              id,
+              snapshot.version,
+              {
+                previous: (side, file) => fileText(previousPins, side, file),
+                next: (side, file) => fileText(nextPins, side, file),
+              },
+              new Set(
+                elements(snapshot.document).flatMap((element) =>
+                  element.id ? [element.id] : [],
+                ),
+              ),
+            );
+          }
         },
         previous ? () => this.assertMutation(id, previous.version) : undefined,
         op.type === "edit" || op.type === "lens_edit"

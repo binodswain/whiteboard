@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
@@ -747,6 +748,81 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     },
   );
 
+  program
+    .command("comment")
+    .description("Comment on a review, on a file line or the whole review")
+    .argument("<review>", "review ID")
+    .argument("<text>", "comment text")
+    .option("--file <path:line>", "anchor to a line of the head commit")
+    .option("--reply-to <commentId>", "reply in an existing thread")
+    .action(
+      async (
+        reviewId: string,
+        text: string,
+        options: { file?: string; replyTo?: string },
+      ) => {
+        const connected = await connectReviewInstance(authoringEnv());
+        const fileLine = options.file?.match(/^(.+):(\d+)$/);
+
+        if (options.file && !fileLine)
+          throw new Error("--file takes path:line, such as src/app.ts:12.");
+
+        const comment = await connected.client.post<{ id: string }>(
+          `/${encodeURIComponent(reviewId)}/comments`,
+          {
+            body: text,
+            author: gitUserName(cwd),
+            ...(fileLine && { anchor: `head/${fileLine[1]}#L${fileLine[2]}` }),
+            ...(options.replyTo && { parentId: options.replyTo }),
+          },
+        );
+
+        input.stdout.write(`${comment.id}\n`);
+        state.exitCode = 0;
+      },
+    );
+
+  program
+    .command("comments")
+    .description("List a review's comment threads")
+    .argument("<review>", "review ID")
+    .action(async (reviewId: string) => {
+      const connected = await connectReviewInstance(authoringEnv());
+
+      const { comments } = await connected.client.read<{
+        comments: {
+          id: string;
+          anchor?: string;
+          parentId?: string;
+          body: string;
+          author: string;
+          resolved: boolean;
+          outdated: boolean;
+        }[];
+      }>(`/${encodeURIComponent(reviewId)}/comments`);
+
+      for (const comment of comments.filter((item) => !item.parentId)) {
+        const flags = [
+          comment.resolved ? "resolved" : "open",
+          comment.outdated ? "outdated" : undefined,
+        ].filter(Boolean);
+
+        const place = comment.anchor ?? "review";
+
+        input.stdout.write(
+          `${comment.id} [${flags.join(", ")}] ${place} ${comment.author}: ${comment.body}\n`,
+        );
+
+        for (const reply of comments.filter(
+          (item) => item.parentId === comment.id,
+        )) {
+          input.stdout.write(`  ${reply.id} ${reply.author}: ${reply.body}\n`);
+        }
+      }
+
+      state.exitCode = 0;
+    });
+
   const instanceOutput = (command: Command) => ({
     env,
     stdout: input.stdout,
@@ -1307,6 +1383,15 @@ const TARGET_LABELS: Record<InstallTarget, string> = {
   omp: "oh-my-pi",
   copilot: "Copilot CLI",
 };
+
+/** The checkout's git identity, which names the comment's author locally. */
+function gitUserName(cwd: string): string | undefined {
+  const name = spawnSync("git", ["-C", cwd, "config", "user.name"], {
+    encoding: "utf8",
+  }).stdout.trim();
+
+  return name || undefined;
+}
 
 function parseTargets(targets: readonly string[]): InstallTarget[] {
   if (targets.length === 0 || targets.includes("all")) {

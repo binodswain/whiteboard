@@ -29,6 +29,10 @@ import {
   CopyIcon,
   ShiftKeyIcon,
 } from "./icons";
+import {
+  codeSelectionAnchor,
+  useOptionalReviewComments,
+} from "./review-comments";
 import { useReviewDiffFiles } from "./review-diff-files-context";
 import { useOptionalReviewPanelStore } from "./review-panel";
 import { fontSize, layer } from "./scale.stylex";
@@ -213,6 +217,13 @@ export function AgentSelectionProvider({
     }
   }, [selection, session, revision]);
 
+  const comments = useOptionalReviewComments();
+
+  const commentAnchor =
+    selection?.target.kind === "code"
+      ? codeSelectionAnchor(selection.target)
+      : undefined;
+
   const askAgent =
     !checkoutGone && askAgents && preferredAskAgent(session, askAgents);
 
@@ -361,6 +372,17 @@ export function AgentSelectionProvider({
                           />
                         ) : null}
                       </>
+                    ) : null}
+                    {comments && commentAnchor ? (
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          comments.show(commentAnchor);
+                          select(null);
+                        }}
+                      >
+                        <span>Comment</span>
+                      </Button>
                     ) : null}
                     <Button
                       variant="ghost"

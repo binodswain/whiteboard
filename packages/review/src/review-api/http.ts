@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { type JsonObject, isJsonObject } from "@dev.fast/json";
@@ -49,6 +50,7 @@ import { z } from "zod";
 
 import { anchorQuotes } from "./anchor-quotes.js";
 import { authoringTools } from "./authoring-tools.js";
+import { commentInputSchema } from "./comments.js";
 import { documentText } from "./document-text.js";
 import { ReviewInputError } from "./document.js";
 import {
@@ -1733,6 +1735,48 @@ export function createReviewApi(
       return context.json({ ok: true });
     });
   }
+
+  app.get("/:id/comments", async (context) => {
+    const reviewId = context.req.param("id");
+
+    await readReview(reviewId);
+
+    return context.json({ comments: await store.comments.list(reviewId) });
+  });
+
+  app.post("/:id/comments", async (context) => {
+    const reviewId = context.req.param("id");
+    const snapshot = await readReview(reviewId);
+
+    const input = commentInputSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    return context.json(
+      await store.comments.add(reviewId, snapshot.version, {
+        ...input,
+        author: input.author ?? os.userInfo().username,
+      }),
+      201,
+    );
+  });
+
+  app.post("/:id/comments/resolve", async (context) => {
+    const reviewId = context.req.param("id");
+
+    await readReview(reviewId);
+
+    const { commentId, resolved } = z
+      .strictObject({
+        commentId: z.string().min(1),
+        resolved: z.boolean().default(true),
+      })
+      .parse(await readBoundedRequestJson(context.req.raw));
+
+    return context.json({
+      comments: await store.comments.setResolved(reviewId, commentId, resolved),
+    });
+  });
 
   app.get("/:id/stack", async (context) => {
     const query = readQuerySchemas.get.parse(context.req.query());

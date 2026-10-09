@@ -72,7 +72,20 @@ const REVIEW_SCHEMA = `
     id TEXT PRIMARY KEY, job_key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, input TEXT NOT NULL,
     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER,
     review_id TEXT, url TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-  CREATE INDEX IF NOT EXISTS jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);`;
+  CREATE INDEX IF NOT EXISTS jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);
+  CREATE TABLE IF NOT EXISTS review_comments(
+    id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    anchor TEXT,
+    parent_id TEXT,
+    body TEXT NOT NULL,
+    author TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    outdated INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS review_comments_review ON review_comments(review_id, created_at);`;
 
 /** The `.workspaces` sidecar's tables, byte-for-byte what the synchronous
  * workspace manager created. */
