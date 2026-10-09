@@ -19,6 +19,9 @@ import { createApiTokens } from "./tokens.js";
 
 const SESSION_COOKIE = "wb_session";
 
+/** Binds an OAuth sign-in to the browser that started it; single-use. */
+const NONCE_COOKIE = "wb_oauth_nonce";
+
 const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
 
 const OAUTH_STATE_TTL_MS = 10 * 60_000;
@@ -69,6 +72,18 @@ export function createOAuthDriver(input: {
   const fetchImpl = input.fetchImpl ?? fetch;
   const tokens = createApiTokens(meta);
 
+  // Behind a TLS-terminating proxy the request URL reads http, so the Secure
+  // flag cannot come from it; the configured GitHub URL stands in — remote
+  // deployments are https in practice, so Secure is the default.
+  const secureFlag = new URL(webUrl).protocol === "https:" ? "; Secure" : "";
+
+  const clearNonceCookie = `${NONCE_COOKIE}=; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`;
+
+  // The cookie carries the raw session id; the row stores only its
+  // domain-separated hash so a database leak does not yield live sessions.
+  const hashSession = (id: string) =>
+    createHash("sha256").update(`whiteboard:session:${id}`).digest("hex");
+
   // The GitHub OAuth token is the user's proof of repository access; it is
   // sealed at rest so a database dump alone cannot spend it.
   const sealKey = createHash("sha256")
@@ -102,8 +117,14 @@ export function createOAuthDriver(input: {
     }
   };
 
-  // OAuth state carries its own expiry and the post-sign-in destination.
-  const signState = (payload: { exp: number; next: string }): string => {
+  // OAuth state carries its own expiry, the post-sign-in destination and a
+  // nonce the callback must read back from this browser's cookie — a signed
+  // state alone does not prove the callback is the browser that signed in.
+  const signState = (payload: {
+    exp: number;
+    next: string;
+    nonce: string;
+  }): string => {
     const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
 
     const signature = createHmac("sha256", `${secret}:state`)
@@ -113,7 +134,9 @@ export function createOAuthDriver(input: {
     return `${data}.${signature}`;
   };
 
-  const verifyState = (value: string): { next: string } | undefined => {
+  const verifyState = (
+    value: string,
+  ): { next: string; nonce: string } | undefined => {
     const [data, signature] = value.split(".");
 
     const expected = createHmac("sha256", `${secret}:state`)
@@ -127,14 +150,14 @@ export function createOAuthDriver(input: {
 
     try {
       const state = z
-        .object({ exp: z.number(), next: z.string() })
+        .object({ exp: z.number(), next: z.string(), nonce: z.string() })
         .safeParse(
           JSON.parse(Buffer.from(data!, "base64url").toString("utf8")),
         );
 
       if (!state.success || state.data.exp < Date.now()) return undefined;
 
-      return { next: safeNext(state.data.next) };
+      return { next: safeNext(state.data.next), nonce: state.data.nonce };
     } catch {
       return undefined;
     }
@@ -172,18 +195,20 @@ export function createOAuthDriver(input: {
 
     if (!sessionId) return null;
 
+    const hashed = hashSession(sessionId);
+
     const row = await meta.get(
       `SELECT s.expires_at, u.id AS user_id, u.login, u.github_token
        FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id
        WHERE s.id=?`,
-      sessionId,
+      hashed,
     );
 
     if (!row) return null;
 
     if (String(row.expires_at) <= new Date().toISOString()) {
       await meta
-        .run("DELETE FROM auth_sessions WHERE id=?", sessionId)
+        .run("DELETE FROM auth_sessions WHERE id=?", hashed)
         .catch(() => {});
 
       return null;
@@ -311,12 +336,12 @@ ${action}
 
     if (sessionId)
       await meta
-        .run("DELETE FROM auth_sessions WHERE id=?", sessionId)
+        .run("DELETE FROM auth_sessions WHERE id=?", hashSession(sessionId))
         .catch(() => {});
 
     context.header(
       "set-cookie",
-      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`,
     );
 
     return context.json({ ok: true });
@@ -325,11 +350,18 @@ ${action}
   if (oauth) {
     routes.get("/github", (context) => {
       const origin = new URL(context.req.url).origin;
+      const nonce = randomBytes(16).toString("base64url");
 
       const state = signState({
         exp: Date.now() + OAUTH_STATE_TTL_MS,
         next: safeNext(context.req.query("next")),
+        nonce,
       });
+
+      context.header(
+        "set-cookie",
+        `${NONCE_COOKIE}=${nonce}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=${OAUTH_STATE_TTL_MS / 1000}${secureFlag}`,
+      );
 
       const callback = `${origin}/auth/github/callback`;
 
@@ -346,7 +378,15 @@ ${action}
       const state = verifyState(context.req.query("state") ?? "");
       const code = context.req.query("code");
 
-      if (!state) return context.json({ error: "Invalid sign-in state." }, 400);
+      // The nonce cookie is single-use whether the callback is valid or not.
+      context.header("set-cookie", clearNonceCookie);
+
+      const nonce = cookies(context.req.raw).get(NONCE_COOKIE);
+      const a = Buffer.from(nonce ?? "");
+      const b = Buffer.from(state?.nonce ?? "");
+
+      if (!state || a.length !== b.length || !timingSafeEqual(a, b))
+        return context.json({ error: "Invalid sign-in state." }, 400);
 
       if (!code) return context.json({ error: "Missing sign-in code." }, 400);
 
@@ -407,18 +447,16 @@ ${action}
 
       await meta.run(
         "INSERT INTO auth_sessions(id,user_id,created_at,expires_at) VALUES(?,?,?,?)",
-        sessionId,
+        hashSession(sessionId),
         userId,
         new Date(now).toISOString(),
         new Date(now + SESSION_TTL_MS).toISOString(),
       );
 
-      const secure =
-        new URL(context.req.url).protocol === "https:" ? "; Secure" : "";
-
       context.header(
         "set-cookie",
-        `${SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax${secure}`,
+        `${SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${secureFlag}`,
+        { append: true },
       );
 
       return context.redirect(state.next);

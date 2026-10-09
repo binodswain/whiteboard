@@ -90,7 +90,8 @@ function oauthDriver(
 const sessionCookie = (response: Response): string =>
   response.headers.get("set-cookie")?.match(/wb_session=([^;]+)/)?.[1] ?? "";
 
-/** Signs a viewer in through the stubbed OAuth loop; returns the cookie. */
+/** Signs a viewer in through the stubbed OAuth loop; returns the callback
+ * response — `sessionCookie()` extracts the session id from it. */
 async function signIn(
   routes: {
     request: (
@@ -106,11 +107,14 @@ async function signIn(
     "state",
   )!;
 
-  const callback = await routes.request(
-    `${prefix}/github/callback?code=c&state=${encodeURIComponent(state)}`,
-  );
+  const nonce =
+    started.headers.get("set-cookie")?.match(/wb_oauth_nonce=([^;]+)/)?.[1] ??
+    "";
 
-  return sessionCookie(callback);
+  return routes.request(
+    `${prefix}/github/callback?code=c&state=${encodeURIComponent(state)}`,
+    { headers: { cookie: `wb_oauth_nonce=${nonce}` } },
+  );
 }
 
 describe("githubRepoSlug", () => {
@@ -359,7 +363,7 @@ describe("oauth driver", () => {
     expect(authorize.pathname).toBe("/login/oauth/authorize");
 
     // The callback exchanges the code, upserts the user and sets a cookie.
-    const cookie = await signIn(driver.routes);
+    const cookie = sessionCookie(await signIn(driver.routes));
     expect(cookie).not.toBe("");
 
     const signedIn = await driver.routes.request("/session", {
@@ -381,6 +385,91 @@ describe("oauth driver", () => {
     ).toBe(400);
   });
 
+  it("binds the OAuth state to the browser through a nonce cookie", async () => {
+    const { fetchImpl } = stubFetch({
+      "/login/oauth/access_token": { body: { access_token: "gho_v" } },
+      "/user": { body: { id: 9, login: "ada" } },
+    });
+
+    const driver = oauthDriver(fetchImpl);
+
+    // Starting sign-in sets the short-lived nonce cookie.
+    const started = await driver.routes.request("/github");
+    const nonce = started.headers.get("set-cookie") ?? "";
+    expect(nonce).toMatch(/wb_oauth_nonce=[^;]+;/);
+    expect(nonce).toContain("HttpOnly");
+    expect(nonce).toContain("SameSite=Lax");
+    expect(nonce).toContain("Max-Age=600");
+
+    const state = new URL(started.headers.get("location")!).searchParams.get(
+      "state",
+    )!;
+
+    const callback = `/github/callback?code=c&state=${encodeURIComponent(state)}`;
+
+    // Without the nonce cookie — or with another browser's — the signed state
+    // alone does not finish the sign-in, and the cookie is cleared either way.
+    const missing = await driver.routes.request(callback);
+    expect(missing.status).toBe(400);
+    expect(missing.headers.get("set-cookie")).toContain(
+      "wb_oauth_nonce=; Path=/auth",
+    );
+
+    expect(
+      (
+        await driver.routes.request(callback, {
+          headers: { cookie: "wb_oauth_nonce=someone-elses" },
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("stores the session row under a hash, not the cookie value", async () => {
+    const { fetchImpl } = stubFetch({
+      "/login/oauth/access_token": { body: { access_token: "gho_v" } },
+      "/user": { body: { id: 9, login: "ada" } },
+    });
+
+    const driver = oauthDriver(fetchImpl);
+    const cookie = sessionCookie(await signIn(driver.routes));
+
+    const row = await store.metadata.get("SELECT id FROM auth_sessions");
+    expect(String(row?.id)).toMatch(/^[0-9a-f]{64}$/);
+    expect(String(row?.id)).not.toBe(cookie);
+
+    // The raw cookie value still authenticates — the lookup hashes it.
+    expect(
+      await driver.authenticate(
+        new Request("http://test/", {
+          headers: { cookie: `wb_session=${cookie}` },
+        }),
+      ),
+    ).toMatchObject({ login: "ada", via: "github" });
+  });
+
+  it("sets Secure and Max-Age on the session cookie for an https deployment", async () => {
+    const { fetchImpl } = stubFetch({
+      "/login/oauth/access_token": { body: { access_token: "gho_v" } },
+      "/user": { body: { id: 9, login: "ada" } },
+    });
+
+    const driver = oauthDriver(fetchImpl);
+
+    // The request URL is http (the test server), yet the configured https
+    // GitHub URL keeps the Secure flag on — as behind a TLS-terminating proxy.
+    const callback = await signIn(driver.routes);
+
+    const session =
+      callback.headers
+        .get("set-cookie")
+        ?.match(/wb_session=[^;]+;[^,]*/)?.[0] ?? "";
+
+    expect(session).toContain("HttpOnly");
+    expect(session).toContain("SameSite=Lax");
+    expect(session).toContain("Secure");
+    expect(session).toContain(`Max-Age=${(30 * 24 * 60 * 60_000) / 1000}`);
+  });
+
   it("issues personal API tokens only to signed-in viewers", async () => {
     const { fetchImpl } = stubFetch({
       "/login/oauth/access_token": { body: { access_token: "gho_x" } },
@@ -388,7 +477,7 @@ describe("oauth driver", () => {
     });
 
     const driver = oauthDriver(fetchImpl);
-    const cookie = await signIn(driver.routes);
+    const cookie = sessionCookie(await signIn(driver.routes));
 
     const created = await driver.routes.request("/tokens", {
       method: "POST",
@@ -614,7 +703,7 @@ describe("remote server wall", () => {
       },
     });
 
-    const cookie = await signIn(app, "/auth");
+    const cookie = sessionCookie(await signIn(app, "/auth"));
     const auth = { cookie: `wb_session=${cookie}` };
 
     const catalog = (await (
