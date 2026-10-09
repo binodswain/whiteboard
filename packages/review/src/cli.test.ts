@@ -472,6 +472,10 @@ describe("Whiteboard CLI", () => {
       legacyInstallConfigPath: path.join(rootPath, "legacy.json"),
     });
 
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("no server"));
+
     try {
       await expect(
         runReviewCli({
@@ -494,6 +498,7 @@ describe("Whiteboard CLI", () => {
         }),
       );
     } finally {
+      fetchMock.mockRestore();
       await rm(rootPath, { recursive: true, force: true });
     }
   });

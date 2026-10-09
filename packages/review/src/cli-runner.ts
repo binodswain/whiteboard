@@ -1014,18 +1014,19 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         .command(name)
         .description(description)
         .argument("[args...]", "tool name and JSON input")
+        .option("--url <url>", "connect to a Whiteboard server URL")
         .allowUnknownOption()
         .allowExcessArguments()
         .helpOption(false)
         .passThroughOptions()
         .addHelpText("after", `\n${reviewAgentCliHelp}`),
       "plain",
-    ).action(async (args: string[]) => {
+    ).action(async (args: string[], options: { url?: string }) => {
       const { runReviewAgentCli } = await import("./review-api/agent-cli.js");
       state.exitCode = await runReviewAgentCli({
         ...input,
         env: authoringEnv(),
-        argv: [name, ...args],
+        argv: [name, ...(options.url ? ["--url", options.url] : []), ...args],
         onFailure: (error) => {
           activeCause = error;
         },
