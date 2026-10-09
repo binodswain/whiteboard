@@ -11,8 +11,8 @@ import { devReviewHome } from "@review/review-home-paths";
 import { ReviewTelemetry } from "@review/review-telemetry";
 import { SharedReviewStore } from "@review/sharing/import.js";
 import { reviewTelemetryChannel } from "@review/telemetry-config";
-import { loadDeploymentConfig } from "./deployment-config";
 
+import { loadDeploymentConfig } from "./deployment-config";
 import { listenForDesktopHostShutdown } from "./desktop-host-shutdown";
 import { createGlobalReviewServer } from "./desktop-server";
 import {

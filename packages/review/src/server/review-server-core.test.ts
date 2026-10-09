@@ -12,9 +12,9 @@ import { reviewServerDiscoveryPath } from "@review/server-discovery.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createGlobalReviewServer } from "./desktop-server.js";
+import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 import { runHeadlessServer } from "./headless-host.js";
 import { createWhiteboardCore } from "./review-server-core.js";
-import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -26,6 +26,7 @@ const stops: (() => Promise<void>)[] = [];
 
 it("constructs the configured S3 blob store on the Whiteboard core", async () => {
   const profile = await openLocalReviewStore(path.join(root, "review-api.db"));
+
   const core = createWhiteboardCore({
     profile,
     relay: new GlobalReviewDesktopVerbRelay(),
@@ -60,6 +61,7 @@ it("constructs the configured S3 blob store on the Whiteboard core", async () =>
 
 it("constructs the configured GitHub repo source on the Whiteboard core", async () => {
   const profile = await openLocalReviewStore(path.join(root, "repo-source.db"));
+
   const core = createWhiteboardCore({
     profile,
     relay: new GlobalReviewDesktopVerbRelay(),

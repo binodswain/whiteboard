@@ -56,6 +56,7 @@ import { z } from "zod";
 
 import { aliasInstallationToAccount } from "./account-alias";
 import { CrashReportRequestSchema, reportCrashDump } from "./crash-report";
+import type { DeploymentConfig } from "./deployment-config.js";
 import {
   migrateDiffrConfig,
   readDiffrConfig,
@@ -73,7 +74,6 @@ import { createJsonReviewReporting } from "./json-review-reporting";
 import { reviewLifecycleTelemetry } from "./review-lifecycle-telemetry";
 import { ReviewOpenWatchdog } from "./review-open-watchdog";
 import { createWhiteboardCore, serverJson } from "./review-server-core";
-import type { DeploymentConfig } from "./deployment-config.js";
 import { invalidateStructuralComparisons } from "./structural-comparisons.js";
 import { createTutorialService } from "./tutorial-service";
 import { captureSanitizedUiTelemetry } from "./ui-telemetry";

@@ -41,25 +41,35 @@ describe("Whiteboard CLI", () => {
     const repo = await mkdtemp(
       path.join(os.tmpdir(), "whiteboard-review-cli-"),
     );
+
     const git = (...args: string[]) =>
       execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+
     git("init", "-q");
     git("config", "user.name", "Whiteboard Test");
     git("config", "user.email", "test@example.invalid");
+
     await writeFile(path.join(repo, "example.ts"), "export const x = 1;\n");
+
     git("add", ".");
     git("commit", "-qm", "base");
+
     const base = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: repo,
       encoding: "utf8",
     }).trim();
+
     await writeFile(path.join(repo, "example.ts"), "export const x = 2;\n");
+
     git("commit", "-qam", "head");
+
     const head = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: repo,
       encoding: "utf8",
     }).trim();
+
     await writeFile(path.join(repo, "example.ts"), "export const x = 3;\n");
+
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       Response.json({
         ok: true,
@@ -67,6 +77,7 @@ describe("Whiteboard CLI", () => {
         deployment: { mode: "remote" },
       }),
     );
+
     vi.stubGlobal("fetch", fetch);
     const stdout = outputStream();
     const stderr = outputStream();

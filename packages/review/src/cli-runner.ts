@@ -5,6 +5,7 @@ import { createInterface } from "node:readline/promises";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { isJsonObject } from "@dev.fast/json";
 import {
   StoreApiError,
   processIsAlive,
@@ -671,13 +672,16 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       json?: boolean;
     }) => {
       const repositoryPath = path.resolve(cwd, options.repo ?? ".");
+
       const target = await resolveTarget(repositoryPath, {
         commit: options.commit,
         range: options.range,
         branch: options.branch,
         pick: options.pick,
       });
+
       const connected = await connectReviewInstance(authoringEnv());
+
       const healthResponse = await fetch(
         new URL("/health", connected.client.connection.serverUrl),
         {
@@ -686,23 +690,16 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
             : undefined,
         },
       );
+
       const health: unknown = healthResponse.ok
         ? await healthResponse.json()
         : null;
-      const topLevelRemote =
-        typeof health === "object" &&
-        health !== null &&
-        "mode" in health &&
-        health.mode === "remote";
-      const deploymentRemote =
-        typeof health === "object" &&
-        health !== null &&
-        "deployment" in health &&
-        typeof health.deployment === "object" &&
-        health.deployment !== null &&
-        "mode" in health.deployment &&
-        health.deployment.mode === "remote";
-      const remote = topLevelRemote || deploymentRemote;
+
+      const deployment = isJsonObject(health) ? health.deployment : undefined;
+
+      const remote =
+        (isJsonObject(health) && health.mode === "remote") ||
+        (isJsonObject(deployment) && deployment.mode === "remote");
 
       if (remote) {
         const { errors } = await preflight(repositoryPath, { remote: true });
@@ -731,10 +728,12 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
           open: false,
         },
       );
+
       const opened = await connected.client.post<{ url?: string }>(
         `/${encodeURIComponent(created.reviewId)}/open`,
         {},
       );
+
       const url =
         opened.url ??
         `${connected.client.connection.serverUrl}/r/${encodeURIComponent(created.reviewId)}`;

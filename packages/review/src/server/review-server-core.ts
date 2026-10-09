@@ -13,6 +13,10 @@ import {
   readBuildCommit,
   readReviewPackageVersion,
 } from "@review/package-paths.js";
+import {
+  createGitHubRepoSource,
+  createLocalRepoSource,
+} from "@review/repo-source/index.js";
 import { ReviewInputError } from "@review/review-api/document.js";
 import {
   type AuthoringCapabilities,
@@ -25,19 +29,15 @@ import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
-import {
-  createGitHubRepoSource,
-  createLocalRepoSource,
-} from "@review/repo-source/index.js";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 
 import {
+  type DeploymentConfig,
   loadDeploymentConfig,
   publicDeploymentConfig,
-  type DeploymentConfig,
 } from "./deployment-config.js";
 import type { ReviewDesktopVerbRelay } from "./global-verb-relay";
 import {
@@ -197,7 +197,9 @@ export interface WhiteboardCoreInput {
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const { store, data, shared } = input.profile;
   const deploymentConfig = input.deploymentConfig ?? loadDeploymentConfig();
+
   const deployment = publicDeploymentConfig(deploymentConfig);
+
   const blobStore =
     deploymentConfig.blobs === "s3" && deploymentConfig.s3
       ? createBlobStore({
@@ -211,6 +213,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           secretAccessKey: deploymentConfig.s3.secret,
         })
       : createBlobStore({ driver: "fs" });
+
   const repoSource =
     deploymentConfig.repoSource === "github"
       ? createGitHubRepoSource({

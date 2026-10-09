@@ -21,6 +21,7 @@ import {
   reviewServerDiscoveryPath,
 } from "@review/server-discovery.js";
 
+import { loadDeploymentConfig } from "./deployment-config.js";
 import { migrateDiffrConfig } from "./diffr-config.js";
 import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 import { createNodeRequestListener } from "./hono-http.js";
@@ -32,7 +33,6 @@ import {
 import { createWhiteboardCore, serveWebCanvas } from "./review-server-core.js";
 import type { ReviewTelemetryCapture } from "./ui-telemetry.js";
 import { createWebSettings } from "./web-settings.js";
-import { loadDeploymentConfig } from "./deployment-config.js";
 
 interface HeadlessServerInput {
   stateDir: string;

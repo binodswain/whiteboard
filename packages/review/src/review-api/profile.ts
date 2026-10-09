@@ -2,12 +2,12 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { withFileLock } from "@dev.fast/trace-core";
+import type { DeploymentConfig } from "@review/server/deployment-config.js";
 
-import type { DeploymentConfig } from "../server/deployment-config.js";
 import { openLocalReviewStore } from "./local-data.js";
 import {
-  createMetadataStore,
   type MetadataStoreConfig,
+  createMetadataStore,
 } from "./storage/metadata-store.js";
 import { importHeadlessStore } from "./storage/sqlite.js";
 
@@ -37,17 +37,18 @@ export async function openReviewProfile(
         ])
           await importHeadlessStore(home, source, lockOptions);
 
-      const source =
-        metadataConfig.kind === "postgres"
-          ? await createMetadataStore(metadataConfig)
-          : metadataConfig.dir;
+      if (metadataConfig.kind === "postgres") {
+        const metadataStore = await createMetadataStore(metadataConfig);
 
-      try {
-        return await openLocalReviewStore(source, options);
-      } catch (error) {
-        if (typeof source !== "string") await source.close().catch(() => {});
-        throw error;
+        try {
+          return await openLocalReviewStore(metadataStore, options);
+        } catch (error) {
+          await metadataStore.close().catch(() => {});
+          throw error;
+        }
       }
+
+      return openLocalReviewStore(metadataConfig.dir, options);
     },
   );
 
