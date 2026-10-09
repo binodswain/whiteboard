@@ -130,27 +130,6 @@ export function loadDeploymentConfig(
 
   if (s3) config.s3 = s3;
 
-  if (values.WHITEBOARD_MODE === "remote") {
-    if (config.db !== "postgres")
-      throw new Error("Remote deployment requires WHITEBOARD_DB=postgres URL");
-
-    if (config.blobs !== "s3")
-      throw new Error(
-        "Remote deployment requires WHITEBOARD_BLOBS=s3://bucket",
-      );
-
-    if (config.repoSource !== "github")
-      throw new Error(
-        "Remote deployment requires WHITEBOARD_REPO_SOURCE=github",
-      );
-
-    if (config.jobs !== "queue")
-      throw new Error("Remote deployment requires WHITEBOARD_JOBS=queue");
-
-    if (config.auth !== "oauth")
-      throw new Error("Remote deployment requires WHITEBOARD_AUTH=oauth");
-  }
-
   return config;
 }
 

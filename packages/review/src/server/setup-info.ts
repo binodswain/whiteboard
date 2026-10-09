@@ -1,10 +1,7 @@
 import { readReviewPackageVersion } from "@review/package-paths.js";
 import { isLocalAuthRequest } from "@review/review-api/http.js";
 
-import {
-  loadDeploymentConfig,
-  publicDeploymentConfig,
-} from "./deployment-config.js";
+import type { publicDeploymentConfig } from "./deployment-config.js";
 import { isAuthorizedRequest, jsonResponse } from "./hono-http.js";
 
 const version = readReviewPackageVersion(import.meta.url);
@@ -34,7 +31,7 @@ export function createSetupInfoHandler(input: {
   token: string;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
-  deployment?: ReturnType<typeof publicDeploymentConfig>;
+  deployment: ReturnType<typeof publicDeploymentConfig>;
 }): (request: Request) => Response {
   return (request) => {
     const localAuth = input.localBrowserAuth === true;
@@ -50,8 +47,7 @@ export function createSetupInfoHandler(input: {
       localAuth,
       version,
       healthy: true,
-      deployment:
-        input.deployment ?? publicDeploymentConfig(loadDeploymentConfig()),
+      deployment: input.deployment,
     };
 
     if (revealToken) info.token = input.token;

@@ -63,7 +63,7 @@ export function createReviewServerApp(input: {
   relay: ReviewDesktopVerbRelay;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
-  deployment?: ReturnType<typeof publicDeploymentConfig>;
+  deployment: ReturnType<typeof publicDeploymentConfig>;
 }): Hono<ReviewHonoEnv> {
   const app = new Hono<ReviewHonoEnv>();
   app.use("*", async (context, next) => {
@@ -79,8 +79,7 @@ export function createReviewServerApp(input: {
       instanceId: input.instanceId,
       desktopAttached: input.relay.attached,
       version,
-      deployment:
-        input.deployment ?? publicDeploymentConfig(loadDeploymentConfig()),
+      deployment: input.deployment,
     };
 
     return serverJson(
