@@ -49,24 +49,21 @@ pnpm docker:up
 ```
 
 This builds the image, waits for health, and opens
-`http://localhost:7421/setup`. From a repo under `CODE_ROOT`, connect Claude
-Code:
+`http://localhost:7421/setup`. Connect Claude Code over the server's HTTP MCP
+endpoint:
 
 ```sh
-claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp
+claude mcp add --transport http whiteboard http://localhost:7421/mcp
 ```
 
 For Codex, add this to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.whiteboard]
-command = "npx"
-args = ["-y", "@dev.fast/whiteboard", "mcp"]
+url = "http://localhost:7421/mcp"
 ```
 
-Local setup needs no token and finds `localhost:7421` automatically. For
-another port, set `WHITEBOARD_URL` to `http://localhost:<port>` in the MCP
-server environment or pass `--url`. Reviews use the repo where the agent runs.
+Local setup needs no token. For token auth, add `--header "Authorization: Bearer <token>"` to the Claude command. For Codex, set `WHITEBOARD_TOKEN` in its environment and add `bearer_token_env_var = "WHITEBOARD_TOKEN"` to the MCP server table. Change `7421` to your configured port. HTTP MCP uses client-provided repository roots; pass `repositoryPath` as the absolute path of your repo if no usable root is available. The optional host-side stdio alternative is `claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp`.
 Data persists in `~/.whiteboard/docker` (`WHITEBOARD_DATA_DIR`); `docker compose
 down` keeps it, and `pnpm docker:up` migrates data from the old volume. See
 the [Docker guide](docs/docker.md) for tokens, remote access, and upgrades.

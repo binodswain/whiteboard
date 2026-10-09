@@ -27,6 +27,9 @@ import {
   parseReviewDesktopVerbFrame,
 } from "@dev.fast/review-protocol";
 import { shellQuote } from "@dev.fast/trace-core";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { AskAgentStatus } from "@review/ask/agents.js";
 import {
   type AskThreadState,
@@ -95,7 +98,7 @@ async function start(
   stateDir = path.join(root, "server"),
   softwareMapEnabled = false,
   host?: string,
-  options: { webDir?: string; token?: string } = {},
+  options: { webDir?: string; token?: string; localAuth?: boolean } = {},
   ask?: boolean,
 ) {
   const controller = new AbortController();
@@ -106,6 +109,7 @@ async function start(
     host,
     webDir: options.webDir,
     token: options.token,
+    localBrowserAuth: options.localAuth,
     softwareMapEnabled,
     ask,
     signal: controller.signal,
@@ -248,6 +252,121 @@ async function repository() {
 
   return { directory, base, head: git("rev-parse", "HEAD") };
 }
+
+it("serves the authoring catalog over tokenless HTTP MCP and resolves repository roots", async () => {
+  const repo = await repository();
+
+  const server = await start(path.join(root, "server"), false, undefined, {
+    localAuth: true,
+  });
+
+  const createClient = async (withRoots = false) => {
+    const transport = new StreamableHTTPClientTransport(
+      new URL(server.discovery.url.replace("127.0.0.1", "localhost") + "/mcp"),
+    );
+
+    const client = new Client(
+      { name: "whiteboard-test", version: "1.0.0" },
+      withRoots
+        ? { capabilities: { roots: { listChanged: true } } }
+        : undefined,
+    );
+
+    if (withRoots) {
+      client.setRequestHandler(ListRootsRequestSchema, async () => ({
+        roots: [
+          { uri: new URL(`file://${repo.directory}`).href, name: "repo" },
+        ],
+      }));
+    }
+
+    await client.connect(transport);
+
+    return client;
+  };
+
+  const client = await createClient();
+
+  try {
+    const listed = await client.listTools();
+    expect(listed.tools.some(({ name }) => name === "session_create")).toBe(
+      true,
+    );
+
+    const created = await client.callTool({
+      name: "session_create",
+      arguments: {
+        title: "HTTP MCP explicit repository",
+        target: { kind: "worktree", repositoryPath: repo.directory },
+        open: false,
+      },
+    });
+
+    expect(created.isError).not.toBe(true);
+    expect(JSON.stringify(created)).toContain(repo.directory);
+
+    const noPath = await client.callTool({
+      name: "session_create",
+      arguments: {
+        title: "HTTP MCP missing repository",
+        target: { kind: "worktree" },
+        open: false,
+      },
+    });
+
+    expect(noPath.isError).toBe(true);
+    expect(JSON.stringify(noPath)).toContain(
+      "Pass repositoryPath as the absolute path",
+    );
+  } finally {
+    await client.close();
+  }
+
+  const rootedClient = await createClient(true);
+
+  try {
+    const created = await rootedClient.callTool({
+      name: "session_create",
+      arguments: {
+        title: "HTTP MCP root repository",
+        target: { kind: "worktree" },
+        open: false,
+      },
+    });
+
+    expect(created.isError).not.toBe(true);
+    expect(JSON.stringify(created)).toContain(repo.directory);
+  } finally {
+    await rootedClient.close();
+  }
+});
+
+it("rejects an untrusted Host and Origin for tokenless HTTP MCP", async () => {
+  const server = await start(path.join(root, "server"), false, undefined, {
+    localAuth: true,
+  });
+
+  const response = await fetch(`${server.discovery.url}/mcp`, {
+    method: "POST",
+    headers: {
+      host: "rebind.attacker.test",
+      origin: "http://attacker.test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1" },
+      },
+    }),
+  });
+
+  expect(response.status).toBe(403);
+});
 
 async function cli(argv: string[], env: NodeJS.ProcessEnv) {
   const stdout = new PassThrough();

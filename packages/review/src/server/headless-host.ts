@@ -24,6 +24,7 @@ import {
 import { migrateDiffrConfig } from "./diffr-config.js";
 import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 import { createNodeRequestListener } from "./hono-http.js";
+import { createHttpMcpApp } from "./http-mcp.js";
 import {
   drainServerCrashReport,
   installProcessErrorTelemetry,
@@ -151,6 +152,13 @@ async function serve(input: HeadlessServerInput) {
   const { app, api } = core;
 
   app.route("/reviews-api", api);
+  app.route(
+    "/mcp",
+    createHttpMcpApp({
+      api,
+      scratchpad: () => persistedSettings.scratchpadEnabled,
+    }),
+  );
 
   const server = createServer(
     createNodeRequestListener(

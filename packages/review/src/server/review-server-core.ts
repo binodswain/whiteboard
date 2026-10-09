@@ -107,7 +107,10 @@ export function createReviewServerApp(input: {
       path === "/reviews-api" || path.startsWith("/reviews-api/");
 
     const localAuthPath =
-      reviewApiPath || path === "/control" || path === "/control/result";
+      reviewApiPath ||
+      path === "/mcp" ||
+      path === "/control" ||
+      path === "/control/result";
 
     if (
       input.localBrowserAuth &&

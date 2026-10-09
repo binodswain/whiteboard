@@ -52,19 +52,26 @@ If `session_create` reports that a repository path is outside the mounted `CODE_
 
 ## Local auth and GitHub
 
-The Docker image defaults to token authentication. Compose enables local auth with `WHITEBOARD_LOCAL_BROWSER_AUTH=1`; the web app skips its token prompt only after the server advertises this mode. A tokenless request to `/reviews-api` or `/control` is accepted only when `Host` is exactly `localhost`, `127.0.0.1`, or `[::1]` on the server port. If an `Origin` header is present, it must be exactly `http://<Host>`; an absent `Origin` is allowed for any method, including requests from a host-side stdio MCP client. `/health` remains readable without a token, and local-auth requests can read its full server details. Requests with a valid `WHITEBOARD_TOKEN` continue to work regardless of `Host` or `Origin`.
+The Docker image defaults to token authentication. Compose enables local auth with `WHITEBOARD_LOCAL_BROWSER_AUTH=1`; the web app skips its token prompt only after the server advertises this mode. A tokenless request to `/reviews-api`, `/mcp`, or `/control` is accepted only when `Host` is exactly `localhost`, `127.0.0.1`, or `[::1]` on the server port. If an `Origin` header is present, it must be exactly `http://<Host>`; an absent `Origin` is allowed for any method, including host-side MCP clients. `/health` remains readable without a token, and local-auth requests can read its full server details. Requests with a valid `WHITEBOARD_TOKEN` continue to work regardless of `Host` or `Origin`.
 
 This flag is a local-trust switch, not proof that the connecting client is on the same machine. In particular, the container's `0.0.0.0` bind does not establish whether Docker published its port only to host loopback, and Host/Origin checks do not replace network isolation. If you expose the port on a non-loopback host interface or through a proxy/tunnel, disable tokenless access by setting `WHITEBOARD_LOCAL_BROWSER_AUTH=0` in `.env` and use `WHITEBOARD_TOKEN`. Keep `.env` private; do not commit credentials. For private GitHub PRs set `GH_TOKEN`; for GitHub Enterprise set `GH_ENTERPRISE_TOKEN` and `GH_HOST`. The image configures Git to use GitHub CLI's credential helper, which reads the supplied token environment variables for HTTPS fetches as well as PR metadata lookup.
 
 ## Connect a host agent
 
-Keep the coding agent on the host; it does not need to run in the container. From the repository where the agent runs, register Whiteboard's host-side stdio MCP server:
+Keep the coding agent on the host; it does not need to run in the container. Register the server's HTTP MCP endpoint as the primary connection:
 
 ```sh
-claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp
+claude mcp add --transport http whiteboard http://localhost:7421/mcp
 ```
 
-Local auth does not require a token for this loopback connection. If you choose a non-default `WHITEBOARD_PORT`, configure `WHITEBOARD_URL=http://localhost:<port>` in the MCP server's environment (for example, `WHITEBOARD_URL=http://localhost:3307`). If you set `WHITEBOARD_TOKEN`, also configure the same token for the host MCP process. The `/setup` page shows the connection instructions for this server.
+For Codex, add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.whiteboard]
+url = "http://localhost:7421/mcp"
+```
+
+Compose enables local auth by default, so loopback connections need no token. With token auth, add `--header "Authorization: Bearer <token>"` to the Claude command. For Codex, set `WHITEBOARD_TOKEN` in its environment and add `bearer_token_env_var = "WHITEBOARD_TOKEN"` to the MCP server table. Change `7421` to your configured `WHITEBOARD_PORT`. HTTP MCP resolves repository paths from the agent's MCP roots; pass `repositoryPath` as the absolute host path when the client does not provide a usable root. As an optional alternative, the host-side stdio process remains available with `claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp`. The `/setup` page shows the server's actual URL and commands.
 
 ## Upgrade
 

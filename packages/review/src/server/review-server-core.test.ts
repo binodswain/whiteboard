@@ -376,6 +376,14 @@ it("allows tokenless local auth only for an explicitly enabled loopback Host", a
   });
 
   expect(tokenAuthorized.status).toBe(200);
+
+  const bearerAuthorized = await request("/reviews-api", {
+    host: "rebind.attacker.test",
+    origin: "http://attacker.test",
+    authorization: `Bearer ${server.token}`,
+  });
+
+  expect(bearerAuthorized.status).toBe(200);
 });
 
 it("keeps token auth enabled by default on a wildcard bind", async () => {

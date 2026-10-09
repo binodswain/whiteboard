@@ -160,28 +160,42 @@ export function SetupView({
 }
 
 function SetupSteps({ info }: { info: SetupInfo }) {
-  const env: [string, string][] = [];
+  const token = info.token ?? "<token>";
 
-  if (info.serverUrl !== DEFAULT_SERVER_URL)
-    env.push(["WHITEBOARD_URL", info.serverUrl]);
+  const authHeader = info.localAuth
+    ? ""
+    : ` --header "Authorization: Bearer ${token}"`;
 
-  if (!info.localAuth) env.push(["WHITEBOARD_TOKEN", info.token ?? "<token>"]);
-
-  const claude = [
-    "claude mcp add whiteboard",
-    ...env.map(([name, value]) => `-e ${name}=${value}`),
-    "-- npx -y @dev.fast/whiteboard mcp",
-  ].join(" ");
+  const claude = `claude mcp add --transport http whiteboard ${info.serverUrl}/mcp${authHeader}`;
 
   const codex = [
     "[mcp_servers.whiteboard]",
+    `url = "${info.serverUrl}/mcp"`,
+    ...(!info.localAuth ? ['bearer_token_env_var = "WHITEBOARD_TOKEN"'] : []),
+  ].join("\n");
+
+  const stdioEnv: [string, string][] = [];
+
+  if (info.serverUrl !== DEFAULT_SERVER_URL)
+    stdioEnv.push(["WHITEBOARD_URL", info.serverUrl]);
+
+  if (!info.localAuth) stdioEnv.push(["WHITEBOARD_TOKEN", token]);
+
+  const stdio = [
+    [
+      "claude mcp add whiteboard",
+      ...stdioEnv.map(([name, value]) => `-e ${name}=${value}`),
+      "-- npx -y @dev.fast/whiteboard mcp",
+    ].join(" "),
+    "",
+    "[mcp_servers.whiteboard]",
     'command = "npx"',
     'args = ["-y", "@dev.fast/whiteboard", "mcp"]',
-    ...(env.length
+    ...(stdioEnv.length
       ? [
           "",
           "[mcp_servers.whiteboard.env]",
-          ...env.map(([name, value]) => `${name} = "${value}"`),
+          ...stdioEnv.map(([name, value]) => `${name} = "${value}"`),
         ]
       : []),
   ].join("\n");
@@ -189,6 +203,7 @@ function SetupSteps({ info }: { info: SetupInfo }) {
   return (
     <ol {...stylex.props(styles.steps)}>
       <li {...stylex.props(styles.step)}>
+        <h2 {...stylex.props(styles.stepTitle)}>HTTP MCP (recommended)</h2>
         <h2 {...stylex.props(styles.stepTitle)}>Claude Code</h2>
         <CopyBlock
           label="Claude Code command"
@@ -198,7 +213,9 @@ function SetupSteps({ info }: { info: SetupInfo }) {
               <>
                 Replace{" "}
                 <code {...stylex.props(styles.code)}>&lt;token&gt;</code> with
-                the server token from{" "}
+                the server token in the Claude command. For Codex, export it as
+                <code {...stylex.props(styles.code)}>WHITEBOARD_TOKEN</code>.
+                The token is in{" "}
                 <code {...stylex.props(styles.code)}>
                   docker compose logs whiteboard
                 </code>
@@ -215,6 +232,16 @@ function SetupSteps({ info }: { info: SetupInfo }) {
           <code {...stylex.props(styles.code)}>~/.codex/config.toml</code>:
         </p>
         <CopyBlock label="Codex config" text={codex} />
+      </li>
+      <li {...stylex.props(styles.step)}>
+        <h2 {...stylex.props(styles.stepTitle)}>
+          Alternative: host-side stdio
+        </h2>
+        <p {...stylex.props(styles.note)}>
+          Use this only when you need a local stdio process. Run the agent from
+          the repository you want Whiteboard to inspect.
+        </p>
+        <CopyBlock label="Claude Code command and Codex config" text={stdio} />
       </li>
       <li {...stylex.props(styles.step)}>
         <h2 {...stylex.props(styles.stepTitle)}>Run inside your code</h2>

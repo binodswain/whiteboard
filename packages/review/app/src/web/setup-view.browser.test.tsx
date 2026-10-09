@@ -96,35 +96,27 @@ describe("the /setup landing page", () => {
 
     expect(
       await settled(() =>
-        container!.textContent?.includes("claude mcp add whiteboard"),
+        container!.textContent?.includes("claude mcp add --transport http"),
       ),
     ).toBe(true);
 
     const claude = [...container!.querySelectorAll("pre")].find((pre) =>
-      pre.textContent?.includes("claude mcp add"),
+      pre.textContent?.includes("claude mcp add --transport http"),
     )!;
 
     expect(claude.textContent).toBe(
-      "claude mcp add whiteboard -e WHITEBOARD_URL=http://fixture.local " +
-        "-e WHITEBOARD_TOKEN=fixture-secret-token " +
-        "-- npx -y @dev.fast/whiteboard mcp",
+      'claude mcp add --transport http whiteboard http://fixture.local/mcp --header "Authorization: Bearer fixture-secret-token"',
     );
 
     const codex = [...container!.querySelectorAll("pre")].find((pre) =>
       pre.textContent?.includes("[mcp_servers.whiteboard]"),
     )!;
 
-    expect(codex.textContent).toContain('command = "npx"');
+    expect(codex.textContent).toContain('url = "http://fixture.local/mcp"');
     expect(codex.textContent).toContain(
-      'args = ["-y", "@dev.fast/whiteboard", "mcp"]',
+      'bearer_token_env_var = "WHITEBOARD_TOKEN"',
     );
-    expect(codex.textContent).toContain("[mcp_servers.whiteboard.env]");
-    expect(codex.textContent).toContain(
-      'WHITEBOARD_URL = "http://fixture.local"',
-    );
-    expect(codex.textContent).toContain(
-      'WHITEBOARD_TOKEN = "fixture-secret-token"',
-    );
+    expect(container!.textContent).toContain("Alternative: host-side stdio");
 
     expect(container!.textContent).toContain("/code/mine");
     expect(container!.textContent).toContain("v1.2.3");
@@ -145,22 +137,18 @@ describe("the /setup landing page", () => {
 
     expect(
       await settled(() =>
-        container!.textContent?.includes("claude mcp add whiteboard"),
+        container!.textContent?.includes("claude mcp add --transport http"),
       ),
     ).toBe(true);
 
     const claude = [...container!.querySelectorAll("pre")].find((pre) =>
-      pre.textContent?.includes("claude mcp add"),
+      pre.textContent?.includes("claude mcp add --transport http"),
     )!;
 
     expect(claude.textContent).toBe(
-      "claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp",
+      "claude mcp add --transport http whiteboard http://localhost:3000/mcp",
     );
-    expect(container!.textContent).not.toContain("WHITEBOARD_TOKEN");
-    expect(container!.textContent).not.toContain("WHITEBOARD_URL");
-    expect(container!.textContent).not.toContain(
-      "[mcp_servers.whiteboard.env]",
-    );
+    expect(container!.textContent).not.toContain("Authorization: Bearer");
   });
 
   it("points at the server logs when token mode hides the token", async () => {
@@ -173,9 +161,7 @@ describe("the /setup landing page", () => {
     });
 
     expect(
-      await settled(() =>
-        container!.textContent?.includes("WHITEBOARD_TOKEN=<token>"),
-      ),
+      await settled(() => container!.textContent?.includes("Bearer <token>")),
     ).toBe(true);
     expect(container!.textContent).toContain("docker compose logs");
   });

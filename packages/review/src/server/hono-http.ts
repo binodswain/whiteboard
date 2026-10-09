@@ -89,7 +89,7 @@ export function applyCorsHeaders(
 
   response.headers.set(
     "access-control-allow-headers",
-    `content-type, x-review-token, ${REVIEW_APP_SESSION_ID_HEADER}`,
+    `content-type, x-review-token, authorization, ${REVIEW_APP_SESSION_ID_HEADER}`,
   );
   response.headers.set(
     "access-control-allow-methods",
@@ -110,6 +110,7 @@ export function isAuthorizedRequest(
 ): boolean {
   const supplied =
     request.headers.get("x-review-token") ??
+    request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ??
     new URL(request.url).searchParams.get("token");
 
   if (!supplied) return false;
