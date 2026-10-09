@@ -36,6 +36,41 @@ Here’s a 1 min demo video explaining more: https://www.youtube.com/watch?v=ChP
 3. Ask your agent to review your current branch against up-to-date main and
    open the result in Whiteboard.
 
+## Run in Docker (browser)
+
+Docker runs the Whiteboard server and browser canvas; your coding agent stays on
+the host. Copy `.env.example` to `.env`, set `CODE_ROOT` to a directory
+containing your repos, then start Whiteboard:
+
+```sh
+cp .env.example .env
+# Set CODE_ROOT in .env to an absolute host path.
+pnpm docker:up
+```
+
+This builds the image, waits for health, and opens
+`http://localhost:3000/setup`. From a repo under `CODE_ROOT`, connect Claude
+Code:
+
+```sh
+claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp
+```
+
+For Codex, add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.whiteboard]
+command = "npx"
+args = ["-y", "@dev.fast/whiteboard", "mcp"]
+```
+
+Local setup needs no token and finds `localhost:3000` automatically. For
+another port, set `WHITEBOARD_URL` to `http://localhost:<port>` in the MCP
+server environment or pass `--url`. Reviews use the repo where the agent runs.
+Data persists in `~/.whiteboard/docker` (`WHITEBOARD_DATA_DIR`); `docker compose
+down` keeps it, and `pnpm docker:up` migrates data from the old volume. See
+the [Docker guide](docs/docker.md) for tokens, remote access, and upgrades.
+
 ## Guidance
 
 In our experience, Whiteboard works best with models like GPT-6 Sol and Claude Opus 5.5 for their intelligence, cost, and speed tradeoff.
