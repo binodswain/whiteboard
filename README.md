@@ -38,35 +38,48 @@ Here’s a 1 min demo video explaining more: https://www.youtube.com/watch?v=ChP
 
 ## Run in Docker (browser)
 
-Docker runs the Whiteboard server and browser canvas; your coding agent stays on
-the host. Copy `.env.example` to `.env`, set `CODE_ROOT` to a directory
-containing your repos, then start Whiteboard:
+Docker runs the Whiteboard server, the browser canvas, and the MCP endpoint
+your agent talks to. Your coding agent stays on the host.
 
-```sh
-cp .env.example .env
-# Set CODE_ROOT in .env to an absolute host path.
-pnpm docker:up
-```
+1. Configure and start Whiteboard. Set `CODE_ROOT` to an absolute host
+   directory that contains your repos:
 
-This builds the image, waits for health, and opens
-`http://localhost:7421/setup`. Connect Claude Code over the server's HTTP MCP
-endpoint:
+   ```sh
+   cp .env.example .env
+   # Set CODE_ROOT in .env, e.g. CODE_ROOT=/Users/you/code
+   pnpm docker:up
+   ```
 
-```sh
-claude mcp add --transport http whiteboard http://localhost:7421/mcp
-```
+   This builds the image, waits until the server is healthy, and opens
+   <http://localhost:7421/setup>, which shows these instructions for your
+   server.
 
-For Codex, add this to `~/.codex/config.toml`:
+2. Connect your agent to the MCP endpoint at `http://localhost:7421/mcp`.
+   Claude Code:
 
-```toml
-[mcp_servers.whiteboard]
-url = "http://localhost:7421/mcp"
-```
+   ```sh
+   claude mcp add --transport http whiteboard http://localhost:7421/mcp
+   ```
 
-Local setup needs no token. For token auth, add `--header "Authorization: Bearer <token>"` to the Claude command. For Codex, set `WHITEBOARD_TOKEN` in its environment and add `bearer_token_env_var = "WHITEBOARD_TOKEN"` to the MCP server table. Change `7421` to your configured port. HTTP MCP uses client-provided repository roots; pass `repositoryPath` as the absolute path of your repo if no usable root is available. The optional host-side stdio alternative is `claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp`.
-Data persists in `~/.whiteboard/docker` (`WHITEBOARD_DATA_DIR`); `docker compose
-down` keeps it, and `pnpm docker:up` migrates data from the old volume. See
-the [Docker guide](docs/docker.md) for tokens, remote access, and upgrades.
+   Codex (`~/.codex/config.toml`):
+
+   ```toml
+   [mcp_servers.whiteboard]
+   url = "http://localhost:7421/mcp"
+   ```
+
+3. Run your agent inside a repo under `CODE_ROOT` and ask it to review your
+   branch in Whiteboard. It returns a `http://localhost:7421/r/<id>` link.
+
+Local connections need no token. Repos are mounted at the same path inside the
+container, so Whiteboard uses the repo your agent is working in. The agent
+passes that repo's absolute path, or its client provides it automatically.
+
+Reviews and settings persist in `~/.whiteboard/docker` (`WHITEBOARD_DATA_DIR`)
+across restarts and `docker compose down`. To use a different port, set
+`WHITEBOARD_PORT` in `.env` and update the URLs above. See the
+[Docker guide](docs/docker.md) for tokens, remote access, git worktrees, and
+upgrading from the older `/workspace` setup.
 
 ## Guidance
 

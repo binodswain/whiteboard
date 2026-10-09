@@ -71,7 +71,7 @@ For Codex, add this to `~/.codex/config.toml`:
 url = "http://localhost:7421/mcp"
 ```
 
-Compose enables local auth by default, so loopback connections need no token. With token auth, add `--header "Authorization: Bearer <token>"` to the Claude command. For Codex, set `WHITEBOARD_TOKEN` in its environment and add `bearer_token_env_var = "WHITEBOARD_TOKEN"` to the MCP server table. Change `7421` to your configured `WHITEBOARD_PORT`. HTTP MCP resolves repository paths from the agent's MCP roots; pass `repositoryPath` as the absolute host path when the client does not provide a usable root. As an optional alternative, the host-side stdio process remains available with `claude mcp add whiteboard -- npx -y @dev.fast/whiteboard mcp`. The `/setup` page shows the server's actual URL and commands.
+Compose enables local auth by default, so loopback connections need no token. With token auth, add `--header "Authorization: Bearer <token>"` to the Claude command. For Codex, set `WHITEBOARD_TOKEN` in its environment and add `bearer_token_env_var = "WHITEBOARD_TOKEN"` to the MCP server table. Change `7421` to your configured `WHITEBOARD_PORT`. HTTP MCP resolves repository paths from the agent's MCP roots; pass `repositoryPath` as the absolute host path when the client does not provide a usable root. The `/setup` page shows the server's actual URL and commands.
 
 ## Upgrade
 

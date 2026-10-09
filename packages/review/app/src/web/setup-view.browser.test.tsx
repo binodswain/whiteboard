@@ -116,7 +116,7 @@ describe("the /setup landing page", () => {
     expect(codex.textContent).toContain(
       'bearer_token_env_var = "WHITEBOARD_TOKEN"',
     );
-    expect(container!.textContent).toContain("Alternative: host-side stdio");
+    expect(container!.textContent).not.toContain("npx");
 
     expect(container!.textContent).toContain("/code/mine");
     expect(container!.textContent).toContain("v1.2.3");
@@ -209,7 +209,7 @@ describe("the /setup landing page", () => {
 
     expect(
       await settled(() =>
-        container!.textContent?.includes("claude mcp add whiteboard"),
+        container!.textContent?.includes("claude mcp add --transport http whiteboard"),
       ),
     ).toBe(true);
   });
