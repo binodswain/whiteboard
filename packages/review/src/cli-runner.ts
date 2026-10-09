@@ -775,12 +775,18 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       json?: boolean;
     }) => {
       const connected = await connectReviewInstance(authoringEnv());
-      const query = new URLSearchParams(
-        Object.entries(options).filter(
-          (entry): entry is [string, string] =>
-            typeof entry[1] === "string" && entry[0] !== "json",
-        ),
-      );
+
+      const query = new URLSearchParams();
+
+      const filters: [string, string | undefined][] = [
+        ["repo", options.repo],
+        ["branch", options.branch],
+        ["commit", options.commit],
+        ["author", options.author],
+        ["tag", options.tag],
+      ];
+
+      for (const [key, value] of filters) if (value) query.set(key, value);
 
       const summaries = (
         await connected.client.read<ReviewApiSummary[]>(`/?${query}`)
@@ -820,6 +826,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     ).action(
       async (reviewId: string, tags: string[], options: { json?: boolean }) => {
         const connected = await connectReviewInstance(authoringEnv());
+
         const result = await connected.client.post<{ tags?: string[] }>(
           "/commands",
           {

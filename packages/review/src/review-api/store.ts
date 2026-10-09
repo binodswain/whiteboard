@@ -1102,6 +1102,7 @@ export class ReviewStore {
             for (const table of [
               "ask_conversations",
               "authoring_presences",
+              "review_tags",
               "review_coverage",
               "review_attention",
               "versions",
@@ -1375,7 +1376,7 @@ export class ReviewStore {
         result,
         async () => {
           await this.meta.run(
-            "INSERT INTO reviews(id,version,next_id,branch,base_sha,head_sha,created_by) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id,branch=excluded.branch,base_sha=excluded.base_sha,head_sha=excluded.head_sha",
+            "INSERT INTO reviews(id,version,next_id,branch,base_sha,head_sha,created_by) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id,branch=excluded.branch,base_sha=excluded.base_sha,head_sha=excluded.head_sha,created_by=COALESCE(excluded.created_by,reviews.created_by)",
             id,
             snapshot.version,
             nextId,

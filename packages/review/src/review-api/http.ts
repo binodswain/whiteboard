@@ -346,6 +346,7 @@ export function createReviewApi(
     filter: ReviewFilter = {},
   ) => {
     const local = await store.list(mode, filter);
+
     const sharedSummaries = ((await shared?.list(mode)) ?? []).filter(
       (summary) => matchesReviewFilter(summary, filter),
     );
