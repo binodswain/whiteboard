@@ -368,7 +368,9 @@ const styles = stylex.create({
     display: "flex",
     flexDirection: "column",
     gap: "6px",
-    borderTop: `1px solid ${tokens.chromeBorder}`,
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: tokens.chromeBorder,
     paddingTop: "10px",
   },
   meta: {
@@ -381,7 +383,9 @@ const styles = stylex.create({
   badge: {
     padding: "0 6px",
     borderRadius: radius.pill,
-    border: `1px solid ${tokens.chromeBorder}`,
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.chromeBorder,
     fontSize: fontSize.micro,
   },
   message: {
@@ -405,8 +409,10 @@ const styles = stylex.create({
     resize: "vertical",
     padding: "6px",
     borderRadius: radius.control,
-    border: `1px solid ${tokens.chromeBorder}`,
-    background: "transparent",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.chromeBorder,
+    backgroundColor: "transparent",
     color: "inherit",
   },
   muted: {
