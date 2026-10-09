@@ -19,22 +19,23 @@ FROM node:24-bookworm-slim AS runtime-base
 RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certificates \
  && dpkg --remove --force-depends perl perl-modules-5.36 libperl5.36 \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale \
- && git config --system --add safe.directory /workspace \
+ && git config --system --add safe.directory '*' \
  && git config --system credential.helper '!gh auth git-credential'
 ENV NODE_ENV=production
 ENV DEV_REVIEW_SERVER_DIR=/data
+ENV WHITEBOARD_PORT=7421
 WORKDIR /app
 COPY --from=build --chown=node:node /out ./
 COPY --from=build --chown=node:node /app/packages/review/app/dist/web ./web
 RUN ln -s /app/dist/cli.js /usr/local/bin/whiteboard && chmod 755 /app/dist/cli.js \
  && mkdir -p /data && chmod 1777 /data
-VOLUME /data /workspace
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+VOLUME /data
+EXPOSE 7421
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:' + process.env.WHITEBOARD_PORT + '/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 USER node
 ENV HOME=/tmp
 ENV WHITEBOARD_LOCAL_BROWSER_AUTH=0
-CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web"]
+CMD ["sh", "-c", "exec whiteboard server start --host 0.0.0.0 --port ${WHITEBOARD_PORT:-7421} --web /app/web"]
 
 FROM runtime-base AS runtime
 ARG AGENT=none

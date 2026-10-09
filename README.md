@@ -36,6 +36,51 @@ Here’s a 1 min demo video explaining more: https://www.youtube.com/watch?v=ChP
 3. Ask your agent to review your current branch against up-to-date main and
    open the result in Whiteboard.
 
+## Run in Docker (browser)
+
+Docker runs the Whiteboard server, the browser canvas, and the MCP endpoint
+your agent talks to. Your coding agent stays on the host.
+
+1. Configure and start Whiteboard. Set `CODE_ROOT` to an absolute host
+   directory that contains your repos:
+
+   ```sh
+   cp .env.example .env
+   # Set CODE_ROOT in .env, e.g. CODE_ROOT=/Users/you/code
+   pnpm docker:up
+   ```
+
+   This builds the image, waits until the server is healthy, and opens
+   <http://localhost:7421/setup>, which shows these instructions for your
+   server.
+
+2. Connect your agent to the MCP endpoint at `http://localhost:7421/mcp`.
+   Claude Code:
+
+   ```sh
+   claude mcp add --transport http whiteboard http://localhost:7421/mcp
+   ```
+
+   Codex (`~/.codex/config.toml`):
+
+   ```toml
+   [mcp_servers.whiteboard]
+   url = "http://localhost:7421/mcp"
+   ```
+
+3. Run your agent inside a repo under `CODE_ROOT` and ask it to review your
+   branch in Whiteboard. It returns a `http://localhost:7421/r/<id>` link.
+
+Local connections need no token. Repos are mounted at the same path inside the
+container, so Whiteboard uses the repo your agent is working in. The agent
+passes that repo's absolute path, or its client provides it automatically.
+
+Reviews and settings persist in `~/.whiteboard/docker` (`WHITEBOARD_DATA_DIR`)
+across restarts and `docker compose down`. To use a different port, set
+`WHITEBOARD_PORT` in `.env` and update the URLs above. See the
+[Docker guide](docs/docker.md) for tokens, remote access, git worktrees, and
+upgrading from the older `/workspace` setup.
+
 ## Guidance
 
 In our experience, Whiteboard works best with models like GPT-6 Sol and Claude Opus 5.5 for their intelligence, cost, and speed tradeoff.

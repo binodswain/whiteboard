@@ -88,12 +88,14 @@ const liveConnections = new WeakMap<Request, Map<string, LiveConnection>>();
 /** Shared by the canvas and thin agent clients; no filesystem or SQL access. */
 export class ReviewApiClient {
   constructor(
-    readonly connection: { serverUrl: string; token: string },
+    readonly connection: { serverUrl: string; token?: string },
     private readonly request: Request = defaultRequest,
   ) {}
   async response(route: string, init?: RequestInit) {
     const headers = new Headers(init?.headers);
-    headers.set("x-review-token", this.connection.token);
+
+    if (this.connection.token)
+      headers.set("x-review-token", this.connection.token);
 
     if (init?.body) headers.set("content-type", "application/json");
 

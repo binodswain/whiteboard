@@ -67,7 +67,7 @@ one to `packages/review/app/dist/web`. The static files are public — the page
 load cannot carry the token — while `/reviews-api` and `/control` stay
 token-protected and `/health` stays open. The startup output prints an open
 URL with the token in its fragment, for example
-`http://localhost:3000/#token=…`; a page opened without one asks for it. Pin
+`http://localhost:7421/#token=…`; a page opened without one asks for it. Pin
 the token with `--token <value>` (or `WHITEBOARD_TOKEN`, 32 characters or
 more) instead of reading it from the logs; an empty `WHITEBOARD_TOKEN` means
 "generate one".

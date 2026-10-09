@@ -10,6 +10,7 @@ import {
   readdir,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -26,6 +27,9 @@ import {
   parseReviewDesktopVerbFrame,
 } from "@dev.fast/review-protocol";
 import { shellQuote } from "@dev.fast/trace-core";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { AskAgentStatus } from "@review/ask/agents.js";
 import {
   type AskThreadState,
@@ -94,7 +98,7 @@ async function start(
   stateDir = path.join(root, "server"),
   softwareMapEnabled = false,
   host?: string,
-  options: { webDir?: string; token?: string } = {},
+  options: { webDir?: string; token?: string; localAuth?: boolean } = {},
   ask?: boolean,
 ) {
   const controller = new AbortController();
@@ -105,6 +109,7 @@ async function start(
     host,
     webDir: options.webDir,
     token: options.token,
+    localBrowserAuth: options.localAuth,
     softwareMapEnabled,
     ask,
     signal: controller.signal,
@@ -186,6 +191,39 @@ it("serves authenticated web preferences and restores them after a server restar
   });
 });
 
+it("reuses a private generated token across server restarts", async () => {
+  let server = await start();
+  const token = server.discovery.token;
+  const tokenPath = path.join(server.stateDir, "review-server", "token");
+
+  expect(await readFile(tokenPath, "utf8")).toBe(token);
+  expect((await stat(tokenPath)).mode & 0o777).toBe(0o600);
+
+  await server.stop();
+  await writeFile(tokenPath, ` \n${token}\t\n`);
+  server = await start(server.stateDir);
+
+  expect(server.discovery.token).toBe(token);
+});
+
+it("explains how to mount a repository path unavailable to the server", async () => {
+  const server = await start();
+  vi.stubEnv("CODE_ROOT", path.join(root, "mounted-code"));
+
+  await expect(
+    server.client.post("/commands", {
+      operation: {
+        type: "create",
+        title: "Unmounted checkout",
+        target: {
+          kind: "worktree",
+          repositoryPath: path.join(root, "unmounted-repository"),
+        },
+      },
+    }),
+  ).rejects.toThrow(/outside the mounted CODE_ROOT/);
+});
+
 async function repository() {
   const directory = path.join(root, "repo");
   await mkdir(directory);
@@ -214,6 +252,172 @@ async function repository() {
 
   return { directory, base, head: git("rev-parse", "HEAD") };
 }
+
+it("serves the authoring catalog over tokenless HTTP MCP and resolves repository roots", async () => {
+  const repo = await repository();
+
+  const server = await start(path.join(root, "server"), false, undefined, {
+    localAuth: true,
+  });
+
+  const createClient = async (withRoots = false) => {
+    const transport = new StreamableHTTPClientTransport(
+      new URL(server.discovery.url.replace("127.0.0.1", "localhost") + "/mcp"),
+    );
+
+    const client = new Client(
+      { name: "whiteboard-test", version: "1.0.0" },
+      withRoots
+        ? { capabilities: { roots: { listChanged: true } } }
+        : undefined,
+    );
+
+    if (withRoots) {
+      client.setRequestHandler(ListRootsRequestSchema, async () => ({
+        roots: [
+          { uri: new URL(`file://${repo.directory}`).href, name: "repo" },
+        ],
+      }));
+    }
+
+    await client.connect(transport);
+
+    return client;
+  };
+
+  const client = await createClient();
+
+  try {
+    const listed = await client.listTools();
+    expect(listed.tools.some(({ name }) => name === "session_create")).toBe(
+      true,
+    );
+
+    const created = await client.callTool({
+      name: "session_create",
+      arguments: {
+        title: "HTTP MCP explicit repository",
+        target: { kind: "worktree", repositoryPath: repo.directory },
+        open: false,
+      },
+    });
+
+    expect(created.isError).not.toBe(true);
+    expect(JSON.stringify(created)).toContain(repo.directory);
+
+    const noPath = await client.callTool({
+      name: "session_create",
+      arguments: {
+        title: "HTTP MCP missing repository",
+        target: { kind: "worktree" },
+        open: false,
+      },
+    });
+
+    expect(noPath.isError).toBe(true);
+    expect(JSON.stringify(noPath)).toContain(
+      "Pass repositoryPath as the absolute path",
+    );
+  } finally {
+    await client.close();
+  }
+
+  const rootedClient = await createClient(true);
+
+  try {
+    const created = await rootedClient.callTool({
+      name: "session_create",
+      arguments: {
+        title: "HTTP MCP root repository",
+        target: { kind: "worktree" },
+        open: false,
+      },
+    });
+
+    expect(created.isError).not.toBe(true);
+    expect(JSON.stringify(created)).toContain(repo.directory);
+  } finally {
+    await rootedClient.close();
+  }
+});
+
+it("returns the repositoryPath guidance quickly when an advertised root does not answer", async () => {
+  const server = await start(path.join(root, "server"), false, undefined, {
+    localAuth: true,
+  });
+
+  const client = new Client(
+    { name: "whiteboard-unresponsive-roots-test", version: "1.0.0" },
+    { capabilities: { roots: { listChanged: true } } },
+  );
+
+  const transport = new StreamableHTTPClientTransport(
+    new URL(server.discovery.url.replace("127.0.0.1", "localhost") + "/mcp"),
+  );
+
+  client.setRequestHandler(ListRootsRequestSchema, () => new Promise(() => {}));
+
+  await client.connect(transport);
+
+  try {
+    const startedAt = performance.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), 5_000);
+    });
+
+    const result = await Promise.race([
+      client.callTool({
+        name: "session_create",
+        arguments: {
+          title: "HTTP MCP unresponsive roots",
+          target: { kind: "worktree" },
+          open: false,
+        },
+      }),
+      timeout,
+    ]);
+
+    clearTimeout(timer);
+
+    expect(result).toBeDefined();
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+    expect(result?.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain(
+      "Pass repositoryPath as the absolute path",
+    );
+  } finally {
+    await client.close();
+  }
+}, 10_000);
+
+it("rejects an untrusted Host and Origin for tokenless HTTP MCP", async () => {
+  const server = await start(path.join(root, "server"), false, undefined, {
+    localAuth: true,
+  });
+
+  const response = await fetch(`${server.discovery.url}/mcp`, {
+    method: "POST",
+    headers: {
+      host: "rebind.attacker.test",
+      origin: "http://attacker.test",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1" },
+      },
+    }),
+  });
+
+  expect(response.status).toBe(403);
+});
 
 async function cli(argv: string[], env: NodeJS.ProcessEnv) {
   const stdout = new PassThrough();

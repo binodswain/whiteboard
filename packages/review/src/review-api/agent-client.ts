@@ -1,3 +1,4 @@
+import { detectLocalVcsSync } from "@dev.fast/local-vcs";
 import {
   ReviewInstanceUnavailableError,
   healthyReviewInstance,
@@ -58,6 +59,11 @@ export async function connectReviewInstance(
     return fetch(url, { ...init, headers: merged });
   };
 
+  const configuredUrl = env.WHITEBOARD_URL?.trim();
+
+  if (configuredUrl)
+    return connectHeadlessUrl(configuredUrl, env.WHITEBOARD_TOKEN, request);
+
   if (env.DEV_REVIEW_SERVER_DIR?.trim()) {
     const stateDir = reviewServerStateDir(env);
     const server = await readReviewServerDiscovery(stateDir);
@@ -77,8 +83,13 @@ export async function connectReviewInstance(
   const discovery = healthyReviewInstance(selection);
 
   if (!discovery) {
+    const fallbackUrl = "http://localhost:7421";
+
+    if (await reviewUrlIsHealthy(fallbackUrl))
+      return connectHeadlessUrl(fallbackUrl, undefined, request, false);
+
     const unavailable = reviewInstanceUnavailable(selection);
-    const message = `${unavailable.message} For headless authoring, select a running server with --state-dir or DEV_REVIEW_SERVER_DIR.`;
+    const message = `${unavailable.message} Tried ${fallbackUrl}/health. Start the server with docker compose up, then open ${fallbackUrl}/setup.`;
 
     if (unavailable instanceof ReviewInstanceUnavailableError)
       throw new ReviewInstanceUnavailableError(message);
@@ -95,6 +106,44 @@ export async function connectReviewInstance(
   };
 }
 
+async function reviewUrlIsHealthy(serverUrl: string) {
+  try {
+    const response = await fetch(new URL("/health", serverUrl), {
+      signal: AbortSignal.timeout(1_500),
+    });
+
+    if (!response.ok) return false;
+
+    const health: unknown = await response.json();
+
+    return (
+      isJsonObject(health) &&
+      health.ok === true &&
+      isStringValue(health.instanceId)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function connectHeadlessUrl(
+  serverUrl: string,
+  token: string | undefined,
+  request: ConstructorParameters<typeof ReviewApiClient>[1],
+  checkHealth = true,
+): Promise<ConnectedReview> {
+  const normalizedUrl = serverUrl.replace(/\/+$/, "");
+
+  if (checkHealth && !(await reviewUrlIsHealthy(normalizedUrl)))
+    throw new Error(
+      `Whiteboard server at ${normalizedUrl} is unavailable (tried ${normalizedUrl}/health). Start it with docker compose up and open ${normalizedUrl}/setup.`,
+    );
+
+  return {
+    client: new ReviewApiClient({ serverUrl: normalizedUrl, token }, request),
+  };
+}
+
 /** Only translate the tool envelope. The host owns validation and persistence. */
 export async function callAuthoringTool(
   client: ReviewApiClient,
@@ -102,6 +151,8 @@ export async function callAuthoringTool(
   input: NonNullable<CallToolRequest["params"]["arguments"]>,
   signal?: AbortSignal,
 ) {
+  input = withDefaultRepositoryPath(tool, input);
+
   if (tool.commandType) {
     try {
       return await client.post<JsonValue>(
@@ -161,6 +212,48 @@ export async function callAuthoringTool(
     : parseJsonText(await response.text());
 }
 
+function withDefaultRepositoryPath(
+  tool: AuthoringTool,
+  input: NonNullable<CallToolRequest["params"]["arguments"]>,
+) {
+  const fields = { ...input };
+
+  const repositoryPath = () => {
+    const vcs = detectLocalVcsSync(process.cwd());
+
+    if (!vcs) throw new Error("The current directory is not a Git repository.");
+
+    return vcs.rootPath;
+  };
+
+  if (
+    (tool.commandType === "create" || tool.commandType === "set_target") &&
+    isJsonObject(fields.target)
+  ) {
+    const target = fields.target;
+
+    const hasPathTarget =
+      target.kind === "worktree" || target.kind === "commits";
+
+    if (
+      hasPathTarget &&
+      !("repositoryPath" in target) &&
+      !("repositoryId" in target)
+    )
+      fields.target = { ...target, repositoryPath: repositoryPath() };
+  }
+
+  if (
+    tool.commandType === "create" &&
+    !("repositoryPath" in fields) &&
+    fields.pullRequestUrl &&
+    !fields.target
+  )
+    fields.repositoryPath = repositoryPath();
+
+  return fields;
+}
+
 /** A plain-text reply, shown to the agent as-is instead of as a JSON string. */
 export class ToolText {
   constructor(readonly text: string) {}
@@ -180,6 +273,7 @@ export function toolResultText(
 
 import {
   isBooleanValue,
+  isJsonObject,
   isNumberValue,
   isStringValue,
   type JsonValue,

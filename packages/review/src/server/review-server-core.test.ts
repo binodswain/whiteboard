@@ -253,7 +253,7 @@ describe.each(["desktop", "headless"] as const)("the %s server", (kind) => {
   });
 });
 
-it("allows tokenless API access only for an explicitly enabled local Host and Origin", async () => {
+it("allows tokenless local auth only for an explicitly enabled loopback Host", async () => {
   const server = await servers.headless({
     host: "0.0.0.0",
     localBrowserAuth: true,
@@ -313,7 +313,23 @@ it("allows tokenless API access only for an explicitly enabled local Host and Or
     "POST",
   );
 
+  const localMutationWithoutOrigin = await request(
+    "/reviews-api/commands",
+    {},
+    "POST",
+  );
+
   expect(localMutation.status).toBe(400);
+  expect(localMutationWithoutOrigin.status).toBe(400);
+
+  const localHealth = await request("/health", {});
+  const localControlResult = await request("/control/result", {}, "POST");
+
+  expect(localHealth.status).toBe(200);
+  expect(await localHealth.json()).toMatchObject({
+    serverId: expect.stringMatching(uuid),
+  });
+  expect(localControlResult.status).toBe(400);
 
   const missingHost = await new Promise<number | undefined>(
     (resolve, reject) => {
@@ -336,13 +352,13 @@ it("allows tokenless API access only for an explicitly enabled local Host and Or
 
   for (const [route, headers, method] of [
     ["/reviews-api", { host: "rebind.attacker.test", origin }, "GET"],
+    ["/reviews-api", { host: "rebind.attacker.test" }, "POST"],
     [
       "/reviews-api",
       { host: `localhost:${Number(new URL(server.url).port) + 1}`, origin },
       "GET",
     ],
     ["/reviews-api", { origin: "http://attacker.test" }, "GET"],
-    ["/reviews-api/commands", {}, "POST"],
     ["/reviews-api/commands", { origin: "http://attacker.test" }, "POST"],
   ] as const) {
     const response = await request(route, headers, method);
@@ -352,6 +368,22 @@ it("allows tokenless API access only for an explicitly enabled local Host and Or
       `${method} ${route} ${JSON.stringify(headers)}`,
     ).toBe(403);
   }
+
+  const tokenAuthorized = await request("/reviews-api", {
+    host: "rebind.attacker.test",
+    origin: "http://attacker.test",
+    "x-review-token": server.token,
+  });
+
+  expect(tokenAuthorized.status).toBe(200);
+
+  const bearerAuthorized = await request("/reviews-api", {
+    host: "rebind.attacker.test",
+    origin: "http://attacker.test",
+    authorization: `Bearer ${server.token}`,
+  });
+
+  expect(bearerAuthorized.status).toBe(200);
 });
 
 it("keeps token auth enabled by default on a wildcard bind", async () => {

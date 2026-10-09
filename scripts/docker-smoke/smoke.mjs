@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 
 const baseUrl =
   process.env.WHITEBOARD_URL ??
-  `http://127.0.0.1:${process.env.WHITEBOARD_PORT ?? "3000"}`;
+  `http://127.0.0.1:${process.env.WHITEBOARD_PORT ?? "7421"}`;
 
 const token = process.env.WHITEBOARD_TOKEN;
 

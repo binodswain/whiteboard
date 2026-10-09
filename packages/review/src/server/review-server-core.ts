@@ -18,7 +18,7 @@ import {
   type AuthoringCapabilities,
   type ReviewApiHooks,
   createReviewApi,
-  isLocalBrowserRequest,
+  isLocalAuthRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
 import type { ReviewStore } from "@review/review-api/store.js";
@@ -39,6 +39,7 @@ import {
   readBoundedRequestJson,
 } from "./hono-http";
 import { HttpJsonError, ReviewServerError } from "./http-json";
+import { createSetupInfoHandler } from "./setup-info.js";
 import type { WebSettings } from "./web-settings.js";
 
 const version = readReviewPackageVersion(import.meta.url);
@@ -75,7 +76,9 @@ export function createReviewServerApp(input: {
 
     return serverJson(
       200,
-      isAuthorizedRequest(context.req.raw, input.token)
+      isAuthorizedRequest(context.req.raw, input.token) ||
+        (input.localBrowserAuth &&
+          isLocalAuthRequest(context.req.raw, input.localBrowserPort?.()))
         ? ({
             ...health,
             serverId: input.serverId,
@@ -85,6 +88,16 @@ export function createReviewServerApp(input: {
         : health,
     );
   });
+
+  // Open like /health — it is how a host-side agent learns to connect — but
+  // the token stays behind the same checks that guard it elsewhere.
+  const setupInfo = createSetupInfoHandler({
+    token: input.token,
+    localBrowserAuth: input.localBrowserAuth,
+    localBrowserPort: input.localBrowserPort,
+  });
+
+  app.get("/setup-info", (context) => setupInfo(context.req.raw));
   app.use("*", async (context, next) => {
     if (isAuthorizedRequest(context.req.raw, input.token)) return next();
 
@@ -93,17 +106,23 @@ export function createReviewServerApp(input: {
     const reviewApiPath =
       path === "/reviews-api" || path.startsWith("/reviews-api/");
 
+    const localAuthPath =
+      reviewApiPath ||
+      path === "/mcp" ||
+      path === "/control" ||
+      path === "/control/result";
+
     if (
       input.localBrowserAuth &&
-      reviewApiPath &&
-      isLocalBrowserRequest(context.req.raw, input.localBrowserPort?.())
+      localAuthPath &&
+      isLocalAuthRequest(context.req.raw, input.localBrowserPort?.())
     )
       return next();
 
-    if (input.localBrowserAuth && reviewApiPath)
+    if (input.localBrowserAuth && localAuthPath)
       return serverJson(403, {
         ok: false,
-        error: "Local browser request not allowed",
+        error: "Local auth request not allowed",
       });
 
     if (context.req.method === "OPTIONS") return next();
@@ -260,6 +279,7 @@ export function serveWebCanvas(
 
   outer.get("/", index);
   outer.get("/r/*", index);
+  outer.get("/setup", index);
 
   outer.route("/", app);
   outer.notFound(() => serverJson(404, { ok: false, error: "Not found." }));

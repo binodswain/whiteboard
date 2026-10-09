@@ -37,13 +37,33 @@ interface AgentCliInput {
 }
 
 export const reviewAgentCliHelp =
-  "whiteboard api tools  (one line per tool)\nwhiteboard api tools <tool-name>  (its description and input schema)\nwhiteboard api <tool-name> '<json>'\nwhiteboard api <tool-name> -  (read JSON from stdin)\nwhiteboard mcp  (stdio MCP adapter; Whiteboard Desktop or whiteboard server start must be running)\nSelect headless state with DEV_REVIEW_SERVER_DIR or whiteboard --state-dir <path> api/mcp.\n";
+  "whiteboard api tools  (one line per tool)\nwhiteboard api tools <tool-name>  (its description and input schema)\nwhiteboard api <tool-name> '<json>'\nwhiteboard api <tool-name> -  (read JSON from stdin)\nwhiteboard mcp --url <url>  (stdio MCP adapter; connects to Whiteboard Desktop or a server)\nwhiteboard api --url <url> <tool-name> '<json>'\nSelect a server with --url <url>, WHITEBOARD_URL, DEV_REVIEW_SERVER_DIR or whiteboard --state-dir <path>.\n";
 
 export async function runReviewAgentCli(input: AgentCliInput): Promise<number> {
   const env = input.env ?? process.env;
 
   try {
-    const [mode, ...rest] = input.argv;
+    const cliArgs = [...input.argv];
+    let cliUrl: string | undefined;
+    const urlIndex = cliArgs.findIndex((argument) => argument === "--url");
+
+    if (urlIndex >= 0) {
+      cliUrl = cliArgs[urlIndex + 1];
+
+      if (!cliUrl) throw new Error("--url requires a URL.");
+      cliArgs.splice(urlIndex, 2);
+    }
+
+    for (let index = 0; index < cliArgs.length; index++) {
+      if (cliArgs[index].startsWith("--url=")) {
+        cliUrl = cliArgs[index].slice("--url=".length);
+        cliArgs.splice(index, 1);
+        break;
+      }
+    }
+
+    const cliEnv = cliUrl ? { ...env, WHITEBOARD_URL: cliUrl } : env;
+    const [mode, ...rest] = cliArgs;
 
     // --json requests raw data for session_get; other tools already return JSON.
     const [name, json, ...extra] = rest.filter(
@@ -65,7 +85,7 @@ export async function runReviewAgentCli(input: AgentCliInput): Promise<number> {
 
     const headers = {
       [REVIEW_VIA_HEADER]: mode === "mcp" ? "mcp" : "api",
-      [REVIEW_AGENT_HEADER]: reviewSessionAgent(env),
+      [REVIEW_AGENT_HEADER]: reviewSessionAgent(cliEnv),
     };
 
     if (mode === "mcp") {
@@ -73,7 +93,7 @@ export async function runReviewAgentCli(input: AgentCliInput): Promise<number> {
       await serveReviewMcp(
         async (key, agentKind) => {
           const connected = await connectReviewInstance(
-            key ? { ...env, [REVIEW_INSTANCE_ENV]: key } : env,
+            key ? { ...cliEnv, [REVIEW_INSTANCE_ENV]: key } : cliEnv,
             agentKind
               ? { ...headers, [REVIEW_AGENT_HEADER]: agentKind }
               : headers,
@@ -86,11 +106,11 @@ export async function runReviewAgentCli(input: AgentCliInput): Promise<number> {
         input.stdin ?? process.stdin,
         input.stdout,
         input.stderr,
-        await traceMachineEnabled({ env: input.env }),
-        env.DEV_REVIEW_SERVER_DIR?.trim()
+        await traceMachineEnabled({ env: cliEnv }),
+        cliEnv.DEV_REVIEW_SERVER_DIR?.trim()
           ? undefined
           : async (problem) => {
-              const selection = await selectReviewInstance({ env });
+              const selection = await selectReviewInstance({ env: cliEnv });
 
               return {
                 key: selection.key,
@@ -99,7 +119,7 @@ export async function runReviewAgentCli(input: AgentCliInput): Promise<number> {
                 running: selection.instances
                   .filter((instance) => instance.healthy)
                   .map((instance) => instance.key),
-                home: devReviewHome(env),
+                home: devReviewHome(cliEnv),
                 problem,
               };
             },
@@ -114,7 +134,7 @@ export async function runReviewAgentCli(input: AgentCliInput): Promise<number> {
     let tools: AuthoringTool[];
 
     try {
-      const connected = await connectReviewInstance(input.env, headers);
+      const connected = await connectReviewInstance(cliEnv, headers);
 
       input.onDesktop?.(connected.instance?.appVersion);
       client = connected.client;

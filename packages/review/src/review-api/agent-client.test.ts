@@ -7,6 +7,7 @@ import path from "node:path";
 import { PassThrough, Readable, Writable } from "node:stream";
 
 import type { JsonObject } from "@dev.fast/json";
+import { detectLocalVcsSync } from "@dev.fast/local-vcs";
 import { ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -35,7 +36,9 @@ const client = new ReviewApiClient(
 );
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   // The scratchpad cannot be deleted; every review can.
+
   for (const { reviewId, kind } of store.list())
     if (kind !== "scratchpad")
       await store.execute({
@@ -152,6 +155,291 @@ it("uses host-advertised tools to edit, retry, reject invalid content and inspec
   expect(
     await call("get", { reviewId: created.reviewId, targetId: stepId }),
   ).toContain("Updated through the reading view.");
+});
+
+it("connects to WHITEBOARD_URL without a token header and lets it override discovery", async () => {
+  const fetchMock = vi.fn<typeof fetch>(async () =>
+    Response.json({ ok: true, instanceId: "server" }),
+  );
+
+  vi.stubGlobal("fetch", fetchMock);
+
+  const connected = await agentClient.connectReviewInstance(
+    {
+      WHITEBOARD_URL: "http://localhost:3000",
+      DEV_REVIEW_SERVER_DIR: "/missing",
+    },
+    {},
+  );
+
+  expect(connected.client.connection).toEqual({
+    serverUrl: "http://localhost:3000",
+    token: undefined,
+  });
+  await connected.client.read("/health");
+  const [, request] = fetchMock.mock.calls.at(-1)!;
+  expect(String(fetchMock.mock.calls.at(-1)![0])).toBe(
+    "http://localhost:3000/reviews-api/health",
+  );
+  expect(new Headers(request?.headers).has("x-review-token")).toBe(false);
+});
+
+it("uses WHITEBOARD_TOKEN when connecting to WHITEBOARD_URL", async () => {
+  const fetchMock = vi.fn<typeof fetch>(async () =>
+    Response.json({ ok: true, instanceId: "server" }),
+  );
+
+  vi.stubGlobal("fetch", fetchMock);
+
+  const connected = await agentClient.connectReviewInstance({
+    WHITEBOARD_URL: "http://localhost:3000",
+    WHITEBOARD_TOKEN: "secret",
+  });
+
+  await connected.client.read("/health");
+
+  const request = fetchMock.mock.calls.at(-1)![1];
+  expect(new Headers(request?.headers).get("x-review-token")).toBe("secret");
+});
+
+it("probes localhost:7421 when Desktop discovery finds nothing", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>(async (input) =>
+      String(input) === "http://localhost:7421/health"
+        ? Response.json({ ok: true, instanceId: "server" })
+        : Promise.reject(new Error("unexpected request")),
+    ),
+  );
+  const connected = await agentClient.connectReviewInstance({});
+  expect(connected.client.connection.serverUrl).toBe("http://localhost:7421");
+});
+
+it("does not accept an unrelated 200 response as localhost Whiteboard health", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>(async () => Response.json({ status: "ok" })),
+  );
+
+  await expect(agentClient.connectReviewInstance({})).rejects.toThrow(
+    /localhost:7421\/health.*docker compose up.*localhost:7421\/setup/i,
+  );
+});
+
+it("rejects an explicit URL whose 200 health response is not Whiteboard JSON", async () => {
+  const fetchMock = vi.fn<typeof fetch>(async () =>
+    Response.json({ status: "ok" }),
+  );
+
+  vi.stubGlobal("fetch", fetchMock);
+
+  await expect(
+    agentClient.connectReviewInstance({
+      WHITEBOARD_URL: "http://localhost:3000",
+    }),
+  ).rejects.toThrow(
+    /localhost:3000\/health.*docker compose up.*localhost:3000\/setup/i,
+  );
+  expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+});
+
+it("defaults a missing target repositoryPath to the process git root", async () => {
+  let body: unknown;
+  const repositoryPath = detectLocalVcsSync(process.cwd())?.rootPath;
+
+  expect(repositoryPath).toBeDefined();
+
+  const api = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test" },
+    async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+
+      return Response.json({ ok: true });
+    },
+  );
+
+  const tool: AuthoringTool = {
+    name: "review_create",
+    description: "",
+    inputSchema: { type: "object" },
+    method: "POST",
+    path: "/commands",
+    commandType: "create",
+  };
+
+  await callAuthoringTool(api, tool, {
+    title: "Current repo",
+    target: { kind: "worktree" },
+  });
+  expect(body).toMatchObject({
+    operation: {
+      target: {
+        kind: "worktree",
+        repositoryPath,
+      },
+    },
+  });
+});
+
+it("preserves an explicit target repositoryPath", async () => {
+  let body: unknown;
+
+  const api = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test" },
+    async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+
+      return Response.json({ ok: true });
+    },
+  );
+
+  const tool: AuthoringTool = {
+    name: "review_create",
+    description: "",
+    inputSchema: { type: "object" },
+    method: "POST",
+    path: "/commands",
+    commandType: "create",
+  };
+
+  await callAuthoringTool(api, tool, {
+    title: "Other repo",
+    target: { kind: "worktree", repositoryPath: "/other" },
+  });
+  expect(body).toMatchObject({
+    operation: { target: { repositoryPath: "/other" } },
+  });
+});
+
+it("leaves scratchpad targets without a repository path", async () => {
+  let body: unknown;
+
+  const api = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test" },
+    async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+
+      return Response.json({ ok: true });
+    },
+  );
+
+  await callAuthoringTool(
+    api,
+    {
+      name: "review_create",
+      description: "",
+      inputSchema: { type: "object" },
+      method: "POST",
+      path: "/commands",
+      commandType: "create",
+    },
+    {
+      title: "Scratchpad",
+      target: { kind: "scratchpad" },
+    },
+  );
+
+  expect(body).toMatchObject({ operation: { target: { kind: "scratchpad" } } });
+  expect(body).not.toHaveProperty("operation.target.repositoryPath");
+});
+
+it("does not default repositoryPath for a non-create target tool", async () => {
+  let body: unknown;
+
+  const api = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test" },
+    async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+
+      return Response.json({ ok: true });
+    },
+  );
+
+  await callAuthoringTool(
+    api,
+    {
+      name: "review_edit",
+      description: "",
+      inputSchema: { type: "object" },
+      method: "POST",
+      path: "/commands",
+      commandType: "edit",
+    },
+    {
+      target: { kind: "worktree" },
+    },
+  );
+
+  expect(body).toMatchObject({ operation: { target: { kind: "worktree" } } });
+  expect(body).not.toHaveProperty("operation.target.repositoryPath");
+});
+
+it("defaults a commits target to the current git root", async () => {
+  let body: unknown;
+  const repositoryPath = detectLocalVcsSync(process.cwd())?.rootPath;
+
+  const api = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test" },
+    async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+
+      return Response.json({ ok: true });
+    },
+  );
+
+  await callAuthoringTool(
+    api,
+    {
+      name: "review_create",
+      description: "",
+      inputSchema: { type: "object" },
+      method: "POST",
+      path: "/commands",
+      commandType: "create",
+    },
+    {
+      title: "Commits target",
+      target: { kind: "commits", head: "head" },
+    },
+  );
+
+  expect(body).toMatchObject({
+    operation: { target: { kind: "commits", repositoryPath } },
+  });
+});
+
+it("defaults a set_target worktree to the current git root", async () => {
+  let body: unknown;
+  const repositoryPath = detectLocalVcsSync(process.cwd())?.rootPath;
+
+  const api = new ReviewApiClient(
+    { serverUrl: "http://review.test", token: "test" },
+    async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+
+      return Response.json({ ok: true });
+    },
+  );
+
+  await callAuthoringTool(
+    api,
+    {
+      name: "review_set_target",
+      description: "",
+      inputSchema: { type: "object" },
+      method: "POST",
+      path: "/commands",
+      commandType: "set_target",
+    },
+    {
+      reviewId: "review",
+      target: { kind: "worktree" },
+    },
+  );
+
+  expect(body).toMatchObject({
+    operation: { target: { kind: "worktree", repositoryPath } },
+  });
 });
 
 it("serves MCP framing without stdout diagnostics and returns host errors as tool errors", async () => {
@@ -327,6 +615,41 @@ it("reports each api tool call with its outcome", async () => {
       ["session_list", "api", true],
       ["session_get", "api", false, "review_not_found"],
     ]);
+  } finally {
+    connection.mockRestore();
+  }
+});
+
+it("accepts --url on the api command and overrides state directory selection", async () => {
+  let connectedEnv: NodeJS.ProcessEnv | undefined;
+
+  const connection = vi
+    .spyOn(agentClient, "connectReviewInstance")
+    .mockImplementation(async (env) => {
+      connectedEnv = env;
+
+      return { client };
+    });
+
+  const discard = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+
+  try {
+    expect(
+      await runReviewAgentCli({
+        argv: ["api", "session_list", "--url", "http://localhost:3000"],
+        env: { DEV_REVIEW_SERVER_DIR: "/ignored" },
+        stdout: discard,
+        stderr: discard,
+      }),
+    ).toBe(0);
+    expect(connectedEnv).toMatchObject({
+      WHITEBOARD_URL: "http://localhost:3000",
+      DEV_REVIEW_SERVER_DIR: "/ignored",
+    });
   } finally {
     connection.mockRestore();
   }

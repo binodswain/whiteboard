@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { type JsonObject, isJsonObject } from "@dev.fast/json";
@@ -166,7 +167,7 @@ const remoteCaller = (context: Context) =>
 
 const LOCAL_BROWSER_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
-export function isLocalBrowserRequest(
+export function isLocalAuthRequest(
   request: Request,
   port: number | undefined,
 ): boolean {
@@ -179,8 +180,7 @@ export function isLocalBrowserRequest(
 
   const origin = request.headers.get("origin");
 
-  if (origin === null)
-    return request.method === "GET" || request.method === "HEAD";
+  if (origin === null) return true;
 
   return origin === `http://${host}`;
 }
@@ -1757,6 +1757,13 @@ export function createReviewApi(
 
     const request = await locateRepositories(body, (path) => {
       if (!data) throw new ReviewInputError("Repositories are unavailable.");
+
+      if (!existsSync(path))
+        throw new ReviewInputError(
+          process.env.CODE_ROOT?.trim()
+            ? `Repository path ${JSON.stringify(path)} is outside the mounted CODE_ROOT or does not exist in the server. Set CODE_ROOT on the host to a directory containing this repository, then bind-mount it at the same absolute path inside the container.`
+            : "Repository path does not exist.",
+        );
 
       return data.register(path);
     });

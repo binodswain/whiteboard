@@ -1,3 +1,5 @@
+name: whiteboard
+
 services:
   whiteboard:
     build:
@@ -6,20 +8,32 @@ services:
       args:
         AGENT: ${AGENT:-none}
     user: "${UID:-1000}:${GID:-1000}"
+    init: true
+    stop_grace_period: 30s
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WHITEBOARD_PORT:-7421}:${WHITEBOARD_PORT:-7421}"
     volumes:
-      - whiteboard-data:/data
-      - ${REPOSITORY:-.}:/workspace
+      - "${WHITEBOARD_DATA_DIR:-${HOME}/.whiteboard/docker}:/data"
+      - "${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}"
     environment:
       HOME: /tmp
+      WHITEBOARD_PORT: ${WHITEBOARD_PORT:-7421}
       WHITEBOARD_TOKEN: ${WHITEBOARD_TOKEN:-}
       WHITEBOARD_LOCAL_BROWSER_AUTH: ${WHITEBOARD_LOCAL_BROWSER_AUTH:-1}
+      CODE_ROOT: ${CODE_ROOT:?set CODE_ROOT}
       GH_TOKEN: ${GH_TOKEN:-}
       GH_ENTERPRISE_TOKEN: ${GH_ENTERPRISE_TOKEN:-}
       GH_HOST: ${GH_HOST:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    command:
+      - whiteboard
+      - server
+      - start
+      - --host
+      - 0.0.0.0
+      - --port
+      - "${WHITEBOARD_PORT:-7421}"
+      - --web
+      - /app/web
     restart: unless-stopped
-volumes:
-  whiteboard-data:

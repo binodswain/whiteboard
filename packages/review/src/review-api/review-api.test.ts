@@ -159,6 +159,47 @@ it("lists registered repositories without paths and rejects unregistered create 
   });
 });
 
+it("only recommends CODE_ROOT for missing repository paths in Docker", async () => {
+  const api = createReviewApi(
+    store,
+    new LocalReviewData(store, { manageWorkspaces: false }),
+  );
+
+  const request = () =>
+    api.request("/commands", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        operation: {
+          type: "create",
+          title: "Missing checkout",
+          target: {
+            kind: "worktree",
+            repositoryPath: path.join(directory, "missing-checkout"),
+          },
+        },
+      }),
+    });
+
+  vi.stubEnv("CODE_ROOT", path.join(directory, "mounted-code"));
+
+  const dockerResponse = await request();
+
+  expect(dockerResponse.status).toBe(400);
+  expect(await dockerResponse.json()).toMatchObject({
+    error: expect.stringContaining("CODE_ROOT"),
+  });
+
+  vi.stubEnv("CODE_ROOT", "");
+
+  const localResponse = await request();
+
+  expect(localResponse.status).toBe(400);
+  expect(await localResponse.json()).toEqual({
+    error: "Repository path does not exist.",
+  });
+});
+
 it("returns a headless canvas URL only for an existing session", async () => {
   const { reviewId } = await create();
 
