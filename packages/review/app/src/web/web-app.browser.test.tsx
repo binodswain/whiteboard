@@ -244,16 +244,48 @@ describe("the web canvas entry", () => {
     expect(container!.textContent).toContain("Queue order");
   });
 
+  it("skips the token prompt only when the server advertises local browser auth", async () => {
+    const state: FixtureState = { catalog: [], snapshots: new Map() };
+    const fixture = webFixtureRequest(state);
+    const requested: string[] = [];
+
+    const request = async (url: string, init?: RequestInit) => {
+      const { pathname } = new URL(url);
+
+      requested.push(pathname);
+
+      if (pathname === "/reviews-api/capabilities")
+        return Response.json({ localBrowserAuth: true });
+
+      return fixture.request(url, init);
+    };
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, { request });
+    });
+
+    expect(await settled(() => requested.includes("/reviews-api"))).toBe(true);
+    expect(container.querySelector("input[type=password]")).toBeNull();
+  });
+
   it("bootstraps the token from the URL fragment and asks for one when missing", async () => {
     const state: FixtureState = { catalog: [], snapshots: new Map() };
     const fixture = webFixtureRequest(state);
 
-    let requested = false;
+    const requested: string[] = [];
 
     const request = (url: string, init?: RequestInit) => {
-      requested = true;
+      const { pathname } = new URL(url);
 
-      return fixture.request(url, init);
+      requested.push(pathname);
+
+      return pathname === "/reviews-api/capabilities"
+        ? Promise.resolve(Response.json({ localBrowserAuth: false }))
+        : fixture.request(url, init);
     };
 
     // No token anywhere: a short prompt, not a stack trace or a blank page.
@@ -267,12 +299,13 @@ describe("the web canvas entry", () => {
 
     expect(container.textContent).toContain("token");
     expect(container.querySelector("input[type=password]")).toBeTruthy();
-    expect(requested).toBe(false);
+    expect(requested).toEqual(["/reviews-api/capabilities"]);
 
     await act(async () => app?.dispose());
     container.replaceChildren();
 
     // The fragment bootstrap: captured, kept in sessionStorage, stripped.
+    requested.length = 0;
     history.replaceState(null, "", "/#token=abcd1234abcd1234abcd1234");
 
     await act(async () => {
@@ -283,6 +316,7 @@ describe("the web canvas entry", () => {
     expect(sessionStorage.getItem("review-token")).toBe(
       "abcd1234abcd1234abcd1234",
     );
-    expect(await settled(() => requested)).toBe(true);
+    expect(await settled(() => requested.includes("/reviews-api"))).toBe(true);
+    expect(requested).not.toContain("/reviews-api/capabilities");
   });
 });

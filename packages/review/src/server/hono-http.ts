@@ -16,8 +16,28 @@ export type ReviewHonoEnv = {
 
 export function createNodeRequestListener(
   app: Hono<ReviewHonoEnv>,
+  options: { requireHostOnReviewApi?: boolean } = {},
 ): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
-  return getRequestListener(app.fetch);
+  const listener = getRequestListener(app.fetch);
+
+  return async (request, response) => {
+    const path = request.url?.split("?", 1)[0];
+
+    if (
+      options.requireHostOnReviewApi &&
+      (path === "/reviews-api" || path?.startsWith("/reviews-api/")) &&
+      !request.headers.host
+    ) {
+      response.writeHead(400, {
+        "content-type": "application/json; charset=utf-8",
+      });
+      response.end('{"error":"Host header required."}\n');
+
+      return;
+    }
+
+    await listener(request, response);
+  };
 }
 
 export function jsonResponse<T>(

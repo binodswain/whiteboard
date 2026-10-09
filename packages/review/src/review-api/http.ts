@@ -159,6 +159,27 @@ export interface ReviewApiHooks {
 const remoteCaller = (context: Context) =>
   context.req.header(REVIEW_CLIENT_HEADER) === REVIEW_CLIENT_REMOTE;
 
+const LOCAL_BROWSER_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+export function isLocalBrowserRequest(
+  request: Request,
+  port: number | undefined,
+): boolean {
+  if (port === undefined) return false;
+
+  const host = request.headers.get("host");
+
+  if (!host || !LOCAL_BROWSER_HOSTS.some((name) => host === `${name}:${port}`))
+    return false;
+
+  const origin = request.headers.get("origin");
+
+  if (origin === null)
+    return request.method === "GET" || request.method === "HEAD";
+
+  return origin === `http://${host}`;
+}
+
 /** Both hosts mount this behind their token authentication. */
 export function createReviewApi(
   store: ReviewStore,
@@ -184,6 +205,7 @@ export function createReviewApi(
   hooks: ReviewApiHooks = {},
   /** Desktop's Ask: local agents answering questions about a selection. */
   ask?: AskHost,
+  localBrowserAuth = false,
 ) {
   const app = new Hono();
   app.onError((error, context) => {
@@ -456,6 +478,7 @@ export function createReviewApi(
     context.json({
       ...(await capabilities()),
       scratchpadEnabled: scratchpadEnabled(),
+      localBrowserAuth,
     }),
   );
 
