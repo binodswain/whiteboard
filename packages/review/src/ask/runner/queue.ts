@@ -95,13 +95,32 @@ export class AskQueue {
         `UPDATE asks SET status='running', claimed_by=?, lease_until=?, attempts=attempts+1, updated_at=?
          WHERE id=? AND status='pending'`,
         runnerId,
-        now + (options.leaseMs ?? 10 * 60_000),
+        now + (options.leaseMs ?? 2 * 60_000),
         now,
         id,
       );
 
       return result.changes === 1 ? this.get(id) : undefined;
     });
+  }
+
+  async heartbeat(
+    id: string,
+    runnerId: string,
+    options: { now?: number; leaseMs?: number } = {},
+  ): Promise<boolean> {
+    const now = options.now ?? Date.now();
+
+    const result = await this.store.run(
+      `UPDATE asks SET lease_until=?, updated_at=?
+       WHERE id=? AND status='running' AND claimed_by=?`,
+      now + (options.leaseMs ?? 2 * 60_000),
+      now,
+      id,
+      runnerId,
+    );
+
+    return result.changes === 1;
   }
 
   async reapExpired(now = Date.now()): Promise<number> {

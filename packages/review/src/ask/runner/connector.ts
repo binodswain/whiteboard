@@ -22,6 +22,14 @@ interface ConnectorOptions {
   onStatus?: (message: string) => void;
 }
 
+class WhiteboardHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Whiteboard returned HTTP ${status}.`);
+  }
+}
+
+const ASK_LEASE_MS = 2 * 60_000;
+
 /** Polls, claims and runs one hosted ask at a time. The lease is owned by the
  * connector process, so a crash leaves the ask reclaimable after expiry. */
 export async function runAskConnector(
@@ -60,8 +68,7 @@ export async function runAskConnector(
       signal: options.signal,
     });
 
-    if (!response.ok)
-      throw new Error(`Whiteboard returned HTTP ${response.status}.`);
+    if (!response.ok) throw new WhiteboardHttpError(response.status);
 
     // SAFETY: callers validate each response shape through the queue protocol.
     return (await response.json()) as T;
@@ -88,7 +95,10 @@ export async function runAskConnector(
 
     const claimed = await request<{ ask: PendingAsk }>(
       `/asks/${encodeURIComponent(pending.id)}/claim`,
-      { method: "POST", body: JSON.stringify({ runnerId }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ runnerId }),
+      },
     ).catch(() => undefined);
 
     if (!claimed) continue;
@@ -109,8 +119,28 @@ export async function runAskConnector(
       question: { text: pending.prompt },
     });
 
+    let ownershipLost = false;
+    let nextHeartbeat = Date.now() + ASK_LEASE_MS / 3;
+
     try {
       for (;;) {
+        if (Date.now() >= nextHeartbeat) {
+          try {
+            await request(`/asks/${encodeURIComponent(pending.id)}/heartbeat`, {
+              method: "POST",
+              body: JSON.stringify({ runnerId }),
+            });
+            nextHeartbeat = Date.now() + ASK_LEASE_MS / 3;
+          } catch (error) {
+            if (!(error instanceof WhiteboardHttpError) || error.status !== 409)
+              throw error;
+
+            ownershipLost = true;
+            thread.close();
+          }
+        }
+
+        if (ownershipLost) throw new Error("Ask lease was lost.");
         const status = thread.read().status;
 
         if (status === "idle") break;

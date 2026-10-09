@@ -20,6 +20,7 @@ afterEach(async () => {
 describe("hosted ask queue routes", () => {
   it("lets a board enqueue and poll while a connector claims and completes", async () => {
     dir = mkdtempSync(path.join(tmpdir(), "ask-queue-http-"));
+
     store = await ReviewStore.open(path.join(dir, "review.db"), {
       validatePins: async () => {},
       validateSource: async () => {},
@@ -84,5 +85,56 @@ describe("hosted ask queue routes", () => {
     expect(await (await api.request(`/asks/${askId}`)).json()).toMatchObject({
       ask: { status: "done", resultRefs: ["block-1"] },
     });
+  });
+
+  it("rejects heartbeat and completion from a runner whose ask was reaped", async () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ask-queue-http-"));
+    store = await ReviewStore.open(path.join(dir, "review.db"), {
+      validatePins: async () => {},
+      validateSource: async () => {},
+      validateResource: async () => {},
+    });
+
+    const created = await store.execute({
+      operation: {
+        type: "create",
+        title: "Example",
+        target: {
+          kind: "commits",
+          repositoryId: "repo",
+          base: "base",
+          head: "head",
+        },
+      },
+    });
+
+    const askId = await store.askQueue.create({
+      reviewId: created.reviewId,
+      prompt: "Draw the login flow",
+      createdBy: "board",
+    });
+
+    await store.askQueue.claim(askId, "old-runner", {
+      now: 1000,
+      leaseMs: 10,
+    });
+    await store.askQueue.reapExpired(1011);
+
+    const api = createReviewApi(store);
+
+    const heartbeat = await api.request(`/asks/${askId}/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runnerId: "old-runner" }),
+    });
+
+    const completed = await api.request(`/asks/${askId}/complete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runnerId: "old-runner", resultRefs: [] }),
+    });
+
+    expect(heartbeat.status).toBe(409);
+    expect(completed.status).toBe(409);
   });
 });

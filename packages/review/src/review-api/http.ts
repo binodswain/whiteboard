@@ -144,6 +144,8 @@ const queuedAskSchema = z.strictObject({
 
 const claimAskSchema = z.strictObject({ runnerId: z.string().min(1).max(200) });
 
+const heartbeatAskSchema = claimAskSchema;
+
 const completeAskSchema = z.strictObject({
   runnerId: z.string().min(1).max(200),
   resultRefs: z.array(z.string().min(1).max(500)).max(500),
@@ -322,6 +324,20 @@ export function createReviewApi(
     );
 
     return completed
+      ? context.json({ ok: true })
+      : context.json({ error: "Ask is not owned by this runner." }, 409);
+  });
+  app.post("/asks/:askId/heartbeat", async (context) => {
+    const { runnerId } = heartbeatAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    const renewed = await store.askQueue.heartbeat(
+      context.req.param("askId"),
+      runnerId,
+    );
+
+    return renewed
       ? context.json({ ok: true })
       : context.json({ error: "Ask is not owned by this runner." }, 409);
   });

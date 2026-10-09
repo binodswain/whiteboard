@@ -98,4 +98,42 @@ describe("AskQueue", () => {
       resultRefs: ["block-1"],
     });
   });
+
+  it("renews a lease past its original expiry", async () => {
+    const asks = await queue();
+
+    const askId = await asks.create({
+      reviewId: "review",
+      prompt: "draw login",
+      createdBy: "board",
+    });
+
+    await asks.claim(askId, "runner-a", { now: 1000, leaseMs: 10 });
+    expect(
+      await asks.heartbeat(askId, "runner-a", { now: 1009, leaseMs: 10 }),
+    ).toBe(true);
+
+    await asks.reapExpired(1011);
+    expect(await asks.get(askId)).toMatchObject({
+      status: "running",
+      claimedBy: "runner-a",
+      leaseUntil: 1019,
+    });
+  });
+
+  it("rejects an old runner after its ask is reaped", async () => {
+    const asks = await queue();
+
+    const askId = await asks.create({
+      reviewId: "review",
+      prompt: "draw login",
+      createdBy: "board",
+    });
+
+    await asks.claim(askId, "runner-a", { now: 1000, leaseMs: 10 });
+    await asks.reapExpired(1011);
+
+    expect(await asks.heartbeat(askId, "runner-a", { now: 1012 })).toBe(false);
+    expect(await asks.complete(askId, "runner-a", [])).toBe(false);
+  });
 });
