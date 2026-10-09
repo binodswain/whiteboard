@@ -1,10 +1,19 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import path from "node:path";
 
 import { isObjectValue } from "@dev.fast/json";
-import { withFileLock, writePrivateJsonAtomic } from "@dev.fast/trace-core";
+import {
+  shellQuote,
+  withFileLock,
+  writePrivateJsonAtomic,
+} from "@dev.fast/trace-core";
+import { detectAskAgents } from "@review/ask/agents.js";
+import type { AskTools } from "@review/ask/threads.js";
+import { findReviewPackageRoot } from "@review/package-paths.js";
 import { openReviewProfile } from "@review/review-api/profile.js";
 import {
   type ReviewServerDiscovery,
@@ -19,13 +28,22 @@ import {
   drainServerCrashReport,
   installProcessErrorTelemetry,
 } from "./process-error-telemetry.js";
-import { createWhiteboardCore } from "./review-server-core.js";
+import { createWhiteboardCore, serveWebCanvas } from "./review-server-core.js";
 import type { ReviewTelemetryCapture } from "./ui-telemetry.js";
 
 interface HeadlessServerInput {
   stateDir: string;
   port?: number;
+  /** Bind address; a non-loopback one makes the API reachable from other machines. */
+  host?: string;
+  /** Serve the built web canvas from this directory on the same origin. */
+  webDir?: string;
+  /** Pin the auth token; a fresh one is generated when omitted. */
+  token?: string;
   softwareMapEnabled?: boolean;
+  /** Ask reviewers through an installed agent CLI; unset runs Ask when one
+   * is detected. */
+  ask?: boolean;
   signal: AbortSignal;
   /** The CLI's instance, already on the `headless` surface. */
   telemetry?: Pick<ReviewTelemetryCapture, "captureUiEvent">;
@@ -73,6 +91,9 @@ export function withHeadlessServerLock<T>(
 async function serve(input: HeadlessServerInput) {
   if (input.signal.aborted) return;
 
+  if (input.token !== undefined && input.token.length < 32)
+    throw new Error("The server token must be at least 32 characters long.");
+
   await migrateDiffrConfig(input.signal);
 
   if (input.telemetry) await drainServerCrashReport(input.telemetry);
@@ -86,12 +107,15 @@ async function serve(input: HeadlessServerInput) {
     instanceId: randomUUID(),
     url: "http://127.0.0.1:0",
     serverPid: process.pid,
-    token: randomBytes(32).toString("base64url"),
+    token: input.token ?? randomBytes(32).toString("base64url"),
   };
 
   const relay = new GlobalReviewDesktopVerbRelay();
 
-  const { app, api } = createWhiteboardCore({
+  const ask =
+    input.ask ?? (await detectAskAgents()).some((agent) => agent.available);
+
+  const core = createWhiteboardCore({
     profile: local,
     relay,
     token: discovery.token,
@@ -100,22 +124,37 @@ async function serve(input: HeadlessServerInput) {
     // The scratchpad is the laptop's alone, even with a Desktop attached.
     scratchpad: () => false,
     status: () => ({ key: "headless", home: input.stateDir }),
+    ask: ask ? { tools: headlessAskTools(input.stateDir) } : undefined,
   });
+
+  const { app, api } = core;
 
   app.route("/reviews-api", api);
 
-  const server = createServer(createNodeRequestListener(app));
+  const server = createServer(
+    createNodeRequestListener(
+      input.webDir ? serveWebCanvas(app, input.webDir) : app,
+    ),
+  );
+
   let published = false;
 
   try {
     const listening = once(server, "listening");
-    server.listen(input.port ?? 0, "127.0.0.1");
+    server.listen(input.port ?? 0, input.host || "127.0.0.1");
     await listening;
     const address = server.address();
 
     if (!isObjectValue(address))
       throw new Error("Whiteboard server did not bind a TCP port.");
-    discovery.url = `http://127.0.0.1:${address.port}`;
+    // Same-machine clients dial the discovery URL: a wildcard bind still gets
+    // loopback, while a specific interface is only reachable by its own address.
+    discovery.url = `http://${discoveryHost(address.address)}:${address.port}`;
+
+    if (!isLoopbackAddress(address.address))
+      process.stderr.write(
+        `Whiteboard server is listening on ${address.address}, reachable from other machines; the token is the only protection.\n`,
+      );
     await writePrivateJsonAtomic(
       reviewServerDiscoveryPath(input.stateDir),
       discovery,
@@ -137,6 +176,8 @@ async function serve(input: HeadlessServerInput) {
       if (published)
         await rm(reviewServerDiscoveryPath(input.stateDir), { force: true });
     } finally {
+      // Ask agents run as this server's children; they stop with it.
+      core.close();
       // An attached Desktop's stream would otherwise hold the close open.
       relay.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -149,4 +190,68 @@ async function serve(input: HeadlessServerInput) {
       }
     }
   }
+}
+
+function discoveryHost(bound: string) {
+  if (bound === "0.0.0.0" || bound === "::") return "127.0.0.1";
+
+  return bound.includes(":") ? `[${bound}]` : bound;
+}
+
+function isLoopbackAddress(bound: string) {
+  const ipv4 = bound.startsWith("::ffff:") ? bound.slice(7) : bound;
+
+  return ipv4 === "::1" || ipv4.startsWith("127.");
+}
+
+/** The package's built CLI, when there is one to advertise; a checkout run
+ * from source has none, and its Ask sessions go without Whiteboard's tools. */
+function whiteboardCliPath(): string | undefined {
+  const cli = path.join(
+    findReviewPackageRoot(import.meta.url),
+    "dist",
+    "cli.js",
+  );
+
+  return existsSync(cli) ? cli : undefined;
+}
+
+/** Whiteboard's tools for the server's Ask sessions: `whiteboard mcp` over
+ * stdio, or `whiteboard api` from the agent's shell — each pointed at this
+ * state directory so no other running Whiteboard answers the agent. */
+export function headlessAskTools(
+  stateDir: string,
+  cliPath: string | null = whiteboardCliPath() ?? null,
+): AskTools {
+  const cli = cliPath ?? undefined;
+  const cliEnv = () => [
+    { name: "DEV_REVIEW_SERVER_DIR", value: stateDir },
+    ...(process.versions.electron
+      ? [{ name: "ELECTRON_RUN_AS_NODE", value: "1" }]
+      : []),
+    ...(process.env.DEV_REVIEW_HOME
+      ? [{ name: "DEV_REVIEW_HOME", value: process.env.DEV_REVIEW_HOME }]
+      : []),
+  ];
+
+  return {
+    mcpServers: () =>
+      cli
+        ? [
+            {
+              name: "whiteboard",
+              command: process.execPath,
+              args: [cli, "mcp"],
+              env: cliEnv(),
+            },
+          ]
+        : [],
+    cli: () =>
+      cli &&
+      [
+        ...cliEnv().map(({ name, value }) => `${name}=${shellQuote(value)}`),
+        shellQuote(process.execPath),
+        shellQuote(cli),
+      ].join(" "),
+  };
 }

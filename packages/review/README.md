@@ -54,6 +54,43 @@ Reviews are authored through the JSON API: `whiteboard api` calls a tool
 directly, and `whiteboard mcp` serves the same catalog over stdio MCP for a
 connected agent.
 
+`whiteboard server start` runs that API without Desktop. It binds `127.0.0.1`
+by default; pass `--host <address>` (or set `WHITEBOARD_HOST`) to bind another
+interface, such as `0.0.0.0` for every interface when the server runs inside a
+container. On a non-loopback bind the discovery-file token is the only
+protection, and same-machine `whiteboard api` and `whiteboard mcp` keep
+working through it.
+
+Pass `--web <dir>` (or set `WHITEBOARD_WEB_DIR`) to serve a built web canvas
+from the same origin: `pnpm --filter @dev.fast/review-canvas build:web` writes
+one to `packages/review/app/dist/web`. The static files are public — the page
+load cannot carry the token — while `/reviews-api` and `/control` stay
+token-protected and `/health` stays open. The startup output prints an open
+URL with the token in its fragment, for example
+`http://localhost:3000/#token=…`; a page opened without one asks for it. Pin
+the token with `--token <value>` (or `WHITEBOARD_TOKEN`, 32 characters or
+more) instead of reading it from the logs; an empty `WHITEBOARD_TOKEN` means
+"generate one".
+
+The server also serves Ask — sending a selection in a review to a coding
+agent — once it detects an installed agent: Claude Code (`claude`), Codex
+(`codex`), Cursor (`cursor-agent`), OpenCode (`opencode`), or Pi (`pi`), found
+on `PATH` or in its installer's directory. `--ask` and `--no-ask` override the
+default, as does `WHITEBOARD_ASK=1` or `WHITEBOARD_ASK=0`; a flag beats the
+environment. With no agent installed, the Ask panel lists the supported
+agents and offers to copy the selection instead.
+
+Ask sessions run the agent's own CLI as a child of the server process, signed
+in the way that CLI is signed in: the server's environment and mounts apply —
+for example `ANTHROPIC_API_KEY` or a mounted `~/.claude` for Claude Code,
+`OPENAI_API_KEY` or `~/.codex` for Codex, `CURSOR_API_KEY` for Cursor, the
+provider keys or `opencode auth login` state for OpenCode, and `/login` inside
+`pi` for Pi. Nothing is stored in the review's state directory. Where the
+agent has a mode that keeps the checkout as it is, Ask runs it that way.
+Whiteboard gives each session its own tools — `whiteboard mcp`, or `whiteboard
+api` from the agent's shell — pointed at the server's state directory, and
+stopping the server stops the agent processes.
+
 To select a review, run:
 
 ```sh
