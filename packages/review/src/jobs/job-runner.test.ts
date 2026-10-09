@@ -101,6 +101,24 @@ describe("review jobs", () => {
     await store.close();
   });
 
+  it("stores the submitter and supplies it to the queued worker", async () => {
+    const store = await database();
+    let context: { jobId: string; submitterId?: string } | undefined;
+
+    const runner = createQueueJobRunner(store, async (_input, jobContext) => {
+      context = jobContext;
+
+      return { reviewId: "review-for-submitter" };
+    });
+
+    const job = await runner.submit(input, "proxy:smoke-user");
+
+    expect(job.submitterId).toBe("proxy:smoke-user");
+    await runner.run(job.id);
+    expect(context).toEqual({ jobId: job.id, submitterId: "proxy:smoke-user" });
+    await store.close();
+  });
+
   it("reclaims an expired lease and retries the job", async () => {
     const store = await database();
 

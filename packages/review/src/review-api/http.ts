@@ -205,6 +205,14 @@ export interface ReviewApiAccess {
   normalizeRepoPath?(repoPath: string): string | undefined;
 }
 
+export type ReviewApiApp = Hono & {
+  /** Executes an in-process server job with its repository-scoped principal. */
+  fetchAsPrincipal(
+    request: Request,
+    principal: AuthPrincipal,
+  ): Promise<Response>;
+};
+
 /** A gateway forwarding from another machine; it gets no local paths. */
 const remoteCaller = (context: Context) =>
   context.req.header(REVIEW_CLIENT_HEADER) === REVIEW_CLIENT_REMOTE;
@@ -304,7 +312,8 @@ export function createReviewApi(
 
   if (access && authScope)
     app.use("*", async (context, next) => {
-      const principal = await access.authenticate(context.req.raw);
+      const principal =
+        authScope.getStore() ?? (await access.authenticate(context.req.raw));
 
       if (!principal) return context.json({ error: "Unauthorized" }, 401);
 
@@ -745,11 +754,14 @@ export function createReviewApi(
           throw new ReviewInputError("Repository not found.", 404);
       }
 
-      const job = await jobs.submit({
-        repo: input.repository,
-        baseSha: input.base,
-        headSha: input.head,
-      });
+      const job = await jobs.submit(
+        {
+          repo: input.repository,
+          baseSha: input.base,
+          headSha: input.head,
+        },
+        authScope?.getStore()?.id,
+      );
 
       const status = {
         status: job.status,
@@ -2262,6 +2274,15 @@ export function createReviewApi(
         const caller = authScope!.getStore()!;
         const remote = access.normalizeRepoPath?.(path);
 
+        if (
+          !remote &&
+          caller.via === "job" &&
+          caller.jobCheckoutPath === path &&
+          data &&
+          existsSync(path)
+        )
+          return data.register(path);
+
         if (!remote)
           throw new ReviewInputError(
             "Remote deployments register GitHub repository URLs.",
@@ -2431,7 +2452,13 @@ export function createReviewApi(
     });
   });
 
-  return app;
+  return Object.assign(app, {
+    fetchAsPrincipal(request: Request, principal: AuthPrincipal) {
+      return authScope
+        ? authScope.run(principal, () => app.fetch(request))
+        : app.fetch(request);
+    },
+  });
 }
 
 const systemErrorSchema = z.object({ code: z.string().regex(/^[A-Z0-9_]+$/) });

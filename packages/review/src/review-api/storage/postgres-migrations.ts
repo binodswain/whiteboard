@@ -119,4 +119,9 @@ export const POSTGRES_MIGRATIONS: {
         allowed INTEGER NOT NULL, checked_at TEXT NOT NULL,
         PRIMARY KEY(user_id, repo));`,
   },
+  {
+    version: 8,
+    name: "review_job_submitter",
+    sql: "ALTER TABLE jobs_jobs ADD COLUMN submitter_id TEXT",
+  },
 ];

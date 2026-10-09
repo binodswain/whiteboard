@@ -78,7 +78,7 @@ const REVIEW_SCHEMA = `
   CREATE TABLE IF NOT EXISTS jobs_jobs(
     id TEXT PRIMARY KEY, job_key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, input TEXT NOT NULL,
     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER,
-    review_id TEXT, url TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    review_id TEXT, url TEXT, error TEXT, submitter_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);
   CREATE TABLE IF NOT EXISTS review_comments(
     id TEXT PRIMARY KEY, review_id TEXT NOT NULL, version INTEGER NOT NULL, anchor TEXT,
@@ -174,6 +174,15 @@ export class SqliteMetadataStore {
         .some((column) => String(column.name) === "url")
     )
       this.db.exec("ALTER TABLE jobs_jobs ADD COLUMN url TEXT");
+
+    if (
+      this.schema === "review" &&
+      !this.db
+        .prepare("PRAGMA table_info(jobs_jobs)")
+        .all()
+        .some((column) => String(column.name) === "submitter_id")
+    )
+      this.db.exec("ALTER TABLE jobs_jobs ADD COLUMN submitter_id TEXT");
 
     if (this.schema === "review") this.addReviewColumns();
   }

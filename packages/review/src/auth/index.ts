@@ -10,7 +10,11 @@ export interface AuthPrincipal {
   /** Stable internal user id — `gh:<github id>` or `proxy:<login>`. */
   id: string;
   login: string;
-  via: "github" | "api-token" | "proxy";
+  via: "github" | "api-token" | "proxy" | "job";
+  /** Canonical GitHub repository for an in-process queued job principal. */
+  jobRepository?: string;
+  /** Exact ephemeral clone owned by the same in-process queued job. */
+  jobCheckoutPath?: string;
   /** The user's GitHub access token, when the sign-in supplied one. */
   githubToken?: string;
 }
@@ -44,6 +48,25 @@ export interface RepoAccess {
   /** The canonical remote URL a `repositoryPath` input names, or undefined
    * when it is not a GitHub remote (a local path in a local deployment). */
   normalize(repoPath: string): string | undefined;
+}
+
+/** A queued worker's in-process identity can read only the repository named
+ * when the owner submitted that job. User principals retain GitHub checks. */
+export function canReadRepository(
+  principal: AuthPrincipal,
+  repoPath: string,
+  access: RepoAccess,
+): Promise<boolean> {
+  if (principal.via === "job")
+    return Promise.resolve(
+      Boolean(
+        (principal.jobCheckoutPath && principal.jobCheckoutPath === repoPath) ||
+        (principal.jobRepository &&
+          principal.jobRepository === access.normalize(repoPath)),
+      ),
+    );
+
+  return access.canRead(principal, repoPath);
 }
 
 /**

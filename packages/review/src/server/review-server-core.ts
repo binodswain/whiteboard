@@ -10,7 +10,11 @@ import { traceMachineEnabled } from "@dev.fast/trace-core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
-import { type AuthDriver, createAuthDriver } from "@review/auth/index.js";
+import {
+  type AuthDriver,
+  canReadRepository,
+  createAuthDriver,
+} from "@review/auth/index.js";
 import {
   createGitHubAppCredentials,
   githubRepoSlug,
@@ -351,13 +355,56 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
         })
       : createLocalRepoSource();
 
+  const checkoutRemotes = new Map<string, string>();
+  let checkoutRemotesLoaded = false;
+  let checkoutRemotesLoading: Promise<void> | undefined;
+
+  const remoteForCheckout = async (repositoryPath: string) => {
+    if (!checkoutRemotesLoaded) {
+      checkoutRemotesLoading ??= store
+        .metadataStore()
+        .all<{ input: string }>(
+          "SELECT input FROM jobs_jobs WHERE status='succeeded'",
+        )
+        .then((jobs) => {
+          for (const job of jobs) {
+            try {
+              const input = z
+                .object({
+                  repo: z.string(),
+                  baseSha: z.string(),
+                  headSha: z.string(),
+                })
+                .parse(JSON.parse(job.input));
+
+              if (deploymentConfig.repoSource === "github")
+                checkoutRemotes.set(
+                  githubCachePath(input.repo),
+                  auth?.access.normalize(input.repo) ?? input.repo,
+                );
+            } catch {
+              // Ignore invalid historical rows; they cannot name a valid checkout.
+            }
+          }
+
+          checkoutRemotesLoaded = true;
+        })
+        .finally(() => {
+          checkoutRemotesLoading = undefined;
+        });
+
+      await checkoutRemotesLoading;
+    }
+
+    return checkoutRemotes.get(repositoryPath);
+  };
+
   let api: ReturnType<typeof createReviewApi>;
 
-  const prepareReview = async ({
-    repo,
-    baseSha,
-    headSha,
-  }: PrepareReviewInput) => {
+  const prepareReview = async (
+    { repo, baseSha, headSha }: PrepareReviewInput,
+    context: { jobId: string; submitterId?: string },
+  ) => {
     const persistentDir =
       deploymentConfig.repoSource === "github"
         ? githubCachePath(repo)
@@ -371,25 +418,38 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     });
 
     try {
-      const response = await api.fetch(
-        new Request("http://whiteboard.invalid/commands", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            operation: {
-              type: "create",
-              title: `${repo} ${headSha.slice(0, 7)}`,
-              target: {
-                kind: "commits",
-                repositoryPath: checkout.dir,
-                base: baseSha,
-                head: headSha,
-              },
-              open: false,
+      const request = new Request("http://whiteboard.invalid/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          operation: {
+            type: "create",
+            title: `${repo} ${headSha.slice(0, 7)}`,
+            target: {
+              kind: "commits",
+              repositoryPath: checkout.dir,
+              base: baseSha,
+              head: headSha,
             },
-          }),
+            open: false,
+          },
         }),
-      );
+      });
+
+      const principal =
+        context.submitterId && auth
+          ? {
+              id: context.submitterId,
+              login: context.submitterId.replace(/^[^:]+:/, ""),
+              via: "job" as const,
+              jobRepository: auth.access.normalize(repo),
+              jobCheckoutPath: checkout.dir,
+            }
+          : undefined;
+
+      const response = principal
+        ? await api.fetchAsPrincipal(request, principal)
+        : await api.fetch(request);
 
       const result = z
         .object({
@@ -403,6 +463,9 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           (result.success ? result.data.error : undefined) ??
             `Review creation failed (${response.status}).`,
         );
+
+      if (principal?.jobRepository)
+        checkoutRemotes.set(checkout.dir, principal.jobRepository);
 
       return {
         reviewId: result.data.reviewId,
@@ -456,8 +519,18 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
       ? undefined
       : {
           authenticate: (request: Request) => auth.authenticate(request),
-          canReadRepo: (principal, repoPath) =>
-            auth.access.canRead(principal, repoPath),
+          canReadRepo: async (principal, repoPath) => {
+            if (principal.via === "job")
+              return canReadRepository(principal, repoPath, auth.access);
+
+            const repository = auth.access.normalize(repoPath)
+              ? repoPath
+              : await remoteForCheckout(repoPath);
+
+            return repository
+              ? auth.access.canRead(principal, repository)
+              : false;
+          },
           normalizeRepoPath: (repoPath) => auth.access.normalize(repoPath),
         },
     jobs,

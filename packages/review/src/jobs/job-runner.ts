@@ -19,6 +19,7 @@ export type JobRecord = {
   id: string;
   type: "prepare_review";
   input: PrepareReviewInput;
+  submitterId?: string;
   status: JobStatus;
   attempts: number;
   reviewId?: string;
@@ -29,13 +30,16 @@ export type JobRecord = {
 export type JobResult = { reviewId: string; url?: string };
 
 export interface JobRunner {
-  submit(input: PrepareReviewInput): Promise<JobRecord>;
+  submit(input: PrepareReviewInput, submitterId?: string): Promise<JobRecord>;
   get(jobId: string): Promise<JobRecord | undefined>;
   runNext(): Promise<boolean>;
   run(jobId: string): Promise<boolean>;
 }
 
-export type PrepareReview = (input: PrepareReviewInput) => Promise<JobResult>;
+export type PrepareReview = (
+  input: PrepareReviewInput,
+  context: { jobId: string; submitterId?: string },
+) => Promise<JobResult>;
 
 const prepareReviewInputSchema = z.strictObject({
   repo: z.string().min(1),
@@ -53,6 +57,7 @@ type JobSqlRow = MetadataRow & {
   review_id: MetadataColumn;
   url: MetadataColumn;
   error: MetadataColumn;
+  submitter_id: MetadataColumn;
 };
 
 function record(row: JobSqlRow): JobRecord {
@@ -63,6 +68,8 @@ function record(row: JobSqlRow): JobRecord {
     status: jobStatusSchema.parse(row.status),
     attempts: Number(row.attempts),
   };
+
+  if (row.submitter_id) result.submitterId = String(row.submitter_id);
 
   if (row.review_id) result.reviewId = String(row.review_id);
 
@@ -145,6 +152,12 @@ export function createQueueJobRunner(
     try {
       const output = await prepare(
         prepareReviewInputSchema.parse(JSON.parse(claimed.input)),
+        {
+          jobId: String(claimed.id),
+          submitterId: claimed.submitter_id
+            ? String(claimed.submitter_id)
+            : undefined,
+        },
       );
 
       await store.run(
@@ -174,25 +187,27 @@ export function createQueueJobRunner(
   };
 
   return {
-    async submit(input) {
+    async submit(input, submitterId) {
       const key = createHash("sha256")
-        .update(JSON.stringify(input))
+        .update(JSON.stringify({ input, submitterId: submitterId ?? null }))
         .digest("hex");
 
       const now = new Date().toISOString();
       const id = randomUUID();
       await store.run(
-        `INSERT INTO jobs_jobs(id,job_key,type,input,status,attempts,created_at,updated_at)
-         VALUES(?,?, 'prepare_review', ?, 'pending', 0, ?, ?) ON CONFLICT(job_key) DO NOTHING`,
+        `INSERT INTO jobs_jobs(id,job_key,type,input,status,attempts,submitter_id,created_at,updated_at)
+         VALUES(?,?, 'prepare_review', ?, 'pending', 0, ?, ?, ?) ON CONFLICT(job_key) DO NOTHING`,
         id,
         key,
         JSON.stringify(input),
+        submitterId ?? null,
         now,
         now,
       );
 
       await store.run(
-        "UPDATE jobs_jobs SET status='pending',attempts=0,lease_until=NULL,review_id=NULL,url=NULL,error=NULL,updated_at=? WHERE job_key=? AND status='failed'",
+        "UPDATE jobs_jobs SET status='pending',attempts=0,lease_until=NULL,review_id=NULL,url=NULL,error=NULL,submitter_id=?,updated_at=? WHERE job_key=? AND status='failed'",
+        submitterId ?? null,
         now,
         key,
       );
@@ -228,8 +243,8 @@ export function createInlineJobRunner(
   const waitMs = options.waitMs ?? 30_000;
 
   return {
-    async submit(input) {
-      const job = await queue.submit(input);
+    async submit(input, submitterId) {
+      const job = await queue.submit(input, submitterId);
 
       if (job.status === "pending" || job.status === "running") {
         let current = job;
