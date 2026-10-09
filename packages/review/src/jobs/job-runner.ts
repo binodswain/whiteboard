@@ -32,6 +32,7 @@ export interface JobRunner {
   submit(input: PrepareReviewInput): Promise<JobRecord>;
   get(jobId: string): Promise<JobRecord | undefined>;
   runNext(): Promise<boolean>;
+  run(jobId: string): Promise<boolean>;
 }
 
 export type PrepareReview = (input: PrepareReviewInput) => Promise<JobResult>;
@@ -80,6 +81,98 @@ export function createQueueJobRunner(
   const leaseMs = options.leaseMs ?? 60_000;
   const maxAttempts = options.maxAttempts ?? 3;
 
+  const runJob = async (jobId?: string) => {
+    const claimed: (JobSqlRow & { attempts: number }) | undefined =
+      await store.transaction(async () => {
+        const now = Date.now();
+
+        const row = jobId
+          ? await store.get<JobSqlRow>(
+              `SELECT * FROM jobs_jobs WHERE (status='pending' OR (status='running' AND lease_until < ?)) AND id=? ORDER BY created_at LIMIT 1`,
+              now,
+              jobId,
+            )
+          : await store.get<JobSqlRow>(
+              `SELECT * FROM jobs_jobs WHERE status='pending' OR (status='running' AND lease_until < ?) ORDER BY created_at LIMIT 1`,
+              now,
+            );
+
+        if (!row) return undefined;
+        const attempts = Number(row.attempts) + 1;
+
+        if (attempts > maxAttempts) {
+          await store.run(
+            "UPDATE jobs_jobs SET status='failed',error=?,lease_until=NULL,updated_at=? WHERE id=?",
+            "Worker lease expired; retry limit reached.",
+            new Date().toISOString(),
+            String(row.id),
+          );
+
+          return undefined;
+        }
+
+        const result = await store.run(
+          `UPDATE jobs_jobs SET status='running',attempts=?,lease_until=?,error=NULL,updated_at=? WHERE id=? AND (status='pending' OR lease_until < ?)`,
+          attempts,
+          now + leaseMs,
+          new Date().toISOString(),
+          String(row.id),
+          now,
+        );
+
+        return result.changes ? { ...row, attempts } : undefined;
+      });
+
+    if (!claimed) return false;
+
+    const heartbeat = setInterval(
+      () => {
+        void store
+          .run(
+            "UPDATE jobs_jobs SET lease_until=?,updated_at=? WHERE id=? AND status='running' AND attempts=?",
+            Date.now() + leaseMs,
+            new Date().toISOString(),
+            String(claimed.id),
+            claimed.attempts,
+          )
+          .catch(() => {});
+      },
+      Math.max(1, Math.floor(leaseMs / 3)),
+    );
+
+    heartbeat.unref();
+
+    try {
+      const output = await prepare(
+        prepareReviewInputSchema.parse(JSON.parse(claimed.input)),
+      );
+
+      await store.run(
+        "UPDATE jobs_jobs SET status='succeeded',review_id=?,url=?,lease_until=NULL,error=NULL,updated_at=? WHERE id=? AND status='running' AND attempts=?",
+        output.reviewId,
+        output.url ?? null,
+        new Date().toISOString(),
+        String(claimed.id),
+        claimed.attempts,
+      );
+    } catch (cause) {
+      const error = cause instanceof Error ? cause.message : String(cause);
+      const failed = Number(claimed.attempts) >= maxAttempts;
+      await store.run(
+        "UPDATE jobs_jobs SET status=?,lease_until=NULL,error=?,updated_at=? WHERE id=? AND status='running' AND attempts=?",
+        failed ? "failed" : "pending",
+        error,
+        new Date().toISOString(),
+        String(claimed.id),
+        claimed.attempts,
+      );
+    } finally {
+      clearInterval(heartbeat);
+    }
+
+    return true;
+  };
+
   return {
     async submit(input) {
       const key = createHash("sha256")
@@ -96,6 +189,12 @@ export function createQueueJobRunner(
         JSON.stringify(input),
         now,
         now,
+      );
+
+      await store.run(
+        "UPDATE jobs_jobs SET status='pending',attempts=0,lease_until=NULL,review_id=NULL,url=NULL,error=NULL,updated_at=? WHERE job_key=? AND status='failed'",
+        now,
+        key,
       );
 
       const row = await store.get<JobSqlRow>(
@@ -115,99 +214,18 @@ export function createQueueJobRunner(
 
       return row ? record(row) : undefined;
     },
-    async runNext() {
-      const claimed: (JobSqlRow & { attempts: number }) | undefined =
-        await store.transaction(async () => {
-          const now = Date.now();
-
-          const row = await store.get<JobSqlRow>(
-            `SELECT * FROM jobs_jobs WHERE status='pending' OR (status='running' AND lease_until < ?) ORDER BY created_at LIMIT 1`,
-            now,
-          );
-
-          if (!row) return undefined;
-          const attempts = Number(row.attempts) + 1;
-
-          if (attempts > maxAttempts) {
-            await store.run(
-              "UPDATE jobs_jobs SET status='failed',error=?,lease_until=NULL,updated_at=? WHERE id=?",
-              "Worker lease expired; retry limit reached.",
-              new Date().toISOString(),
-              String(row.id),
-            );
-
-            return undefined;
-          }
-
-          const result = await store.run(
-            `UPDATE jobs_jobs SET status='running',attempts=?,lease_until=?,error=NULL,updated_at=? WHERE id=? AND (status='pending' OR lease_until < ?)`,
-            attempts,
-            now + leaseMs,
-            new Date().toISOString(),
-            String(row.id),
-            now,
-          );
-
-          return result.changes ? { ...row, attempts } : undefined;
-        });
-
-      if (!claimed) return false;
-
-      const heartbeat = setInterval(
-        () => {
-          void store
-            .run(
-              "UPDATE jobs_jobs SET lease_until=?,updated_at=? WHERE id=? AND status='running' AND attempts=?",
-              Date.now() + leaseMs,
-              new Date().toISOString(),
-              String(claimed.id),
-              claimed.attempts,
-            )
-            .catch(() => {});
-        },
-        Math.max(1, Math.floor(leaseMs / 3)),
-      );
-
-      heartbeat.unref();
-
-      try {
-        const output = await prepare(
-          prepareReviewInputSchema.parse(JSON.parse(claimed.input)),
-        );
-
-        await store.run(
-          "UPDATE jobs_jobs SET status='succeeded',review_id=?,url=?,lease_until=NULL,error=NULL,updated_at=? WHERE id=? AND status='running' AND attempts=?",
-          output.reviewId,
-          output.url ?? null,
-          new Date().toISOString(),
-          String(claimed.id),
-          claimed.attempts,
-        );
-      } catch (cause) {
-        const error = cause instanceof Error ? cause.message : String(cause);
-        const failed = Number(claimed.attempts) >= maxAttempts;
-        await store.run(
-          "UPDATE jobs_jobs SET status=?,lease_until=NULL,error=?,updated_at=? WHERE id=? AND status='running' AND attempts=?",
-          failed ? "failed" : "pending",
-          error,
-          new Date().toISOString(),
-          String(claimed.id),
-          claimed.attempts,
-        );
-      } finally {
-        clearInterval(heartbeat);
-      }
-
-      return true;
-    },
+    runNext: () => runJob(),
+    run: runJob,
   };
 }
 
 export function createInlineJobRunner(
   store: MetadataStore,
   prepare: PrepareReview,
+  options: { leaseMs?: number; maxAttempts?: number; waitMs?: number } = {},
 ): JobRunner {
-  const queue = createQueueJobRunner(store, prepare);
+  const queue = createQueueJobRunner(store, prepare, options);
+  const waitMs = options.waitMs ?? 30_000;
 
   return {
     async submit(input) {
@@ -215,10 +233,22 @@ export function createInlineJobRunner(
 
       if (job.status === "pending" || job.status === "running") {
         let current = job;
+        const deadline = Date.now() + waitMs;
+        let delayMs = 50;
 
-        while (current.status === "pending" || current.status === "running") {
-          await queue.runNext();
+        while (
+          (current.status === "pending" || current.status === "running") &&
+          Date.now() < deadline
+        ) {
+          const ran = await queue.run(job.id);
           current = (await queue.get(job.id)) ?? current;
+
+          if (!ran || current.status === "running") {
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(delayMs, deadline - Date.now())),
+            );
+            delayMs = Math.min(delayMs * 2, 250);
+          }
         }
 
         return current;
@@ -228,5 +258,6 @@ export function createInlineJobRunner(
     },
     get: (id) => queue.get(id),
     runNext: () => queue.runNext(),
+    run: (id) => queue.run(id),
   };
 }

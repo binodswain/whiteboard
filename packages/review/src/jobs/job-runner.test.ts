@@ -45,6 +45,43 @@ describe("review jobs", () => {
     await store.close();
   });
 
+  it("waits with bounded polling when another runner holds this inline job", async () => {
+    const store = await database();
+    let started!: () => void;
+    let finish!: (value: { reviewId: string }) => void;
+
+    const startedWork = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+
+    const prepare = async () => {
+      started();
+
+      return new Promise<{ reviewId: string }>((resolve) => {
+        finish = resolve;
+      });
+    };
+
+    const queue = createQueueJobRunner(store, prepare);
+    const job = await queue.submit(input);
+    const queuedWork = queue.run(job.id);
+    await startedWork;
+
+    const inline = createInlineJobRunner(store, prepare, { waitMs: 90 });
+    const startedAt = Date.now();
+    const inlineResult = await inline.submit(input);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(70);
+    expect(inlineResult).toMatchObject({ id: job.id, status: "running" });
+
+    finish({ reviewId: "finished-by-queue" });
+    await queuedWork;
+    expect(await inline.get(job.id)).toMatchObject({
+      status: "succeeded",
+      reviewId: "finished-by-queue",
+    });
+    await store.close();
+  });
+
   it("claims a queued job once across runners", async () => {
     const store = await database();
     let runs = 0;
@@ -108,6 +145,43 @@ describe("review jobs", () => {
       status: "failed",
       attempts: 1,
       error: "checkout failed",
+    });
+    await store.close();
+  });
+
+  it("resets a failed idempotent job so it can be retried", async () => {
+    const store = await database();
+    let attempts = 0;
+
+    const runner = createQueueJobRunner(
+      store,
+      async () => {
+        if (++attempts === 1) throw new Error("first attempt failed");
+
+        return { reviewId: "review-after-retry" };
+      },
+      { maxAttempts: 1 },
+    );
+
+    const original = await runner.submit(input);
+    expect(await runner.runNext()).toBe(true);
+    expect(await runner.get(original.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+    });
+
+    const retry = await runner.submit(input);
+    expect(retry).toMatchObject({
+      id: original.id,
+      status: "pending",
+      attempts: 0,
+    });
+    expect(retry.error).toBeUndefined();
+    expect(await runner.runNext()).toBe(true);
+    expect(await runner.get(original.id)).toMatchObject({
+      status: "succeeded",
+      attempts: 1,
+      reviewId: "review-after-retry",
     });
     await store.close();
   });
