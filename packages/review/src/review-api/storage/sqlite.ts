@@ -67,7 +67,13 @@ const REVIEW_SCHEMA = `
   CREATE INDEX IF NOT EXISTS ask_conversations_review ON ask_conversations(review_id, updated_at);
   CREATE TABLE IF NOT EXISTS ask_agent_offers(agent TEXT PRIMARY KEY, offer TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS ask_agent_model_offers(agent TEXT NOT NULL, model TEXT NOT NULL, offer TEXT NOT NULL, PRIMARY KEY(agent, model));
-  CREATE TABLE IF NOT EXISTS headless_imports(path TEXT PRIMARY KEY);`;
+  CREATE TABLE IF NOT EXISTS headless_imports(path TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL,
+    PRIMARY KEY(review_id,tag));
+  CREATE INDEX IF NOT EXISTS review_tags_tag ON review_tags(tag);`;
+
+/** Columns the review list filters on, denormalized from the latest version. */
+const REVIEW_COLUMNS = ["branch", "base_sha", "head_sha", "created_by"];
 
 /** The `.workspaces` sidecar's tables, byte-for-byte what the synchronous
  * workspace manager created. */
@@ -125,6 +131,34 @@ export class SqliteMetadataStore {
       this.db.exec(
         "ALTER TABLE ask_conversations ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0",
       );
+
+    if (this.schema === "review") this.addReviewColumns();
+  }
+
+  /** Reviews saved before the list filters lack their columns; fill them from
+   * the latest version once, when the columns first appear. */
+  private addReviewColumns() {
+    const present = new Set(
+      this.db
+        .prepare("PRAGMA table_info(reviews)")
+        .all()
+        .map((column) => String(column.name)),
+    );
+
+    const missing = REVIEW_COLUMNS.filter((column) => !present.has(column));
+
+    if (!missing.length) return;
+
+    for (const column of missing)
+      this.db.exec(`ALTER TABLE reviews ADD COLUMN ${column} TEXT`);
+
+    this.db.exec(`
+      UPDATE reviews SET
+        branch=(SELECT json_extract(versions.snapshot,'$.origin.branch') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        base_sha=(SELECT json_extract(versions.snapshot,'$.pins.base') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        head_sha=(SELECT json_extract(versions.snapshot,'$.pins.head') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
+      CREATE INDEX IF NOT EXISTS reviews_branch ON reviews(branch);
+      CREATE INDEX IF NOT EXISTS reviews_created_by ON reviews(created_by);`);
   }
 
   /** Serializes work on the one connection, as the synchronous driver did.

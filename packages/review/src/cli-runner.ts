@@ -6,6 +6,7 @@ import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { isJsonObject } from "@dev.fast/json";
+import type { ReviewApiSummary } from "@dev.fast/review-protocol";
 import {
   StoreApiError,
   processIsAlive,
@@ -746,6 +747,102 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       state.exitCode = 0;
     },
   );
+
+  const reviews = configureJsonOutput(
+    program
+      .command("reviews")
+      .description("List saved reviews and manage their tags"),
+    "plain",
+  );
+
+  configureJsonOutput(
+    reviews
+      .command("list")
+      .description("List saved reviews, optionally filtered")
+      .option("--repo <name>", "repository name or id")
+      .option("--branch <name>", "branch the review was created from")
+      .option("--commit <sha>", "prefix of the base or head commit")
+      .option("--author <name>", "who created the review")
+      .option("--tag <tag>", "reviews carrying this tag"),
+    "plain",
+  ).action(
+    async (options: {
+      repo?: string;
+      branch?: string;
+      commit?: string;
+      author?: string;
+      tag?: string;
+      json?: boolean;
+    }) => {
+      const connected = await connectReviewInstance(authoringEnv());
+      const query = new URLSearchParams(
+        Object.entries(options).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[1] === "string" && entry[0] !== "json",
+        ),
+      );
+
+      const summaries = (
+        await connected.client.read<ReviewApiSummary[]>(`/?${query}`)
+      ).filter((summary) => summary.kind !== "scratchpad");
+
+      const serverUrl = connected.client.connection.serverUrl;
+
+      if (options.json) {
+        input.stdout.write(`${JSON.stringify(summaries)}\n`);
+      } else {
+        for (const summary of summaries) {
+          const details = [
+            summary.origin?.branch,
+            summary.pins?.head.slice(0, 7),
+            summary.createdBy,
+            summary.tags?.length ? `#${summary.tags.join(" #")}` : undefined,
+          ].filter(Boolean);
+
+          input.stdout.write(
+            `${serverUrl}/r/${encodeURIComponent(summary.reviewId)}  ${summary.title}${details.length ? `  (${details.join(", ")})` : ""}\n`,
+          );
+        }
+      }
+
+      state.exitCode = 0;
+    },
+  );
+
+  const tag = reviews.command("tag").description("Add or remove review tags");
+
+  for (const action of ["add", "remove"] as const) {
+    configureJsonOutput(
+      tag
+        .command(`${action} <reviewId> <tags...>`)
+        .description(`${action === "add" ? "Add" : "Remove"} tags on a review`),
+      "plain",
+    ).action(
+      async (reviewId: string, tags: string[], options: { json?: boolean }) => {
+        const connected = await connectReviewInstance(authoringEnv());
+        const result = await connected.client.post<{ tags?: string[] }>(
+          "/commands",
+          {
+            operation: {
+              type: "tags",
+              reviewId,
+              add: action === "add" ? tags : [],
+              remove: action === "remove" ? tags : [],
+            },
+          },
+        );
+
+        const current = result.tags ?? [];
+
+        input.stdout.write(
+          options.json
+            ? `${JSON.stringify({ event: "review.tags", reviewId, tags: current })}\n`
+            : `${current.length ? current.join(" ") : "(no tags)"}\n`,
+        );
+        state.exitCode = 0;
+      },
+    );
+  }
 
   const instanceOutput = (command: Command) => ({
     env,

@@ -20,6 +20,7 @@ import type {
   ReviewSessionCreateInput,
 } from "@dev.fast/review-protocol";
 import { fuzzyMatches, fuzzySegments } from "@review/fuzzy-match";
+import { type ReviewFilter, matchesReviewFilter } from "@review/review-api/review-filter";
 import * as stylex from "@stylexjs/stylex";
 import {
   type FormEvent,
@@ -37,9 +38,12 @@ import { homeStyles } from "./home-styles";
 import { CanvasUiContext, useCanvasMenu } from "./host/canvas-ui";
 import { OptionMenu } from "./option-menu";
 import { ArchiveIcon } from "./review-corner-action";
+import { ReviewFilterBar } from "./review-filter-bar";
 import { withClass } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
 import { WelcomePage } from "./welcome-page";
+
+type TagChange = { add: string[]; remove: string[] };
 
 interface ReviewHomeProps {
   reviews: readonly ReviewApiSummary[];
@@ -57,6 +61,8 @@ interface ReviewHomeProps {
   // support them.
   onDismiss?(review: ReviewApiSummary): Promise<void>;
   onRestore?(review: ReviewApiSummary): Promise<void>;
+  // Absent when the host does not support tags.
+  onEditTags?(review: ReviewApiSummary, change: TagChange): Promise<string[]>;
   // Present only while the list is empty: Home then renders Welcome.
   install?: ReviewCanvasInstallContent;
   setupActions?: ReviewCanvasSetupActions;
@@ -67,6 +73,7 @@ interface ReviewHomeProps {
 
 interface ReviewAttentionActions {
   onDelete?(review: ReviewApiSummary): Promise<void>;
+  onEditTags?(review: ReviewApiSummary, change: TagChange): Promise<string[]>;
   onDismiss?(review: ReviewApiSummary): Promise<void>;
   onRestore?(review: ReviewApiSummary): Promise<void>;
 }
@@ -118,6 +125,7 @@ export function ReviewHome({
   onDelete,
   onDismiss,
   onRestore,
+  onEditTags,
   install,
   setupActions,
   onboarding,
@@ -139,6 +147,7 @@ export function ReviewHome({
   );
 
   const [deleteError, setDeleteError] = useState<string>();
+  const [filter, setFilter] = useState<ReviewFilter>({});
 
   useEffect(() => {
     if (searchQuery !== undefined) setQuery(searchQuery);
@@ -264,11 +273,13 @@ export function ReviewHome({
       onDismiss,
       onRestore,
       onDelete: onDelete ? deleteReview : undefined,
+      onEditTags,
     }),
-    [onDismiss, onRestore, onDelete, deleteReview],
+    [onDismiss, onRestore, onDelete, deleteReview, onEditTags],
   );
 
   const needle = query.trim();
+  const filtering = Object.values(filter).some(Boolean);
 
   // The one scratchpad is the last group on Home, outside the workspaces,
   // their chronological order and their lifecycle. The filter still finds it.
@@ -280,15 +291,17 @@ export function ReviewHome({
   );
 
   const scratchpadShown =
-    scratchpad !== undefined && matchesQuery(scratchpad, needle);
+    scratchpad !== undefined && matchesQuery(scratchpad, needle) && !filtering;
 
   const found = useMemo(
     () =>
       listed.filter(
         (review) =>
-          !deletions.has(review.reviewId) && matchesQuery(review, needle),
+          !deletions.has(review.reviewId) &&
+          matchesQuery(review, needle) &&
+          matchesReviewFilter(review, filter),
       ),
-    [listed, needle, deletions],
+    [listed, needle, deletions, filter],
   );
 
   /* Dismissed leaves the main list entirely: it is the one group you asked to
@@ -299,6 +312,17 @@ export function ReviewHome({
     .filter((review) => review.dismissedAt)
     .sort(latestFirst);
 
+  const repositoryNames = useMemo(
+    () =>
+      [
+        ...new Set(
+          listed
+            .map((review) => review.repositoryName)
+            .filter((name): name is string => Boolean(name)),
+        ),
+      ].sort(),
+    [listed],
+  );
   /* With nothing to list, Home is the Welcome rail rather than a zero state
      of its own: the same three steps, in the place the reader already is.
  */
@@ -352,6 +376,13 @@ export function ReviewHome({
                 ) : null}
               </div>
             </div>
+            {listed.length > 0 ? (
+              <ReviewFilterBar
+                filter={filter}
+                repositoryNames={repositoryNames}
+                onChange={setFilter}
+              />
+            ) : null}
             {catalogError ? (
               <EmptyState
                 role="alert"
@@ -371,6 +402,9 @@ export function ReviewHome({
             {/* Keyed off the active list, not the whole result: a query that hits
               only dismissed reviews empties the main area, and the collapsed
               Dismissed count alone does not explain why. */}
+            {filtering && !needle && active.length === 0 && !scratchpadShown ? (
+              <EmptyState message="No reviews match these filters." />
+            ) : null}
             {needle && active.length === 0 && !scratchpadShown ? (
               <EmptyState
                 message={
@@ -779,6 +813,7 @@ function ReviewTable({
                         <RepositoryName review={review} />
                       </span>
                     </button>
+                    <ReviewTagEditor review={review} />
                   </td>
                   <td
                     {...stylex.props(styles.td, last && styles.lastRowCell)}
@@ -834,6 +869,83 @@ function ReviewTable({
         </table>
       </div>
     </section>
+  );
+}
+
+function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
+  const { onEditTags } = useContext(AttentionActionsContext);
+  const [tags, setTags] = useState(review.tags ?? []);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => setTags(review.tags ?? []), [review.tags]);
+
+  if (!onEditTags && tags.length === 0) return null;
+
+  const change = async (add: string[], remove: string[]) => {
+    if (!onEditTags || busy) return;
+    setBusy(true);
+    setError(undefined);
+
+    try {
+      setTags(await onEditTags(review, { add, remove }));
+    } catch (failure) {
+      setError(
+        failure instanceof Error ? failure.message : "Could not change tags.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      {...stylex.props(tagStyles.row)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {tags.map((tag) => (
+        <span key={tag} {...stylex.props(tagStyles.chip)}>
+          #{tag}
+          {onEditTags ? (
+            <button
+              type="button"
+              {...stylex.props(tagStyles.remove)}
+              disabled={busy}
+              aria-label={`Remove tag ${tag} from ${reviewTitle(review)}`}
+              onClick={() => void change([], [tag])}
+            >
+              ×
+            </button>
+          ) : null}
+        </span>
+      ))}
+      {onEditTags ? (
+        <input
+          {...stylex.props(tagStyles.input)}
+          value={draft}
+          disabled={busy}
+          placeholder="Add tag"
+          aria-label={`Add tag to ${reviewTitle(review)}`}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            const tag = draft.trim().toLowerCase();
+
+            if (!tag) return;
+            setDraft("");
+            void change([tag], []);
+          }}
+        />
+      ) : null}
+      {error ? (
+        <span role="alert" {...stylex.props(tagStyles.error)}>
+          {error}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -1214,6 +1326,52 @@ function TrashIcon() {
     </svg>
   );
 }
+
+const tagStyles = stylex.create({
+  row: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "4px",
+    marginTop: "4px",
+  },
+  chip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "2px",
+    padding: "0 6px",
+    borderRadius: radius.control,
+    backgroundColor: tokens.tray,
+    color: tokens.inkMuted,
+    fontSize: fontSize.ui,
+  },
+  remove: {
+    padding: 0,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    color: "inherit",
+    font: "inherit",
+    cursor: "pointer",
+  },
+  input: {
+    boxSizing: "border-box",
+    width: "96px",
+    minHeight: "24px",
+    padding: "0 6px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.rule,
+    borderRadius: radius.control,
+    backgroundColor: tokens.tray,
+    color: tokens.ink,
+    font: "inherit",
+    fontSize: fontSize.ui,
+  },
+  error: {
+    color: tokens.inkMuted,
+    fontSize: fontSize.ui,
+  },
+});
 
 const rowMenuStyles = stylex.create({
   // Waits for its row's hover or focus.

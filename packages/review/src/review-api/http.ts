@@ -66,6 +66,11 @@ import {
   reviewRequestOrigin,
 } from "./request-origin.js";
 import {
+  type ReviewFilter,
+  matchesReviewFilter,
+  reviewFilterSchema,
+} from "./review-filter.js";
+import {
   type UncategorizedReport,
   coverageModeSchema,
   lensReport,
@@ -336,14 +341,20 @@ export function createReviewApi(
     return snapshot;
   };
 
-  const catalog = async (mode: "structural" | "textual" = "structural") => {
-    const local = await store.list(mode);
+  const catalog = async (
+    mode: "structural" | "textual" = "structural",
+    filter: ReviewFilter = {},
+  ) => {
+    const local = await store.list(mode, filter);
+    const sharedSummaries = ((await shared?.list(mode)) ?? []).filter(
+      (summary) => matchesReviewFilter(summary, filter),
+    );
 
     return [
       ...(scratchpadEnabled()
         ? local
         : local.filter((summary) => summary.kind !== "scratchpad")),
-      ...((await shared?.list(mode)) ?? []),
+      ...sharedSummaries,
     ];
   };
 
@@ -351,7 +362,10 @@ export function createReviewApi(
     await ensureScratchpad();
 
     return context.json(
-      await catalog(coverageModeSchema.parse(context.req.query("mode"))),
+      await catalog(
+        coverageModeSchema.parse(context.req.query("mode")),
+        reviewFilterSchema.parse(context.req.query()),
+      ),
     );
   });
 
