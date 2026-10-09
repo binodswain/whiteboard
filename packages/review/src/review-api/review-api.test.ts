@@ -159,6 +159,86 @@ it("lists registered repositories without paths and rejects unregistered create 
   });
 });
 
+it("returns a headless canvas URL only for an existing session", async () => {
+  const { reviewId } = await create();
+
+  const sessionUrl = vi.fn<(id: string) => string>(
+    (id) =>
+      `http://127.0.0.1:3000/r/${encodeURIComponent(id)}#token=test-token`,
+  );
+
+  const api = createReviewApi(
+    store,
+    undefined,
+    undefined,
+    undefined,
+    () => ({ desktopAvailable: false, softwareMapEnabled: false }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    sessionUrl,
+  );
+
+  const response = await api.request(`/${reviewId}/open`, { method: "POST" });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    ok: true,
+    opened: false,
+    url: `http://127.0.0.1:3000/r/${encodeURIComponent(reviewId)}#token=test-token`,
+  });
+  expect(sessionUrl).toHaveBeenCalledWith(reviewId);
+
+  const missing = await api.request(
+    "/11111111-1111-4111-8111-111111111111/open",
+    { method: "POST" },
+  );
+
+  expect(missing.status).toBe(404);
+  expect(sessionUrl).toHaveBeenCalledTimes(1);
+
+  const desktopOpen = vi.fn<() => Promise<{ softwareMapEnabled: boolean }>>(
+    async () => ({ softwareMapEnabled: true }),
+  );
+
+  const desktopApi = createReviewApi(
+    store,
+    undefined,
+    desktopOpen,
+    undefined,
+    () => ({ desktopAvailable: true, softwareMapEnabled: true }),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    sessionUrl,
+  );
+
+  const desktopResponse = await desktopApi.request(`/${reviewId}/open`, {
+    method: "POST",
+  });
+
+  const desktopResult = await desktopResponse.json();
+
+  expect(desktopResult).toMatchObject({
+    ok: true,
+    softwareMapEnabled: true,
+  });
+  expect(desktopResult).not.toHaveProperty("url");
+  expect(desktopOpen).toHaveBeenCalledWith({
+    reviewId,
+    title: "Example",
+  });
+  expect(sessionUrl).toHaveBeenCalledTimes(1);
+});
+
 describe("snapshot authoring", () => {
   it("binds PR identity without erasing content, versions changes, and clears stale identity across repositories", async () => {
     const url = "https://github.com/devdotfast/review/pull/310";

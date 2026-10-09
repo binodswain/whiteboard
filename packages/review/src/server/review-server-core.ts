@@ -156,6 +156,7 @@ export interface WhiteboardCoreInput {
     read(): Promise<WebSettings>;
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   };
+  headlessOpenUrl?: (reviewId: string) => string;
 }
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
@@ -188,6 +189,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     askThreads && { threads: askThreads, agents: () => detectAskAgents() },
     input.localBrowserAuth,
     input.webSettings,
+    input.headlessOpenUrl,
   );
 
   // A shared store mounts the publisher with the rest of sharing.

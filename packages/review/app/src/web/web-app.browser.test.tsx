@@ -415,7 +415,8 @@ describe("the web canvas entry", () => {
     );
     expect(await settled(() => activeCatalogWatches() === 0)).toBe(true);
     expect(
-      container!.querySelector<HTMLElement>(".review-app")?.dataset.documentWidth,
+      container!.querySelector<HTMLElement>(".review-app")?.dataset
+        .documentWidth,
     ).toBe("wide");
     expect(
       container!.querySelector<HTMLElement>(".review-app")?.className,
@@ -539,7 +540,9 @@ describe("the web canvas entry", () => {
 
     await act(async () =>
       userEvent.click(
-        container!.querySelector<HTMLButtonElement>("button:not(:disabled)")!,
+        [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "New session",
+        )!,
       ),
     );
 
@@ -612,7 +615,9 @@ describe("the web canvas entry", () => {
     ).toBe(true);
     expect(container!.textContent).toContain("Register a repository");
     expect(
-      container!.querySelector<HTMLButtonElement>("button")?.disabled,
+      [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === "New session",
+      )?.disabled,
     ).toBe(true);
     expect(fixture.createCalls).toHaveLength(0);
   });
@@ -696,6 +701,7 @@ describe("the web canvas entry", () => {
       repositories: [],
       snapshots: new Map(),
     };
+
     const fixture = webFixtureRequest(state);
     const requested: string[] = [];
 
@@ -720,6 +726,43 @@ describe("the web canvas entry", () => {
 
     expect(await settled(() => requested.includes("/reviews-api"))).toBe(true);
     expect(container.querySelector("input[type=password]")).toBeNull();
+  });
+
+  it("opens a returned session URL and renders that session", async () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    const snapshot = fixtureReview(sessionId, "Headless URL review");
+
+    const state: FixtureState = {
+      catalog: [summaryOf(snapshot)],
+      repositories: [],
+      snapshots: new Map([[sessionId, snapshot]]),
+    };
+
+    const { request } = webFixtureRequest(state);
+
+    history.replaceState(
+      null,
+      "",
+      `/r/${encodeURIComponent(sessionId)}#token=abcd1234abcd1234abcd1234`,
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, { request });
+    });
+
+    expect(location.hash).toBe("");
+    expect(sessionStorage.getItem("review-token")).toBe(
+      "abcd1234abcd1234abcd1234",
+    );
+    expect(
+      await settled(
+        () => container!.querySelectorAll(".react-flow__edge").length > 0,
+      ),
+    ).toBe(true);
+    expect(container!.textContent).toContain("Queue order");
   });
 
   it("bootstraps the token from the URL fragment and asks for one when missing", async () => {
@@ -751,9 +794,9 @@ describe("the web canvas entry", () => {
       app = startWebCanvas(container!, { request });
     });
 
-    expect(
-      await settled(() => container!.textContent?.includes("token")),
-    ).toBe(true);
+    expect(await settled(() => container!.textContent?.includes("token"))).toBe(
+      true,
+    );
     expect(container.querySelector("input[type=password]")).toBeTruthy();
     expect(requested).toEqual(["/reviews-api/capabilities"]);
 

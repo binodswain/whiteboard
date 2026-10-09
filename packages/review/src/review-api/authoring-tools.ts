@@ -174,7 +174,7 @@ export function authoringTools(
     ),
     tool(
       "open",
-      "Show an existing review immediately and prepare current pinned checkouts in the background. Returns softwareMapEnabled and any already-recorded environmentIssues. Missing optional setup is not an issue; use review_environment to recheck.",
+      "Show an existing review immediately in Desktop and prepare current pinned checkouts in the background. When Desktop is unavailable but the headless web canvas is served, returns a URL for the session. Returns softwareMapEnabled and any already-recorded environmentIssues when opened in Desktop. Missing optional setup is not an issue; use review_environment to recheck.",
       z.strictObject(review),
       "POST",
       "/:reviewId/open",

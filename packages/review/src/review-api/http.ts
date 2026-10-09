@@ -215,6 +215,7 @@ export function createReviewApi(
     read(): Promise<WebSettings>;
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   },
+  headlessOpenUrl?: (reviewId: string) => string,
 ) {
   const app = new Hono();
   app.onError((error, context) => {
@@ -660,6 +661,9 @@ export function createReviewApi(
 
   /** Show a review in Desktop and start preparing its pinned checkouts. */
   const openReview = async (review: Snapshot) => {
+    if (headlessOpenUrl && !(await capabilities()).desktopAvailable)
+      return { opened: false, url: headlessOpenUrl(review.reviewId) };
+
     if (!open) throw new ReviewInputError("The desktop is not connected.", 409);
 
     const settings = await open({
