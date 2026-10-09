@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certi
  && git config --system --add safe.directory /workspace \
  && git config --system credential.helper '!gh auth git-credential'
 ENV NODE_ENV=production
+ENV DEV_REVIEW_SERVER_DIR=/data
 WORKDIR /app
 COPY --from=build --chown=node:node /out ./
 COPY --from=build --chown=node:node /app/packages/review/app/dist/web ./web
@@ -33,7 +34,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node 
 USER node
 ENV HOME=/tmp
 ENV WHITEBOARD_LOCAL_BROWSER_AUTH=0
-CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web", "--state-dir", "/data"]
+CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web"]
 
 FROM runtime-base AS runtime
 ARG AGENT=none
