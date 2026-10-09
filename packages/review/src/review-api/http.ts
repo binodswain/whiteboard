@@ -136,6 +136,24 @@ const askDecisionSchema = z.strictObject({
   optionId: z.string().min(1),
 });
 
+const queuedAskSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  prompt: z.string().min(1).max(20_000),
+  createdBy: z.string().min(1).max(200).default("board"),
+});
+
+const claimAskSchema = z.strictObject({ runnerId: z.string().min(1).max(200) });
+
+const completeAskSchema = z.strictObject({
+  runnerId: z.string().min(1).max(200),
+  resultRefs: z.array(z.string().min(1).max(500)).max(500),
+});
+
+const failAskSchema = z.strictObject({
+  runnerId: z.string().min(1).max(200),
+  error: z.string().min(1).max(2000),
+});
+
 export interface AuthoringCapabilities {
   desktopAvailable: boolean;
   softwareMapEnabled: boolean;
@@ -254,6 +272,74 @@ export function createReviewApi(
         await store.refreshWorktrees();
       await next();
     });
+
+  // Hosted connectors poll these short requests; no connection is held open.
+  app.post("/asks", async (context) => {
+    const input = queuedAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    await readReview(input.reviewId);
+    const askId = await store.askQueue.create(input);
+
+    return context.json({ askId }, 202);
+  });
+  app.get("/asks/pending", async (context) => {
+    await store.askQueue.reapExpired();
+
+    return context.json({ asks: await store.askQueue.pending() });
+  });
+  app.get("/asks/:askId", async (context) => {
+    const ask = await store.askQueue.get(context.req.param("askId"));
+
+    return ask
+      ? context.json({ ask })
+      : context.json({ error: "Ask not found." }, 404);
+  });
+  app.post("/asks/:askId/claim", async (context) => {
+    const { runnerId } = claimAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    const ask = await store.askQueue.claim(
+      context.req.param("askId"),
+      runnerId,
+    );
+
+    return ask
+      ? context.json({ ask })
+      : context.json({ error: "Ask is not claimable." }, 409);
+  });
+  app.post("/asks/:askId/complete", async (context) => {
+    const input = completeAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    const completed = await store.askQueue.complete(
+      context.req.param("askId"),
+      input.runnerId,
+      input.resultRefs,
+    );
+
+    return completed
+      ? context.json({ ok: true })
+      : context.json({ error: "Ask is not owned by this runner." }, 409);
+  });
+  app.post("/asks/:askId/fail", async (context) => {
+    const input = failAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    const failed = await store.askQueue.fail(
+      context.req.param("askId"),
+      input.runnerId,
+      input.error,
+    );
+
+    return failed
+      ? context.json({ ok: true })
+      : context.json({ error: "Ask is not owned by this runner." }, 409);
+  });
 
   if (webSettings) {
     app.get("/settings", async (context) =>

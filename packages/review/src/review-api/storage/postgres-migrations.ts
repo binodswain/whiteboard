@@ -49,4 +49,16 @@ export const POSTGRES_MIGRATIONS: {
       CREATE TABLE pinned_environments(id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE workspace_leases(review_id TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`,
   },
+  {
+    version: 2,
+    name: "hosted_ask_queue",
+    sql: `
+      CREATE TABLE asks(
+        id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
+        claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
+        result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+      CREATE INDEX asks_pending ON asks(status, created_at);`,
+  },
 ];

@@ -65,6 +65,13 @@ const REVIEW_SCHEMA = `
     bypass INTEGER NOT NULL DEFAULT 0,
     UNIQUE(agent, session_id));
   CREATE INDEX IF NOT EXISTS ask_conversations_review ON ask_conversations(review_id, updated_at);
+  CREATE TABLE IF NOT EXISTS asks(
+    id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
+    claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
+    result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+  CREATE INDEX IF NOT EXISTS asks_pending ON asks(status, created_at);
   CREATE TABLE IF NOT EXISTS ask_agent_offers(agent TEXT PRIMARY KEY, offer TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS ask_agent_model_offers(agent TEXT NOT NULL, model TEXT NOT NULL, offer TEXT NOT NULL, PRIMARY KEY(agent, model));
   CREATE TABLE IF NOT EXISTS headless_imports(path TEXT PRIMARY KEY);`;
