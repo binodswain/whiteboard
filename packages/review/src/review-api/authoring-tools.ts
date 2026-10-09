@@ -10,6 +10,7 @@ import { pathTargetSchema, publishedEditSchema } from "./document.js";
 import { instructionsQuerySchema } from "./instructions.js";
 import { uploadSchema } from "./local-data.js";
 import { inspectQuerySchema } from "./read-schemas.js";
+import { reviewFilterSchema } from "./review-filter.js";
 import { REVIEW_STATUS_TOOL } from "./status-tool.js";
 import { commandSchema } from "./store.js";
 
@@ -54,6 +55,7 @@ export function authoringTools(
       "Restore title, source pins, PR identity and content from a saved version.",
     attention:
       "Mark a review viewed, dismissed or restored without changing its content.",
+    tags: 'Add and remove short labels on a review (add and remove take lowercase tags such as "ship" or "needs-review"). Tags only label a review; they do not change its content or history.',
     delete: "Permanently delete this review and its history.",
   };
 
@@ -187,7 +189,13 @@ export function authoringTools(
         type,
       );
     }),
-    tool("list", "List saved reviews.", z.strictObject({}), "GET", ""),
+    tool(
+      "list",
+      "List saved reviews. Filter by repo (name or id), branch, commit (a prefix of the base or head commit), author (who created it) or tag.",
+      z.strictObject(reviewFilterSchema.shape),
+      "GET",
+      "",
+    ),
     tool(
       "get",
       "Read a readable, nested text outline with editable IDs. targetId reads one component in full; full:true reads all content. Use format:json for raw node data or snapshots instead of text.",

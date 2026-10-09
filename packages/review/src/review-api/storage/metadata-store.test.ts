@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -32,6 +33,32 @@ afterAll(async () => {
   for (const store of stores) await store.close().catch(() => {});
 
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+it("backfills review filter columns from existing SQLite review snapshots", async () => {
+  const file = sqliteFile();
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    CREATE TABLE reviews(id TEXT PRIMARY KEY, version INTEGER NOT NULL, next_id INTEGER NOT NULL);
+    CREATE TABLE versions(review_id TEXT, version INTEGER, snapshot TEXT NOT NULL, PRIMARY KEY(review_id,version));
+    INSERT INTO reviews VALUES('legacy',1,2);
+    INSERT INTO versions VALUES('legacy',1,'{"origin":{"branch":"main"},"pins":{"base":"abc123","head":"def456"}}');
+  `);
+  legacy.close();
+
+  const store = await open({ kind: "sqlite", dir: file });
+
+  const row = await store.get<{
+    branch: string;
+    base_sha: string;
+    head_sha: string;
+  }>("SELECT branch,base_sha,head_sha FROM reviews WHERE id=?", "legacy");
+
+  expect(row).toEqual({
+    branch: "main",
+    base_sha: "abc123",
+    head_sha: "def456",
+  });
 });
 
 /** The contract every backend keeps. `shared` tells whether a second store

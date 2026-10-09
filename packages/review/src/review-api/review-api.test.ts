@@ -112,6 +112,149 @@ it("guides missing-review reads and opens to an agent while keeping missing vers
   expect(await response.json()).toEqual({ error: "Review version not found." });
 });
 
+it("rejects non-hex catalog commit filters before querying", async () => {
+  const api = createReviewApi(store);
+  const response = await api.request("/?commit=%25_%25");
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({
+    issues: expect.arrayContaining([
+      expect.objectContaining({ path: ["commit"] }),
+    ]),
+  });
+});
+
+it("filters reviews by repo, commit, author and tags, and persists tags on reopen", async () => {
+  const repoOne = await store.registerRepository(
+    path.join(directory, "repo-one"),
+  );
+
+  const repoTwo = await store.registerRepository(
+    path.join(directory, "repo-two"),
+  );
+
+  providers.headBranch = async (reviewPins) =>
+    reviewPins.repositoryId === repoOne.id ? "main" : "feature/next";
+
+  const first = await store.execute(
+    request({
+      type: "create",
+      title: "First",
+      createdBy: "alice",
+      target: {
+        kind: "commits",
+        repositoryId: repoOne.id,
+        base: "base-one",
+        head: "head-one",
+      },
+    }),
+  );
+
+  const second = await store.execute(
+    request({
+      type: "create",
+      title: "Second",
+      createdBy: "bob",
+      target: {
+        kind: "commits",
+        repositoryId: repoTwo.id,
+        base: "base-two",
+        head: "head-two",
+      },
+    }),
+  );
+
+  await store.execute(
+    request({
+      type: "tags",
+      reviewId: first.reviewId,
+      add: ["ship", "needs-review"],
+      remove: [],
+    }),
+  );
+  await store.execute(
+    request({
+      type: "tags",
+      reviewId: first.reviewId,
+      add: [],
+      remove: ["needs-review"],
+    }),
+  );
+
+  expect(
+    (await store.list("structural", { repo: repoOne.name })).map(
+      (review) => review.reviewId,
+    ),
+  ).toContain(first.reviewId);
+  expect(
+    (await store.list("structural", { repo: repoOne.name })).map(
+      (review) => review.reviewId,
+    ),
+  ).not.toContain(second.reviewId);
+  expect(
+    (await store.list("structural", { commit: "head-on" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { branch: "main" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { branch: "feature/next" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([second.reviewId]);
+  expect(
+    (await store.list("structural", { author: "alice" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { tag: "ship" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { tag: "needs-review" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([]);
+  await store.execute(
+    request({
+      type: "set_target",
+      reviewId: first.reviewId,
+      target: {
+        kind: "commits",
+        repositoryId: repoOne.id,
+        base: "base-one",
+        head: "head-updated",
+      },
+    }),
+  );
+  expect((await store.summary(first.reviewId))?.createdBy).toBe("alice");
+
+  const response = await createReviewApi(store).request(
+    `/?repo=${repoOne.name}&tag=ship`,
+  );
+
+  expect(response.status).toBe(200);
+  expect(
+    (await response.json()).map(
+      (review: { reviewId: string }) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+
+  await store.close();
+  store = await ReviewStore.open(database, providers);
+
+  expect((await store.summary(first.reviewId))?.tags).toEqual(["ship"]);
+  expect((await store.summary(first.reviewId))?.createdBy).toBe("alice");
+
+  await store.execute(request({ type: "delete", reviewId: first.reviewId }));
+});
+
 it("lists registered repositories without paths and rejects unregistered create targets", async () => {
   const { id, name } = await store.registerRepository(
     path.join(directory, "source"),

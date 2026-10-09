@@ -742,6 +742,11 @@ export type ReviewCanvasContent =
       // not support them.
       dismissReview?(uuid: string): Promise<void>;
       restoreReview?(uuid: string): Promise<void>;
+      // Adds and removes tags; resolves to the review's tags after the change.
+      editTags?(
+        uuid: string,
+        change: { add: string[]; remove: string[] },
+      ): Promise<string[]>;
       // Opens the review and pins its read-only source tree open. Absent when
       // the host cannot show the tree.
       openSourceTree?(uuid: string): void;

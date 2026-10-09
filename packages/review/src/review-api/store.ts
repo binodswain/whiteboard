@@ -55,7 +55,9 @@ import {
   summarizeEdit,
 } from "./document.js";
 import { pullRequestKey, pullRequestUrl, setPullRequest } from "./origin.js";
+import { type ReviewFilter, reviewTagSchema } from "./review-filter.js";
 import {
+  type MetadataParam,
   type MetadataStore,
   createMetadataStore,
   isMetadataStore,
@@ -93,11 +95,19 @@ export const commandSchema = z.strictObject({
       action: z.enum(["view", "dismiss", "restore"]),
     }),
     z.strictObject({
+      type: z.literal("tags"),
+      reviewId,
+      add: z.array(reviewTagSchema).max(20).default([]),
+      remove: z.array(reviewTagSchema).max(20).default([]),
+    }),
+    z.strictObject({
       type: z.literal("create"),
       /** Required unless pullRequestUrl alone names the source; then the PR title. */
       title: z.string().trim().min(1).optional(),
       target: reviewTargetSchema.optional(),
       pullRequestUrl: pullRequestUrl.optional(),
+      /** Who asked for the review, for the list's author filter. */
+      createdBy: z.string().trim().min(1).max(200).optional(),
       /** With pullRequestUrl and no target: the checkout to fetch the PR into. */
       repositoryId: z
         .string()
@@ -205,6 +215,8 @@ export interface Result {
   children?: WrittenComponent[];
   attention?: true;
   deleted?: true;
+  /** The review's tags after a tags command, sorted. */
+  tags?: string[];
   warnings?: string[];
 }
 
@@ -795,8 +807,9 @@ export class ReviewStore {
 
   list(
     mode: "structural" | "textual" = "structural",
+    filter: ReviewFilter = {},
   ): Promise<ReviewApiSummary[]> {
-    return this.summaries(mode);
+    return this.summaries(mode, undefined, filter);
   }
   /** One review's catalog entry, as review_list shows it. */
   async summary(id: string): Promise<ReviewApiSummary | undefined> {
@@ -805,24 +818,72 @@ export class ReviewStore {
   private async summaries(
     mode: "structural" | "textual",
     id?: string,
+    filter: ReviewFilter = {},
   ): Promise<ReviewApiSummary[]> {
     // One query, and the document never leaves the database: every catalog
     // watcher re-lists on every command.
     const dialect = this.meta.dialect;
 
+    const clauses: string[] = [];
+    const params: MetadataParam[] = [];
+
+    if (id !== undefined) {
+      clauses.push("reviews.id=?");
+      params.push(id);
+    }
+
+    if (filter.repo !== undefined) {
+      clauses.push("(repositories.name=? OR repositories.id=?)");
+      params.push(filter.repo, filter.repo);
+    }
+
+    if (filter.branch !== undefined) {
+      clauses.push("reviews.branch=?");
+      params.push(filter.branch);
+    }
+
+    if (filter.commit !== undefined) {
+      clauses.push("(reviews.head_sha LIKE ? OR reviews.base_sha LIKE ?)");
+      params.push(`${filter.commit}%`, `${filter.commit}%`);
+    }
+
+    if (filter.author !== undefined) {
+      clauses.push("reviews.created_by=?");
+      params.push(filter.author);
+    }
+
+    if (filter.tag !== undefined) {
+      clauses.push(
+        "reviews.id IN (SELECT review_id FROM review_tags WHERE tag=?)",
+      );
+      params.push(filter.tag);
+    }
+
     const rows = await this.meta.all(
       `SELECT ${dialect.jsonWithout("versions.snapshot", "document")} AS summary,
         (SELECT ${dialect.jsonText("first.snapshot", "createdAt")} FROM versions AS first WHERE first.review_id=reviews.id ORDER BY first.version LIMIT 1) AS first_created_at,
-        review_attention.viewed_at, review_attention.dismissed_at, repositories.name AS repository_name, repositories.path AS repository_path
+        review_attention.viewed_at, review_attention.dismissed_at, repositories.name AS repository_name, repositories.path AS repository_path,
+        reviews.created_by
       FROM reviews
       JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version
       LEFT JOIN review_attention ON review_attention.review_id=reviews.id
       LEFT JOIN repositories ON repositories.id=${dialect.jsonText("versions.snapshot", "pins.repositoryId")}
       WHERE NOT ${dialect.jsonFlag("versions.snapshot", "origin.tutorial")}
-      ${id === undefined ? "" : "AND reviews.id=?"}
+      ${clauses.map((clause) => `AND ${clause}`).join("")}
       ORDER BY reviews.rowid`,
-      ...(id === undefined ? [] : [id]),
+      ...params,
     );
+
+    const tags = new Map<string, string[]>();
+
+    for (const row of await this.meta.all(
+      "SELECT review_id, tag FROM review_tags ORDER BY tag",
+    )) {
+      const reviewTags = tags.get(String(row.review_id)) ?? [];
+
+      reviewTags.push(String(row.tag));
+      tags.set(String(row.review_id), reviewTags);
+    }
 
     const reviews: ReviewApiSummary[] = [];
 
@@ -866,6 +927,8 @@ export class ReviewStore {
         viewedAt: row.viewed_at ? String(row.viewed_at) : null,
         dismissedAt: row.dismissed_at ? String(row.dismissed_at) : null,
         working: this.activity.isWorking(summary.reviewId),
+        tags: tags.get(summary.reviewId) ?? [],
+        ...(row.created_by !== null && { createdBy: String(row.created_by) }),
       };
 
       if (summary.kind === "scratchpad")
@@ -1052,6 +1115,7 @@ export class ReviewStore {
               "ask_conversations",
               "review_comments",
               "authoring_presences",
+              "review_tags",
               "review_coverage",
               "review_attention",
               "versions",
@@ -1064,6 +1128,39 @@ export class ReviewStore {
           },
           () => this.assertMutation(op.reviewId, result.version),
         );
+
+        return result;
+      }
+
+      if (op.type === "tags") {
+        const result: Result = {
+          reviewId: op.reviewId,
+          version: (await this.read(op.reviewId)).version,
+          tags: [],
+        };
+
+        await this.commitCommand(result, async () => {
+          for (const tag of op.add)
+            await this.meta.run(
+              "INSERT INTO review_tags(review_id,tag) VALUES(?,?) ON CONFLICT DO NOTHING",
+              op.reviewId,
+              tag,
+            );
+
+          for (const tag of op.remove)
+            await this.meta.run(
+              "DELETE FROM review_tags WHERE review_id=? AND tag=?",
+              op.reviewId,
+              tag,
+            );
+
+          result.tags = (
+            await this.meta.all(
+              "SELECT tag FROM review_tags WHERE review_id=? ORDER BY tag",
+              op.reviewId,
+            )
+          ).map((row) => String(row.tag));
+        });
 
         return result;
       }
@@ -1292,10 +1389,14 @@ export class ReviewStore {
         result,
         async () => {
           await this.meta.run(
-            "INSERT INTO reviews(id,version,next_id) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id",
+            "INSERT INTO reviews(id,version,next_id,branch,base_sha,head_sha,created_by) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id,branch=excluded.branch,base_sha=excluded.base_sha,head_sha=excluded.head_sha,created_by=COALESCE(excluded.created_by,reviews.created_by)",
             id,
             snapshot.version,
             nextId,
+            snapshot.origin?.branch ?? null,
+            snapshot.pins?.base ?? null,
+            snapshot.pins?.head ?? null,
+            op.type === "create" ? (op.createdBy ?? null) : null,
           );
           await this.meta.run(
             "INSERT INTO versions(review_id,version,snapshot) VALUES(?,?,?)",

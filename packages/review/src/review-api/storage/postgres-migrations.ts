@@ -66,19 +66,25 @@ export const POSTGRES_MIGRATIONS: {
   {
     version: 4,
     name: "review_comments",
-    sql: `
-      CREATE TABLE review_comments(
-        id TEXT PRIMARY KEY,
-        review_id TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        anchor TEXT,
-        parent_id TEXT,
-        body TEXT NOT NULL,
-        author TEXT NOT NULL,
-        resolved INTEGER NOT NULL DEFAULT 0,
-        outdated INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL);
+    sql: `CREATE TABLE review_comments(
+      id TEXT PRIMARY KEY, review_id TEXT NOT NULL, version INTEGER NOT NULL,
+      anchor TEXT, parent_id TEXT, body TEXT NOT NULL, author TEXT NOT NULL,
+      resolved INTEGER NOT NULL DEFAULT 0, outdated INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE INDEX review_comments_review ON review_comments(review_id, created_at);`,
+  },
+  {
+    version: 5,
+    name: "review_list_filters",
+    sql: `
+      ALTER TABLE reviews ADD COLUMN branch TEXT, ADD COLUMN base_sha TEXT, ADD COLUMN head_sha TEXT, ADD COLUMN created_by TEXT;
+      UPDATE reviews SET
+        branch=(SELECT versions.snapshot::jsonb #>> '{origin,branch}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        base_sha=(SELECT versions.snapshot::jsonb #>> '{pins,base}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        head_sha=(SELECT versions.snapshot::jsonb #>> '{pins,head}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
+      CREATE INDEX reviews_branch ON reviews(branch);
+      CREATE INDEX reviews_created_by ON reviews(created_by);
+      CREATE TABLE review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL, PRIMARY KEY(review_id,tag));
+      CREATE INDEX review_tags_tag ON review_tags(tag);`,
   },
 ];

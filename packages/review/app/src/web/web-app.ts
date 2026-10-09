@@ -275,6 +275,13 @@ function mountWebCanvas(
     refreshCatalog() {
       void showHome();
     },
+    editTags: async (reviewId, change) => {
+      const result = await client.post<{ tags?: string[] }>("/commands", {
+        operation: { type: "tags", reviewId, ...change },
+      });
+
+      return result.tags ?? [];
+    },
     createSession: async ({ title, repositoryId }) => {
       const result = await client.post<{ review: ReviewApiSummary }>(
         "/commands",

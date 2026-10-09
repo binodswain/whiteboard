@@ -45,6 +45,10 @@ export interface ReviewApiSummary {
   dismissedAt: string | null;
   /** An agent holds a live lease; absent on shared reviews. */
   working?: boolean;
+  /** Tags on the review, sorted; absent on shared reviews. */
+  tags?: string[];
+  /** Who asked for the review; absent when unknown. */
+  createdBy?: string;
 }
 
 export interface ReviewApiRepository {

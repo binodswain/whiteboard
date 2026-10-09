@@ -74,18 +74,18 @@ const REVIEW_SCHEMA = `
     review_id TEXT, url TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);
   CREATE TABLE IF NOT EXISTS review_comments(
-    id TEXT PRIMARY KEY,
-    review_id TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    anchor TEXT,
-    parent_id TEXT,
-    body TEXT NOT NULL,
-    author TEXT NOT NULL,
-    resolved INTEGER NOT NULL DEFAULT 0,
-    outdated INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL);
-  CREATE INDEX IF NOT EXISTS review_comments_review ON review_comments(review_id, created_at);`;
+    id TEXT PRIMARY KEY, review_id TEXT NOT NULL, version INTEGER NOT NULL, anchor TEXT,
+    parent_id TEXT, body TEXT NOT NULL, author TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0, outdated INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS review_comments_review ON review_comments(review_id, created_at);
+  CREATE TABLE IF NOT EXISTS review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL,
+    PRIMARY KEY(review_id,tag));
+  CREATE INDEX IF NOT EXISTS review_tags_tag ON review_tags(tag);
+`;
+
+/** Columns the review list filters on, denormalized from the latest version. */
+const REVIEW_COLUMNS = ["branch", "base_sha", "head_sha", "created_by"];
 
 /** The `.workspaces` sidecar's tables, byte-for-byte what the synchronous
  * workspace manager created. */
@@ -152,6 +152,32 @@ export class SqliteMetadataStore {
         .some((column) => String(column.name) === "url")
     )
       this.db.exec("ALTER TABLE jobs_jobs ADD COLUMN url TEXT");
+
+    if (this.schema === "review") this.addReviewColumns();
+  }
+
+  /** Reviews saved before list filters gained denormalized columns get them
+   * populated from their latest version the first time the schema opens. */
+  private addReviewColumns() {
+    const present = new Set(
+      this.db
+        .prepare("PRAGMA table_info(reviews)")
+        .all()
+        .map((column) => String(column.name)),
+    );
+    const missing = REVIEW_COLUMNS.filter((column) => !present.has(column));
+    if (!missing.length) return;
+
+    for (const column of missing)
+      this.db.exec(`ALTER TABLE reviews ADD COLUMN ${column} TEXT`);
+
+    this.db.exec(`
+      UPDATE reviews SET
+        branch=(SELECT json_extract(versions.snapshot,'$.origin.branch') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        base_sha=(SELECT json_extract(versions.snapshot,'$.pins.base') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        head_sha=(SELECT json_extract(versions.snapshot,'$.pins.head') FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
+      CREATE INDEX IF NOT EXISTS reviews_branch ON reviews(branch);
+      CREATE INDEX IF NOT EXISTS reviews_created_by ON reviews(created_by);`);
   }
 
   /** Serializes work on the one connection, as the synchronous driver did.
