@@ -49,6 +49,15 @@ function webFixtureRequest(state: FixtureState) {
   const delegates = new Map<string, ReviewCanvasBridge["request"]>();
   const createCalls: { body: unknown; token: string | null }[] = [];
 
+  let settings = {
+    theme: "system",
+    documentWidth: "standard",
+    codeFontSize: 14,
+    scratchpadEnabled: false,
+  };
+
+  let settingsReads = 0;
+
   const delegate = (reviewId: string) => {
     let request = delegates.get(reviewId);
     const snapshot = state.snapshots.get(reviewId);
@@ -98,6 +107,18 @@ function webFixtureRequest(state: FixtureState) {
     init?: RequestInit,
   ): Promise<Response> => {
     const { pathname, searchParams } = new URL(url);
+
+    if (pathname === "/reviews-api/settings") {
+      if (init?.method === "PUT") {
+        settings = { ...settings, ...JSON.parse(String(init.body)) };
+
+        return Response.json(settings);
+      }
+
+      settingsReads += 1;
+
+      return Response.json(settings);
+    }
 
     if (pathname === "/reviews-api") return Response.json(state.catalog);
 
@@ -194,7 +215,14 @@ function webFixtureRequest(state: FixtureState) {
       stream.subscriptions.some(({ reviewId }) => reviewId === null),
     ).length;
 
-  return { request, push, createCalls, activeCatalogWatches };
+  return {
+    request,
+    push,
+    createCalls,
+    activeCatalogWatches,
+    settingsReads: () => settingsReads,
+    settingsValues: () => settings,
+  };
 }
 
 function fixtureReview(reviewId: string, title: string): Snapshot {
@@ -258,7 +286,13 @@ describe("the web canvas entry", () => {
       snapshots: new Map([[snapshot.reviewId, snapshot]]),
     };
 
-    const { request, push, activeCatalogWatches } = webFixtureRequest(state);
+    const {
+      request,
+      push,
+      activeCatalogWatches,
+      settingsReads,
+      settingsValues,
+    } = webFixtureRequest(state);
 
     history.replaceState(null, "", "/");
     container = document.createElement("div");
@@ -277,6 +311,51 @@ describe("the web canvas entry", () => {
       await settled(() => container!.textContent?.includes("Fixture review")),
     ).toBe(true);
     expect(await settled(() => activeCatalogWatches() === 1)).toBe(true);
+
+    await act(async () => {
+      container!
+        .querySelector<HTMLButtonElement>('button[aria-label="Open Settings"]')!
+        .click();
+    });
+    expect(location.pathname).toBe("/settings");
+    expect(container!.textContent).toContain("Machine-local controls");
+    expect(
+      container!.querySelector<HTMLInputElement>(
+        'input[aria-label="Scratchpad"]',
+      ),
+    ).not.toBeNull();
+    expect(settingsReads()).toBe(1);
+
+    await act(async () => {
+      [
+        ...container!.querySelectorAll<HTMLButtonElement>(
+          '[role="radiogroup"][aria-label="Theme"] [role="radio"]',
+        ),
+      ]
+        .find((button) => button.textContent === "Dark")
+        ?.click();
+    });
+    await settled(() => settingsValues().theme === "dark");
+
+    await act(async () => {
+      [
+        ...container!.querySelectorAll<HTMLButtonElement>(
+          '[role="radiogroup"][aria-label="Document width"] [role="radio"]',
+        ),
+      ]
+        .find((button) => button.textContent === "Wide")
+        ?.click();
+    });
+    await settled(() => settingsValues().documentWidth === "wide");
+
+    await act(async () => {
+      container!
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Return to Home"]',
+        )!
+        .click();
+    });
+    expect(location.pathname).toBe("/");
 
     // A review published after load appears without a reload.
     const added = fixtureReview("web-review-2", "Published later");
@@ -335,6 +414,12 @@ describe("the web canvas entry", () => {
       true,
     );
     expect(await settled(() => activeCatalogWatches() === 0)).toBe(true);
+    expect(
+      container!.querySelector<HTMLElement>(".review-app")?.dataset.documentWidth,
+    ).toBe("wide");
+    expect(
+      container!.querySelector<HTMLElement>(".review-app")?.className,
+    ).toContain("review-app--theme-dark");
   });
 
   it("announces initial loading and renders the empty home when ready", async () => {

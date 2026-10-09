@@ -9,12 +9,23 @@ import {
   type ReviewVerbRequest,
   type ReviewVerbResponse,
 } from "@dev.fast/review-protocol";
+import type { ReviewCanvasSettingsContent } from "@dev.fast/review-protocol";
 import wasmAssetUrl from "@mr_mint/elkjs-libavoid/dist/libavoid.wasm?url";
+import { z } from "zod";
 
 const BROWSER_ONLY_MESSAGE =
   "This action opens an editor, which is unavailable in the browser review canvas.";
 
 const DIFF_LAYOUT_KEY = "review-diff-layout";
+
+const webSettingsSchema = z.object({
+  theme: z.enum(["system", "light", "dark"]),
+  documentWidth: z.enum(["standard", "wide", "full"]),
+  codeFontSize: z.number().int().min(8).max(32),
+  scratchpadEnabled: z.boolean(),
+});
+
+export type WebSettingsValues = z.infer<typeof webSettingsSchema>;
 
 export interface WebBridgeOptions {
   /** The review this bridge serves; empty while the canvas shows Home. */
@@ -30,6 +41,88 @@ export interface WebBridgeOptions {
   openReview?: (reviewId: string) => void;
   /** Test seam: the host request the canvas's API client shares. */
   request?: (url: string, init?: RequestInit) => Promise<Response>;
+  settings?: WebSettingsValues;
+  openSettings?: () => void;
+}
+
+export async function loadWebSettings(
+  options: Pick<WebBridgeOptions, "serverUrl" | "token" | "request">,
+  onChange?: (settings: WebSettingsValues) => void,
+): Promise<ReviewCanvasSettingsContent> {
+  const config = {
+    serverUrl: options.serverUrl ?? location.origin,
+    token: options.token ?? "",
+  };
+
+  const request =
+    options.request ??
+    ((url: string, init?: RequestInit) => reviewFetchUrl(config, url, init));
+
+  const url = `${config.serverUrl}/reviews-api/settings`;
+
+  const read = async () => {
+    const response = await request(url);
+
+    if (!response.ok)
+      throw new Error(`Could not read settings (${response.status}).`);
+
+    return webSettingsSchema.parse(await response.json());
+  };
+
+  let values = await read();
+
+  const update = async (patch: Partial<WebSettingsValues>) => {
+    const response = await request(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+
+    if (!response.ok)
+      throw new Error(`Could not save settings (${response.status}).`);
+    values = webSettingsSchema.parse(await response.json());
+    onChange?.(values);
+
+    return values;
+  };
+
+  const unavailable = async <T>(value: T) => value;
+
+  return {
+    telemetryEnabled: false,
+    setTelemetryEnabled: (enabled) => unavailable(enabled),
+    theme: values.theme,
+    setTheme: async (theme) => (await update({ theme })).theme,
+    keymap: "none",
+    setKeymap: (choice) => unavailable(choice),
+    ctrlTab: "recent",
+    setCtrlTab: (choice) => unavailable(choice),
+    documentWidth: values.documentWidth,
+    setDocumentWidth: async (documentWidth) =>
+      (await update({ documentWidth })).documentWidth,
+    codeFontSize: values.codeFontSize,
+    setCodeFontSize: async (codeFontSize) =>
+      (await update({ codeFontSize })).codeFontSize,
+    readyNotification: "off",
+    setReadyNotification: (choice) => unavailable(choice),
+    softwareMapEnabled: false,
+    setSoftwareMapEnabled: (enabled) => unavailable(enabled),
+    structuralDiffEnabled: false,
+    setStructuralDiffEnabled: (enabled) => unavailable(enabled),
+    scratchpadEnabled: values.scratchpadEnabled,
+    setScratchpadEnabled: async (scratchpadEnabled) =>
+      (await update({ scratchpadEnabled })).scratchpadEnabled,
+    diffrConfig: {
+      read: async () => ({ values: {}, credentialSource: "missing" }),
+      set: async () => ({ values: {}, credentialSource: "missing" }),
+      saveSummarizer: async () => ({ values: {}, credentialSource: "missing" }),
+      testSummarizer: async () => "Unavailable in the web canvas.",
+    },
+    reloadWindow: async () => {},
+    manageExtensions: () => {},
+    importVsCodeSettings: () => {},
+    web: true,
+  } satisfies ReviewCanvasSettingsContent;
 }
 
 function reviewPageUrl(reviewId: string): string {
@@ -81,7 +174,10 @@ export function createWebBridge(
       ? null
       : matchMedia("(prefers-color-scheme: dark)");
 
-  const theme = (): ReviewTheme => (media?.matches ? "dark" : "light");
+  const resolvedTheme = (choice?: WebSettingsValues["theme"]): ReviewTheme =>
+    choice && choice !== "system" ? choice : media?.matches ? "dark" : "light";
+
+  let currentTheme = resolvedTheme(options.settings?.theme);
 
   const config: ReviewRuntimeConfig = {
     serverUrl: options.serverUrl ?? location.origin,
@@ -89,7 +185,7 @@ export function createWebBridge(
     token: options.token ?? "",
     wasmUrl: new URL(wasmAssetUrl, location.href).href,
     appVersion: "web",
-    theme: theme(),
+    theme: currentTheme,
     host: "desktop",
     surface: "web",
   };
@@ -114,6 +210,20 @@ export function createWebBridge(
       : "split";
 
   const diffLayoutListeners = new Set<(layout: ReviewDiffLayout) => void>();
+
+  const setCurrentTheme = (theme: ReviewTheme) => {
+    currentTheme = theme;
+    config.theme = theme;
+    listeners.forEach((listener) => listener({ event: "themeChanged", theme }));
+    themeListeners.forEach((listener) => listener(theme));
+  };
+
+  const themeListeners = new Set<(theme: ReviewTheme) => void>();
+
+  media?.addEventListener("change", () => {
+    if (!options.settings || options.settings.theme === "system")
+      setCurrentTheme(resolvedTheme("system"));
+  });
 
   async function post(request: ReviewVerbRequest): Promise<ReviewVerbResponse> {
     switch (request.name) {
@@ -171,18 +281,14 @@ export function createWebBridge(
     },
 
     post,
-    currentTheme: theme,
+    currentTheme: () => currentTheme,
+    setCurrentTheme,
+    openSettings: options.openSettings,
 
     onDidChangeTheme(listener) {
-      if (!media) return { dispose() {} };
+      themeListeners.add(listener);
 
-      const changed = () => listener(theme());
-
-      media.addEventListener("change", changed);
-
-      return {
-        dispose: () => media.removeEventListener("change", changed),
-      };
+      return { dispose: () => themeListeners.delete(listener) };
     },
 
     currentDiffLayout: () => diffLayout,

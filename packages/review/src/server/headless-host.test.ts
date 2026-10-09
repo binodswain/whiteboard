@@ -126,6 +126,52 @@ async function serverIdOf(discovery: { url: string; token: string }) {
   return (await response.json()).serverId;
 }
 
+it("serves authenticated web preferences and restores them after a server restart", async () => {
+  const token = `web-settings-${"t".repeat(40)}`;
+
+  const startWithToken = (stateDir?: string) =>
+    start(stateDir, false, undefined, { token });
+
+  let server = await startWithToken();
+
+  const headers = {
+    "content-type": "application/json",
+    "x-review-token": server.discovery.token,
+  };
+
+  const endpoint = () => `${server.discovery.url}/reviews-api/settings`;
+
+  expect((await fetch(endpoint())).status).toBe(401);
+  expect(await (await fetch(endpoint(), { headers })).json()).toEqual({
+    theme: "system",
+    documentWidth: "standard",
+    codeFontSize: 14,
+    scratchpadEnabled: false,
+  });
+
+  const updated = await fetch(endpoint(), {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({
+      theme: "dark",
+      documentWidth: "wide",
+      codeFontSize: 16,
+      scratchpadEnabled: true,
+    }),
+  });
+
+  expect(updated.status).toBe(200);
+
+  await server.stop();
+  server = await startWithToken(server.stateDir);
+  expect(await (await fetch(endpoint(), { headers })).json()).toMatchObject({
+    theme: "dark",
+    documentWidth: "wide",
+    codeFontSize: 16,
+    scratchpadEnabled: true,
+  });
+});
+
 async function repository() {
   const directory = path.join(root, "repo");
   await mkdir(directory);

@@ -31,6 +31,10 @@ import { resolveReviewStackLayers } from "@review/review-stack.js";
 import { readBoundedRequestJson } from "@review/server/hono-http.js";
 import { HttpJsonError } from "@review/server/http-json.js";
 import {
+  type WebSettings,
+  webSettingsUpdateSchema,
+} from "@review/server/web-settings.js";
+import {
   type SharingHostEvents,
   mountSharingHost,
 } from "@review/sharing/host.js";
@@ -207,6 +211,10 @@ export function createReviewApi(
   /** Desktop's Ask: local agents answering questions about a selection. */
   ask?: AskHost,
   localBrowserAuth = false,
+  webSettings?: {
+    read(): Promise<WebSettings>;
+    update(patch: Partial<WebSettings>): Promise<WebSettings>;
+  },
 ) {
   const app = new Hono();
   app.onError((error, context) => {
@@ -245,6 +253,22 @@ export function createReviewApi(
         await store.refreshWorktrees();
       await next();
     });
+
+  if (webSettings) {
+    app.get("/settings", async (context) =>
+      context.json(await webSettings.read()),
+    );
+    app.put("/settings", async (context) => {
+      const parsed = webSettingsUpdateSchema.safeParse(
+        await readBoundedRequestJson(context.req.raw),
+      );
+
+      if (!parsed.success)
+        return context.json({ error: "Invalid web settings." }, 400);
+
+      return context.json(await webSettings.update(parsed.data));
+    });
+  }
 
   const sharedData = shared ? new SharedReviewData(shared) : undefined;
   const isShared = (id: string) => id.startsWith("shared-");

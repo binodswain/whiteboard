@@ -38,6 +38,7 @@ export function WelcomePage({
   onDismissUpdate,
   onboarding,
   onOpenTutorial,
+  onOpenSettings,
 }: {
   install?: ReviewCanvasInstallContent;
   setupActions?: ReviewCanvasSetupActions;
@@ -45,6 +46,7 @@ export function WelcomePage({
   onDismissUpdate?: () => void;
   onboarding?: ReviewCanvasOnboarding;
   onOpenTutorial?: () => void;
+  onOpenSettings?: () => void;
 }) {
   const [loadedInstall, setLoadedInstall] =
     useState<ReviewCanvasInstallContent>();
@@ -354,6 +356,15 @@ export function WelcomePage({
         <div {...stylex.props(homeStyles.content, styles.page)}>
           <div {...stylex.props(styles.columns)}>
             <div {...stylex.props(styles.intro)}>
+              {onOpenSettings ? (
+                <Button
+                  variant="ghost"
+                  onClick={onOpenSettings}
+                  aria-label="Open Settings"
+                >
+                  Settings
+                </Button>
+              ) : null}
               <span {...stylex.props(textStyles.eyebrow, styles.kicker)}>
                 Welcome to Whiteboard
               </span>
