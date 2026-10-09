@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git gh ca-certi
  && git config --system --add safe.directory /workspace \
  && git config --system credential.helper '!gh auth git-credential'
 ENV NODE_ENV=production
+ENV DEV_REVIEW_SERVER_DIR=/data
 WORKDIR /app
 COPY --from=build --chown=node:node /out ./
 COPY --from=build --chown=node:node /app/packages/review/app/dist/web ./web
@@ -32,7 +33,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 USER node
 ENV HOME=/tmp
-CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web", "--state-dir", "/data"]
+ENV WHITEBOARD_LOCAL_BROWSER_AUTH=0
+CMD ["whiteboard", "server", "start", "--host", "0.0.0.0", "--port", "3000", "--web", "/app/web"]
 
 FROM runtime-base AS runtime
 ARG AGENT=none

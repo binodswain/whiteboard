@@ -5,7 +5,11 @@ import {
 } from "@dev.fast/trace-protocol";
 import { z } from "zod";
 
-import type { ReviewApiSummary } from "./review-api-client.js";
+import type {
+  ReviewApiRepository,
+  ReviewApiSummary,
+  ReviewSessionCreateInput,
+} from "./review-api-client.js";
 
 // Version 3: the desktop serves prebuilt revisions instead of building them.
 // (Version 2 added the bundled-CLI discovery fields.)
@@ -326,6 +330,10 @@ export interface ReviewCanvasBridge {
   subscribe(listener: (event: ReviewSurfaceEvent) => void): ReviewDisposable;
   currentTheme(): ReviewTheme;
   onDidChangeTheme(listener: (theme: ReviewTheme) => void): ReviewDisposable;
+  /** Web settings can update the live canvas theme through the bridge. */
+  setCurrentTheme?(theme: ReviewTheme): void;
+  /** Opens the web canvas Settings route from its existing chrome. */
+  openSettings?(): void;
   // The diff layout is app-wide and backed by the `diffEditor.renderSideBySide`
   // setting, so a choice outlives the session and the app restart.
   currentDiffLayout(): ReviewDiffLayout;
@@ -537,6 +545,8 @@ export interface ReviewDiffrConfigActions {
 }
 
 export interface ReviewCanvasSettingsContent {
+  /** True when rendered by the authenticated headless web canvas. */
+  web?: boolean;
   // Backed by the `review.telemetry.enabled` workbench setting, which the
   // review server and the CLI both read.
   telemetryEnabled: boolean;
@@ -686,6 +696,7 @@ export type ReviewCanvasContent =
       structuralDiffEnabled?: boolean;
       softwareMapEnabled?: boolean;
       documentWidth?: ReviewDocumentWidthChoice;
+      codeFontSize?: number;
       reviewId: string;
       version?: number;
       bridge: ReviewCanvasBridge;
@@ -702,6 +713,7 @@ export type ReviewCanvasContent =
   | {
       kind: "error";
       message: string;
+      retry?(): void;
     }
   // The Source tab: an empty state beside the read-only file tree. Static —
   // the tree and the file tabs it opens are native surfaces. `error` is set
@@ -711,7 +723,17 @@ export type ReviewCanvasContent =
   | {
       kind: "home";
       reviews: readonly ReviewApiSummary[];
+      repositories?: readonly ReviewApiRepository[];
+      createSession?(
+        input: ReviewSessionCreateInput,
+      ): Promise<ReviewApiSummary>;
+      searchQuery?: string;
+      setSearchQuery?(query: string): void;
+      catalogError?: string;
+      refreshCatalog?(): void;
+      theme?: ReviewTheme;
       openReview(uuid: string): void;
+      openSettings?(): void;
       // Deletes the review and closes its canvas. Absent when the host does
       // not support deletion.
       deleteReview?(uuid: string): Promise<void>;
@@ -749,6 +771,8 @@ export type ReviewCanvasContent =
   | {
       kind: "settings";
       settings: ReviewCanvasSettingsContent;
+      theme?: ReviewTheme;
+      close?(): void;
     };
 
 export interface ReviewCanvasRange {

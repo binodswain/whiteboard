@@ -7,12 +7,16 @@ import { assignFreshIds, documentSchema } from "@review/review-api/document";
 import type { Snapshot } from "@review/review-api/store";
 import { act } from "react";
 import { afterEach, describe, expect, it } from "vitest";
+import { userEvent } from "vitest/browser";
 
 import { type WebAppHandle, startWebCanvas } from "./web-app";
 
 interface FixtureState {
   catalog: ReviewApiSummary[];
+  repositories: { id: string; name: string }[];
   snapshots: Map<string, Snapshot>;
+  createStatus?: number;
+  createError?: string;
 }
 
 interface WatchStream {
@@ -43,6 +47,16 @@ function webFixtureRequest(state: FixtureState) {
   const encoder = new TextEncoder();
   const streams = new Set<WatchStream>();
   const delegates = new Map<string, ReviewCanvasBridge["request"]>();
+  const createCalls: { body: unknown; token: string | null }[] = [];
+
+  let settings = {
+    theme: "system",
+    documentWidth: "standard",
+    codeFontSize: 14,
+    scratchpadEnabled: false,
+  };
+
+  let settingsReads = 0;
 
   const delegate = (reviewId: string) => {
     let request = delegates.get(reviewId);
@@ -94,7 +108,71 @@ function webFixtureRequest(state: FixtureState) {
   ): Promise<Response> => {
     const { pathname, searchParams } = new URL(url);
 
+    if (pathname === "/reviews-api/settings") {
+      if (init?.method === "PUT") {
+        settings = { ...settings, ...JSON.parse(String(init.body)) };
+
+        return Response.json(settings);
+      }
+
+      settingsReads += 1;
+
+      return Response.json(settings);
+    }
+
     if (pathname === "/reviews-api") return Response.json(state.catalog);
+
+    if (pathname === "/reviews-api/repositories")
+      return Response.json(state.repositories);
+
+    if (pathname === "/reviews-api/commands" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as {
+        operation: {
+          title: string;
+          target: { repositoryId: string };
+        };
+      };
+
+      createCalls.push({
+        body,
+        token: new Headers(init.headers).get("x-review-token"),
+      });
+
+      if (state.createStatus)
+        return Response.json(
+          { error: state.createError ?? "Could not create session." },
+          { status: state.createStatus },
+        );
+
+      const operation = body.operation;
+
+      const repository = state.repositories.find(
+        (entry) => entry.id === operation.target.repositoryId,
+      );
+
+      const snapshot = fixtureReview("web-created-session", operation.title);
+
+      const review: ReviewApiSummary = {
+        ...summaryOf(snapshot),
+        repositoryName: repository?.name ?? "fixture",
+        target: {
+          kind: "worktree",
+          repositoryId: operation.target.repositoryId,
+        },
+      };
+
+      state.snapshots.set(snapshot.reviewId, snapshot);
+      state.catalog = [...state.catalog, review];
+      push();
+
+      return Response.json({
+        reviewId: review.reviewId,
+        version: 0,
+        created: true,
+        review,
+        opened: false,
+      });
+    }
 
     if (pathname === "/reviews-api/watch") {
       const subscriptions = JSON.parse(
@@ -132,7 +210,19 @@ function webFixtureRequest(state: FixtureState) {
       : Response.json({ error: `No fixture for ${pathname}` }, { status: 404 });
   };
 
-  return { request, push };
+  const activeCatalogWatches = () =>
+    [...streams].filter((stream) =>
+      stream.subscriptions.some(({ reviewId }) => reviewId === null),
+    ).length;
+
+  return {
+    request,
+    push,
+    createCalls,
+    activeCatalogWatches,
+    settingsReads: () => settingsReads,
+    settingsValues: () => settings,
+  };
 }
 
 function fixtureReview(reviewId: string, title: string): Snapshot {
@@ -192,10 +282,17 @@ describe("the web canvas entry", () => {
 
     const state: FixtureState = {
       catalog: [summaryOf(snapshot)],
+      repositories: [{ id: "repo", name: "fixture" }],
       snapshots: new Map([[snapshot.reviewId, snapshot]]),
     };
 
-    const { request, push } = webFixtureRequest(state);
+    const {
+      request,
+      push,
+      activeCatalogWatches,
+      settingsReads,
+      settingsValues,
+    } = webFixtureRequest(state);
 
     history.replaceState(null, "", "/");
     container = document.createElement("div");
@@ -213,6 +310,52 @@ describe("the web canvas entry", () => {
     expect(
       await settled(() => container!.textContent?.includes("Fixture review")),
     ).toBe(true);
+    expect(await settled(() => activeCatalogWatches() === 1)).toBe(true);
+
+    await act(async () => {
+      container!
+        .querySelector<HTMLButtonElement>('button[aria-label="Open Settings"]')!
+        .click();
+    });
+    expect(location.pathname).toBe("/settings");
+    expect(container!.textContent).toContain("Machine-local controls");
+    expect(
+      container!.querySelector<HTMLInputElement>(
+        'input[aria-label="Scratchpad"]',
+      ),
+    ).not.toBeNull();
+    expect(settingsReads()).toBe(1);
+
+    await act(async () => {
+      [
+        ...container!.querySelectorAll<HTMLButtonElement>(
+          '[role="radiogroup"][aria-label="Theme"] [role="radio"]',
+        ),
+      ]
+        .find((button) => button.textContent === "Dark")
+        ?.click();
+    });
+    await settled(() => settingsValues().theme === "dark");
+
+    await act(async () => {
+      [
+        ...container!.querySelectorAll<HTMLButtonElement>(
+          '[role="radiogroup"][aria-label="Document width"] [role="radio"]',
+        ),
+      ]
+        .find((button) => button.textContent === "Wide")
+        ?.click();
+    });
+    await settled(() => settingsValues().documentWidth === "wide");
+
+    await act(async () => {
+      container!
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Return to Home"]',
+        )!
+        .click();
+    });
+    expect(location.pathname).toBe("/");
 
     // A review published after load appears without a reload.
     const added = fixtureReview("web-review-2", "Published later");
@@ -225,6 +368,16 @@ describe("the web canvas entry", () => {
     expect(
       await settled(() => container!.textContent?.includes("Published later")),
     ).toBe(true);
+
+    const search = container!.querySelector<HTMLInputElement>(
+      '[aria-label="Search sessions"]',
+    )!;
+
+    await act(async () => userEvent.fill(search, "review"));
+
+    expect(search.value).toBe("review");
+    expect(container!.textContent).toContain("Fixture review");
+    expect(container!.textContent).not.toContain("Published later");
 
     // Opening a review routes to /r/:id and renders its flow diagram.
     const row = [...container!.querySelectorAll("tbody tr")].find((tr) =>
@@ -242,6 +395,337 @@ describe("the web canvas entry", () => {
       ),
     ).toBe(true);
     expect(container!.textContent).toContain("Queue order");
+    expect(await settled(() => activeCatalogWatches() === 0)).toBe(true);
+
+    history.back();
+    expect(await settled(() => location.pathname === "/")).toBe(true);
+    expect(
+      await settled(
+        () =>
+          container!.querySelector<HTMLInputElement>(
+            '[aria-label="Search sessions"]',
+          )?.value === "review",
+      ),
+    ).toBe(true);
+    expect(await settled(() => activeCatalogWatches() === 1)).toBe(true);
+
+    history.forward();
+    expect(await settled(() => location.pathname === "/r/web-review-1")).toBe(
+      true,
+    );
+    expect(await settled(() => activeCatalogWatches() === 0)).toBe(true);
+    expect(
+      container!.querySelector<HTMLElement>(".review-app")?.dataset
+        .documentWidth,
+    ).toBe("wide");
+    expect(
+      container!.querySelector<HTMLElement>(".review-app")?.className,
+    ).toContain("review-app--theme-dark");
+  });
+
+  it("announces initial loading and renders the empty home when ready", async () => {
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [],
+      snapshots: new Map(),
+    };
+
+    const fixture = webFixtureRequest(state);
+    const response = Promise.withResolvers<Response>();
+
+    const request = (url: string, init?: RequestInit) =>
+      new URL(url).pathname === "/reviews-api"
+        ? response.promise
+        : fixture.request(url, init);
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test-token",
+        serverUrl: "http://fixture.local",
+        request,
+      });
+    });
+
+    expect(
+      await settled(() => container!.textContent?.includes("Loading sessions")),
+    ).toBe(true);
+
+    await act(async () => response.resolve(Response.json([])));
+    expect(
+      await settled(() => container!.textContent?.includes("No sessions yet")),
+    ).toBe(true);
+  });
+
+  it("recovers from a catalog error using the visible retry action", async () => {
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [],
+      snapshots: new Map(),
+    };
+
+    const fixture = webFixtureRequest(state);
+    let fail = true;
+
+    const request = (url: string, init?: RequestInit) => {
+      if (new URL(url).pathname === "/reviews-api" && fail) {
+        fail = false;
+
+        return Promise.resolve(
+          Response.json({ error: "Catalog unavailable." }, { status: 503 }),
+        );
+      }
+
+      return fixture.request(url, init);
+    };
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test-token",
+        serverUrl: "http://fixture.local",
+        request,
+      });
+    });
+
+    expect(
+      await settled(() =>
+        container!.textContent?.includes("Catalog unavailable."),
+      ),
+    ).toBe(true);
+
+    await act(async () =>
+      userEvent.click(
+        [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "Retry",
+        )!,
+      ),
+    );
+
+    expect(
+      await settled(() => container!.textContent?.includes("No sessions yet")),
+    ).toBe(true);
+  });
+
+  it("creates a worktree session for the selected repository and opens it", async () => {
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [{ id: "repo", name: "fixture" }],
+      snapshots: new Map(),
+    };
+
+    const fixture = webFixtureRequest(state);
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test-token",
+        serverUrl: "http://fixture.local",
+        request: fixture.request,
+      });
+    });
+
+    expect(
+      await settled(() => container!.textContent?.includes("No sessions yet")),
+    ).toBe(true);
+
+    await act(async () =>
+      userEvent.click(
+        [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "New session",
+        )!,
+      ),
+    );
+
+    const dialog = container!.querySelector('[role="dialog"]')!;
+
+    const title = dialog.querySelector<HTMLInputElement>(
+      'input[name="title"]',
+    )!;
+
+    const repository = dialog.querySelector<HTMLSelectElement>(
+      'select[name="repositoryId"]',
+    )!;
+
+    await act(async () => userEvent.fill(title, "Checkout review"));
+    await act(async () => userEvent.selectOptions(repository, "repo"));
+    await act(async () =>
+      userEvent.click(
+        [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "Create session",
+        )!,
+      ),
+    );
+
+    expect(
+      await settled(() => location.pathname === "/r/web-created-session"),
+    ).toBe(true);
+    expect(fixture.createCalls).toHaveLength(1);
+    expect(fixture.createCalls[0]).toMatchObject({
+      token: "test-token",
+      body: {
+        operation: {
+          type: "create",
+          title: "Checkout review",
+          target: { kind: "worktree", repositoryId: "repo" },
+          open: false,
+        },
+      },
+    });
+
+    history.back();
+    expect(await settled(() => location.pathname === "/")).toBe(true);
+    expect(
+      await settled(() => container!.textContent?.includes("Checkout review")),
+    ).toBe(true);
+  });
+
+  it("keeps session creation unavailable until a repository is registered", async () => {
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [],
+      snapshots: new Map(),
+    };
+
+    const fixture = webFixtureRequest(state);
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test-token",
+        serverUrl: "http://fixture.local",
+        request: fixture.request,
+      });
+    });
+
+    expect(
+      await settled(() => container!.textContent?.includes("No sessions yet")),
+    ).toBe(true);
+    expect(container!.textContent).toContain("Register a repository");
+    expect(
+      [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === "New session",
+      )?.disabled,
+    ).toBe(true);
+    expect(fixture.createCalls).toHaveLength(0);
+  });
+
+  it.each([
+    { status: 400, error: "Select a registered repository." },
+    { status: 500, error: "Session creation is unavailable." },
+    { status: 401, error: "Authentication required." },
+  ])(
+    "keeps the new-session dialog actionable after API status $status",
+    async ({ status, error }) => {
+      const fixture = webFixtureRequest({
+        catalog: [],
+        repositories: [{ id: "repo", name: "fixture" }],
+        snapshots: new Map(),
+        createStatus: status,
+        createError: error,
+      });
+
+      history.replaceState(null, "", "/");
+      container = document.createElement("div");
+      document.body.append(container);
+
+      await act(async () => {
+        app = startWebCanvas(container!, {
+          token: "test-token",
+          serverUrl: "http://fixture.local",
+          request: fixture.request,
+        });
+      });
+
+      expect(
+        await settled(() =>
+          container!.textContent?.includes("No sessions yet"),
+        ),
+      ).toBe(true);
+      await act(async () =>
+        userEvent.click(
+          [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+            (button) => button.textContent === "New session",
+          )!,
+        ),
+      );
+
+      const dialog = container!.querySelector('[role="dialog"]')!;
+      await act(async () =>
+        userEvent.fill(
+          dialog.querySelector<HTMLInputElement>('input[name="title"]')!,
+          "Checkout review",
+        ),
+      );
+      await act(async () =>
+        userEvent.selectOptions(
+          dialog.querySelector<HTMLSelectElement>(
+            'select[name="repositoryId"]',
+          )!,
+          "repo",
+        ),
+      );
+      await act(async () =>
+        userEvent.click(
+          [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+            (button) => button.textContent === "Create session",
+          )!,
+        ),
+      );
+
+      expect(
+        await settled(
+          () => dialog.querySelector('[role="alert"]')?.textContent === error,
+        ),
+      ).toBe(true);
+      expect(container!.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(fixture.createCalls[0]?.token).toBe("test-token");
+    },
+  );
+
+  it("skips the token prompt only when the server advertises local browser auth", async () => {
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [],
+      snapshots: new Map(),
+    };
+
+    const fixture = webFixtureRequest(state);
+    const requested: string[] = [];
+
+    const request = async (url: string, init?: RequestInit) => {
+      const { pathname } = new URL(url);
+
+      requested.push(pathname);
+
+      if (pathname === "/reviews-api/capabilities")
+        return Response.json({ localBrowserAuth: true });
+
+      return fixture.request(url, init);
+    };
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, { request });
+    });
+
+    expect(await settled(() => requested.includes("/reviews-api"))).toBe(true);
+    expect(container.querySelector("input[type=password]")).toBeNull();
   });
 
   it("opens a returned session URL and renders that session", async () => {
@@ -251,6 +735,7 @@ describe("the web canvas entry", () => {
 
     const state: FixtureState = {
       catalog: [summaryOf(snapshot)],
+      repositories: [],
       snapshots: new Map([[sessionId, snapshot]]),
     };
 
@@ -281,15 +766,23 @@ describe("the web canvas entry", () => {
   });
 
   it("bootstraps the token from the URL fragment and asks for one when missing", async () => {
-    const state: FixtureState = { catalog: [], snapshots: new Map() };
-    const fixture = webFixtureRequest(state);
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [],
+      snapshots: new Map(),
+    };
 
-    let requested = false;
+    const fixture = webFixtureRequest(state);
+    const requested: string[] = [];
 
     const request = (url: string, init?: RequestInit) => {
-      requested = true;
+      const { pathname } = new URL(url);
 
-      return fixture.request(url, init);
+      requested.push(pathname);
+
+      return pathname === "/reviews-api/capabilities"
+        ? Promise.resolve(Response.json({ localBrowserAuth: false }))
+        : fixture.request(url, init);
     };
 
     // No token anywhere: a short prompt, not a stack trace or a blank page.
@@ -301,14 +794,17 @@ describe("the web canvas entry", () => {
       app = startWebCanvas(container!, { request });
     });
 
-    expect(container.textContent).toContain("token");
+    expect(await settled(() => container!.textContent?.includes("token"))).toBe(
+      true,
+    );
     expect(container.querySelector("input[type=password]")).toBeTruthy();
-    expect(requested).toBe(false);
+    expect(requested).toEqual(["/reviews-api/capabilities"]);
 
     await act(async () => app?.dispose());
     container.replaceChildren();
 
     // The fragment bootstrap: captured, kept in sessionStorage, stripped.
+    requested.length = 0;
     history.replaceState(null, "", "/#token=abcd1234abcd1234abcd1234");
 
     await act(async () => {
@@ -319,6 +815,7 @@ describe("the web canvas entry", () => {
     expect(sessionStorage.getItem("review-token")).toBe(
       "abcd1234abcd1234abcd1234",
     );
-    expect(await settled(() => requested)).toBe(true);
+    expect(await settled(() => requested.includes("/reviews-api"))).toBe(true);
+    expect(requested).not.toContain("/reviews-api/capabilities");
   });
 });

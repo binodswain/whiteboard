@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { request } from "node:http";
+import * as http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,12 +63,16 @@ const servers = {
 
     return server.discovery;
   },
-  async headless(): Promise<Running> {
+  async headless(
+    options: { host?: string; localBrowserAuth?: boolean } = {},
+  ): Promise<Running> {
     const controller = new AbortController();
     const ready = Promise.withResolvers<Running>();
 
     const running = runHeadlessServer({
       stateDir: path.join(root, "server"),
+      host: options.host,
+      localBrowserAuth: options.localBrowserAuth,
       signal: controller.signal,
       onReady: ready.resolve,
     });
@@ -215,7 +219,7 @@ describe.each(["desktop", "headless"] as const)("the %s server", (kind) => {
 
       // Node's parser rejects a reply framed both ways.
       const [raw] = await once(
-        request(`${server.url}/control`, { headers }).end(),
+        http.request(`${server.url}/control`, { headers }).end(),
         "response",
       );
 
@@ -249,6 +253,113 @@ describe.each(["desktop", "headless"] as const)("the %s server", (kind) => {
   });
 });
 
+it("allows tokenless API access only for an explicitly enabled local Host and Origin", async () => {
+  const server = await servers.headless({
+    host: "0.0.0.0",
+    localBrowserAuth: true,
+  });
+
+  const host = new URL(server.url).host;
+  const origin = `http://${host}`;
+
+  const request = (
+    route: string,
+    headers: Record<string, string>,
+    method = "GET",
+  ) =>
+    new Promise<Response>((resolve, reject) => {
+      const requestHeaders: http.OutgoingHttpHeaders = { host, ...headers };
+
+      if (method === "POST")
+        requestHeaders["content-type"] = "application/json";
+
+      const incoming = http.request(
+        new URL(route, server.url),
+        { method, setHost: false, headers: requestHeaders },
+        (response) => {
+          const chunks: Buffer[] = [];
+
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("end", () =>
+            resolve(
+              new Response(Buffer.concat(chunks), {
+                status: response.statusCode,
+              }),
+            ),
+          );
+        },
+      );
+
+      incoming.on("error", reject);
+
+      if (method === "POST") incoming.write("{}");
+      incoming.end();
+    });
+
+  const catalog = await request("/reviews-api", { origin });
+  const catalogWithoutOrigin = await request("/reviews-api", {});
+
+  expect(catalog.status).toBe(200);
+  expect(catalogWithoutOrigin.status).toBe(200);
+  expect(await catalog.json()).toEqual([]);
+  expect(await catalogWithoutOrigin.json()).toEqual([]);
+  expect(
+    await (await request("/reviews-api/capabilities", { origin })).json(),
+  ).toMatchObject({ localBrowserAuth: true });
+
+  const localMutation = await request(
+    "/reviews-api/commands",
+    { origin },
+    "POST",
+  );
+
+  expect(localMutation.status).toBe(400);
+
+  const missingHost = await new Promise<number | undefined>(
+    (resolve, reject) => {
+      const incoming = http.request(
+        {
+          hostname: "127.0.0.1",
+          port: Number(new URL(server.url).port),
+          path: "/reviews-api",
+          setHost: false,
+        },
+        (response) => resolve(response.statusCode),
+      );
+
+      incoming.on("error", reject);
+      incoming.end();
+    },
+  );
+
+  expect(missingHost).toBe(400);
+
+  for (const [route, headers, method] of [
+    ["/reviews-api", { host: "rebind.attacker.test", origin }, "GET"],
+    [
+      "/reviews-api",
+      { host: `localhost:${Number(new URL(server.url).port) + 1}`, origin },
+      "GET",
+    ],
+    ["/reviews-api", { origin: "http://attacker.test" }, "GET"],
+    ["/reviews-api/commands", {}, "POST"],
+    ["/reviews-api/commands", { origin: "http://attacker.test" }, "POST"],
+  ] as const) {
+    const response = await request(route, headers, method);
+
+    expect(
+      response.status,
+      `${method} ${route} ${JSON.stringify(headers)}`,
+    ).toBe(403);
+  }
+});
+
+it("keeps token auth enabled by default on a wildcard bind", async () => {
+  const server = await servers.headless({ host: "0.0.0.0" });
+
+  expect((await fetch(`${server.url}/reviews-api`)).status).toBe(401);
+});
+
 // The servers as they run: the Desktop's host process and `server start`.
 const processes = {
   desktop: (home: string) =>
@@ -257,13 +368,42 @@ const processes = {
       DEV_FAST_REVIEW_SERVER_PORT: "0",
       DEV_FAST_REVIEW_APP_PID: String(process.pid),
     }),
-  headless: (home: string, stateDir = path.join(home, "server")) =>
+  headless: (
+    home: string,
+    stateDir = path.join(home, "server"),
+    env: Record<string, string> = {},
+  ) =>
     spawnSource(
       "src/cli.ts",
       ["server", "start", "--json", "--state-dir", stateDir],
-      { DEV_REVIEW_HOME: home },
+      { DEV_REVIEW_HOME: home, ...env },
     ),
 };
+
+it("enables tokenless browser auth only from the explicit server environment flag", async () => {
+  const stateDir = path.join(root, "local-browser-server");
+
+  const child = processes.headless(root, stateDir, {
+    WHITEBOARD_LOCAL_BROWSER_AUTH: "1",
+  });
+
+  try {
+    const server = await discovery("headless", child, stateDir);
+    const catalog = await fetch(`${server.url}/reviews-api`);
+    const capabilities = await fetch(`${server.url}/reviews-api/capabilities`);
+
+    expect(catalog.status).toBe(200);
+    expect(capabilities.status).toBe(200);
+    expect(await capabilities.json()).toMatchObject({ localBrowserAuth: true });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+
+      child.kill("SIGTERM");
+      await exited;
+    }
+  }
+});
 
 it("gives the Desktop and headless servers on one home one serverId, and another home another", async () => {
   const other = path.join(root, "other");

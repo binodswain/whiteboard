@@ -1,4 +1,5 @@
 import { fontSize } from "@canvas/scale.stylex";
+import { Button } from "@canvas/ui/button";
 import { EmptyState } from "@canvas/ui/empty-state";
 import { textStyles } from "@canvas/ui/text";
 import type {
@@ -31,6 +32,15 @@ function ReviewCanvas({
   content: ReviewCanvasContent;
   findHost: ReviewFindHost;
 }) {
+  if (content.kind === "loading")
+    return (
+      <CanvasShell title="Loading sessions">
+        <p role="status" {...stylex.props(styles.shellText)}>
+          Loading sessions…
+        </p>
+      </CanvasShell>
+    );
+
   if (content.kind === "api")
     return (
       <div data-review-api="" {...stylex.props(shellStyles.apiCanvas)}>
@@ -77,13 +87,22 @@ function ReviewCanvas({
   }
 
   if (content.kind === "settings") {
-    return <SettingsPage settings={content.settings} />;
+    return (
+      <SettingsPage
+        settings={content.settings}
+        web={content.settings.web === true}
+        onGoHome={content.close}
+      />
+    );
   }
 
   if (content.kind === "error") {
     return (
       <CanvasShell title="Session unavailable">
-        <p {...stylex.props(styles.shellText)}>{content.message}</p>
+        <p role="alert" {...stylex.props(styles.shellText)}>
+          {content.message}
+        </p>
+        {content.retry ? <Button onClick={content.retry}>Retry</Button> : null}
       </CanvasShell>
     );
   }
@@ -103,6 +122,12 @@ function Home({
   return (
     <ReviewHome
       reviews={content.reviews}
+      repositories={content.repositories}
+      onCreateSession={content.createSession}
+      searchQuery={content.searchQuery}
+      onSearchQueryChange={content.setSearchQuery}
+      catalogError={content.catalogError}
+      onRefreshCatalog={content.refreshCatalog}
       onOpen={(review) => content.openReview(review.reviewId)}
       onDelete={
         deleteReview ? (review) => deleteReview(review.reviewId) : undefined
@@ -117,6 +142,7 @@ function Home({
       setupActions={content.setupActions}
       onboarding={content.onboarding}
       onOpenTutorial={content.openTutorial}
+      onOpenSettings={content.openSettings}
     />
   );
 }
@@ -210,12 +236,17 @@ export function mountReviewCanvas(
       applyTheme(content.bridge.currentTheme());
       themeSubscription = content.bridge.onDidChangeTheme(applyTheme);
     } else {
-      applyTheme(workbenchColorTheme(container));
+      const contentTheme =
+        content.kind === "home" || content.kind === "settings"
+          ? content.theme
+          : undefined;
+
+      applyTheme(contentTheme ?? workbenchColorTheme(container));
 
       const workbench =
         container.ownerDocument.querySelector(".monaco-workbench");
 
-      if (workbench) {
+      if (!contentTheme && workbench) {
         const observer = new MutationObserver(() => {
           applyTheme(workbenchColorTheme(container));
         });
@@ -225,7 +256,7 @@ export function mountReviewCanvas(
           attributeFilter: ["class"],
         });
         themeSubscription = { dispose: () => observer.disconnect() };
-      } else {
+      } else if (!contentTheme) {
         // The web canvas has no workbench root: follow the OS theme instead.
         const media = container.ownerDocument.defaultView?.matchMedia(
           "(prefers-color-scheme: dark)",

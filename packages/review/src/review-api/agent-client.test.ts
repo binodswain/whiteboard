@@ -344,6 +344,8 @@ it("prints the headless session URL for session_open", async () => {
     undefined,
     undefined,
     undefined,
+    false,
+    undefined,
     (sessionId) =>
       `http://127.0.0.1:3000/r/${encodeURIComponent(sessionId)}#token=test-token`,
   );

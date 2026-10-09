@@ -24,7 +24,9 @@ For example, a repository registered in Whiteboard must use the in-container pat
 
 ## Access token and GitHub
 
-Set `WHITEBOARD_TOKEN` in `.env` to require the same token for web/API access. Keep `.env` private; do not commit credentials. For private GitHub PRs set `GH_TOKEN`; for GitHub Enterprise set `GH_ENTERPRISE_TOKEN` and `GH_HOST`. The image configures Git to use GitHub CLI's credential helper, which reads the supplied token environment variables for HTTPS fetches as well as PR metadata lookup.
+The Docker image defaults to token authentication. This loopback-published Compose example explicitly enables tokenless local browser access with `WHITEBOARD_LOCAL_BROWSER_AUTH=1`; the web app skips its token prompt only after the server advertises this mode. Requests without a token are accepted only when `Host` is exactly `localhost`, `127.0.0.1`, or `[::1]` on the server port, and state-changing API requests must also carry the matching `http` `Origin`. Missing or foreign values are rejected; forwarded host headers are not trusted. Other API clients can continue to use `WHITEBOARD_TOKEN`.
+
+This flag is a local-trust switch, not proof that the connecting client is on the same machine. In particular, the container's `0.0.0.0` bind does not establish whether Docker published its port only to host loopback, and Host/Origin checks do not replace network isolation. If you expose the port on a non-loopback host interface or through a proxy/tunnel, disable tokenless access by setting `WHITEBOARD_LOCAL_BROWSER_AUTH=0` in `.env` (or retain token authentication by using the Docker image without the Compose opt-in). Keep `.env` private; do not commit credentials. For private GitHub PRs set `GH_TOKEN`; for GitHub Enterprise set `GH_ENTERPRISE_TOKEN` and `GH_HOST`. The image configures Git to use GitHub CLI's credential helper, which reads the supplied token environment variables for HTTPS fetches as well as PR metadata lookup.
 
 ## Connect a host agent
 

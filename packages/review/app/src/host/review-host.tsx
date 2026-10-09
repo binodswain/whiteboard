@@ -18,11 +18,13 @@ export interface ReviewSurface {
     pins?: ReviewSourcePins,
   ): void;
   post(request: ReviewVerbRequest): Promise<void>;
+  openSettings?(): void;
   subscribe(listener: (event: ReviewSurfaceEvent) => void): () => void;
 }
 
 export function createReviewSurface(bridge: ReviewCanvasBridge): ReviewSurface {
   return {
+    openSettings: () => bridge.openSettings?.(),
     openFileDiff(file) {
       void bridge.post({
         name: "openDiff",
