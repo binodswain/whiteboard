@@ -224,6 +224,7 @@ export function headlessAskTools(
   cliPath: string | null = whiteboardCliPath() ?? null,
 ): AskTools {
   const cli = cliPath ?? undefined;
+
   const cliEnv = () => [
     { name: "DEV_REVIEW_SERVER_DIR", value: stateDir },
     ...(process.versions.electron
