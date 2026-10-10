@@ -59,6 +59,12 @@ export const diagramStyles = stylex.create({
     letterSpacing: 0,
     textTransform: "none",
   },
+  actions: {
+    display: "inline-flex",
+    flex: "0 0 auto",
+    alignItems: "center",
+    gap: "8px",
+  },
   control: {
     flex: "0 0 auto",
     height: "24px",

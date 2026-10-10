@@ -283,7 +283,8 @@ function mountWebCanvas(
   let activeBridge: ReturnType<typeof createWebBridge> | undefined;
 
   let activeReviewContent:
-    Extract<ReviewCanvasContent, { kind: "api" }> | undefined;
+    | Extract<ReviewCanvasContent, { kind: "api" }>
+    | undefined;
 
   const navigate = (path: string) => {
     history.pushState(null, "", path);

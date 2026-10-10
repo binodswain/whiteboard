@@ -26,14 +26,17 @@ import {
   useReactFlow,
   useStoreApi,
 } from "@xyflow/react";
-import type { ElkNode } from "elkjs/lib/elk.bundled.js";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 
 import { useReviewDebugSettings } from "./debug-settings";
 import { diagramStyles } from "./diagram-styles";
 import { useMotionPhase } from "./draw-queue-provider";
 import { drawStyles } from "./draw-styles";
-import { loadElk } from "./elk";
+import {
+  type FlowLayout as Layout,
+  FLOW_NODE_SIZE as SIZE,
+  layoutFlow,
+} from "./flow-layout";
 import { ElementCountsText } from "./lens-counts";
 import { documentMarker, flowNodeMarker } from "./markers.stylex";
 import { useReviewLenses } from "./review-lenses";
@@ -391,103 +394,11 @@ function MetaWheelZoom({
   return null;
 }
 
-interface Layout {
-  width: number;
-  height: number;
-  nodes: Map<string, { x: number; y: number }>;
-  edges: {
-    index: number;
-    section: number;
-    points: { x: number; y: number }[];
-    label?: { text: string; x: number; y: number };
-  }[];
-}
-
-const SIZE = { width: 210, height: 62 };
-
 // So the tour's fullscreen copy draws on its first render.
 const cachedLayouts = new WeakMap<
   FlowDiagramBlock,
   Map<"down" | "right" | undefined, Layout>
 >();
-
-// The label's 9px mono font, so ELK leaves room for it between layers.
-const LABEL = { charWidth: 5.4, height: 12, maxLength: 28 };
-
-const labelText = (label: string) =>
-  label.length > LABEL.maxLength
-    ? `${label.slice(0, LABEL.maxLength - 1)}…`
-    : label;
-
-async function layoutFlow(
-  block: FlowDiagramBlock,
-  direction: "down" | "right" | undefined,
-): Promise<Layout> {
-  const elk = await loadElk();
-
-  const result = await elk.layout<ElkNode>({
-    id: "flow",
-    layoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": direction === "right" ? "RIGHT" : "DOWN",
-      "elk.spacing.nodeNode": "28",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "44",
-    },
-    children: block.nodes.map((node) => ({ id: node.key, ...SIZE })),
-    edges: block.edges.map((edge, index) => {
-      const text = edge.label && labelText(edge.label);
-
-      return {
-        id: String(index),
-        sources: [edge.from],
-        targets: [edge.to],
-        labels: text
-          ? [
-              {
-                text,
-                width: text.length * LABEL.charWidth,
-                height: LABEL.height,
-                // Beside the source, so the label widens its own gap
-                // instead of getting a layer of its own.
-                layoutOptions: { "elk.edgeLabels.placement": "TAIL" },
-              },
-            ]
-          : [],
-      };
-    }),
-  });
-
-  return {
-    width: result.width ?? 240,
-    height: result.height ?? 100,
-    nodes: new Map(
-      result.children?.map((node) => [
-        node.id,
-        { x: node.x ?? 0, y: node.y ?? 0 },
-      ]),
-    ),
-    edges: (result.edges ?? []).flatMap((edge) =>
-      (edge.sections ?? []).map((section, index) => {
-        const label = index ? undefined : edge.labels?.[0];
-
-        return {
-          index: Number(edge.id),
-          section: index,
-          points: [
-            section.startPoint,
-            ...(section.bendPoints ?? []),
-            section.endPoint,
-          ],
-          label: label && {
-            text: label.text ?? "",
-            x: label.x ?? 0,
-            y: (label.y ?? 0) + LABEL.height - 3,
-          },
-        };
-      }),
-    ),
-  };
-}
 
 interface FlowNodeData extends Record<string, unknown> {
   node: FlowDiagramNode;

@@ -2,8 +2,8 @@ import { IconButton } from "@canvas/ui/button";
 import * as stylex from "@stylexjs/stylex";
 import type { ReactElement } from "react";
 
-import { controlStyles } from "./controls-styles";
 import { useCurrentReviewSnapshot } from "./api-canvas";
+import { controlStyles } from "./controls-styles";
 import {
   exportFilename,
   exportHtml,
@@ -31,10 +31,12 @@ function download(content: string, mimeType: string, filename: string) {
 export function ExportControl(): ReactElement | null {
   const snapshot = useCurrentReviewSnapshot();
   const tooltip = useTooltip("Export review");
+
   const menu = useCanvasMenu({
     items: OPTIONS.map(({ id, label }) => ({ id, label })),
     onSelect: (id) => {
       if (!snapshot) return;
+
       if (id === "markdown") {
         download(
           exportMarkdown(snapshot),
@@ -49,6 +51,7 @@ export function ExportControl(): ReactElement | null {
         );
       } else if (id === "print") {
         const printWindow = window.open("", "_blank");
+
         if (!printWindow) return;
         printWindow.document.open();
         printWindow.document.write(exportHtml(snapshot));
@@ -90,6 +93,5 @@ export function ExportControl(): ReactElement | null {
     </div>
   );
 }
-
 
 const styles = stylex.create({ control: { position: "relative" } });
