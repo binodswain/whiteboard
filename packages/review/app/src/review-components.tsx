@@ -1330,7 +1330,7 @@ function ReviewPeekContentView({
       <CodePeekCard
         source={content.source}
         active={active}
-        heightMode="content"
+        heightMode="capped"
         onNativeFocus={onNativeFocus}
         reportOutcome={reportOutcome}
       />
