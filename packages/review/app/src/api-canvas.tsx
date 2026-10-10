@@ -61,6 +61,14 @@ type ApiContent = Extract<ReviewCanvasContent, { kind: "api" }>;
 
 const DocumentData = createContext<ApiDocumentData | null>(null);
 
+/**
+ * Snapshot for the ApiCanvas this component renders under, or null when the
+ * component tree has no ApiCanvas (scratchpad views, tests).
+ */
+export function useCurrentReviewSnapshot(): Snapshot | null {
+  return useContext(DocumentData)?.snapshot ?? null;
+}
+
 const MapEnabled = createContext(false);
 
 // A stable component type keeps sections, diagram tours and selections mounted.

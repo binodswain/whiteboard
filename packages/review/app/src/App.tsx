@@ -33,7 +33,6 @@ import {
   AuthoringActivityBadge,
   ReviewSurfaceLabel,
 } from "./authoring-activity";
-import { BugReportControl } from "./bug-report-dialog";
 import { controlStyles } from "./controls-styles";
 import {
   ReviewDebugSettingsProvider,
@@ -45,7 +44,7 @@ import { ReviewDiffView } from "./DiffView";
 import { useDocumentEmbedScroll } from "./document-embed-scroll";
 import { documentStyles } from "./document-styles";
 import { useReviewSession } from "./host/review-session";
-import { DiscordIcon, MarkerUnderline, SettingsSlidersIcon } from "./icons";
+import { MarkerUnderline, SettingsSlidersIcon } from "./icons";
 import {
   appMarker,
   detailHostMarker,
@@ -95,7 +94,7 @@ import {
   motion,
   radius,
 } from "./scale.stylex";
-import { ShareControl } from "./share-control";
+import { ExportControl } from "./export-control";
 import { shellStyles } from "./shell-styles";
 import { useRightPanelResize } from "./side-panel-resizer";
 import { selectActiveSoftwareMapModel } from "./software-map-selection";
@@ -300,7 +299,6 @@ function ReviewLayoutContent({
   useEffect(() => {
     if (scratchpad) captureUiEvent(session, "scratchpad_opened");
   }, [scratchpad, session]);
-  const discordTooltip = useTooltip("Join our Discord community");
   const sourceTreeTooltip = useTooltip("Open full read-only source");
   const panelStore = useReviewPanelStore();
   useSuppressPanelMotionOnCanvasResume(appRef);
@@ -664,21 +662,7 @@ function ReviewLayoutContent({
                 </Button>
               )}
               <CommentsControl />
-              <ShareControl />
-              <IconButton
-                xstyle={shellStyles.topbarItem}
-                ref={discordTooltip}
-                aria-label="Join our Discord community"
-                onClick={() => {
-                  captureUiEvent(session, "discord_clicked", {
-                    via: "topbar",
-                  });
-                  session.surface.post({ name: "joinDiscord", args: {} });
-                }}
-              >
-                <DiscordIcon xstyle={controlStyles.chromeIcon} />
-              </IconButton>
-              <BugReportControl />
+              <ExportControl />
               <ReviewBatonChip outcome={review.submissionOutcome} />
               {session.config.surface !== "web" && <DiffLayoutControl />}
               {!scratchpad &&
