@@ -105,7 +105,14 @@ const c4: C4ExportInput = {
 const reservedC4: C4ExportInput = {
   title: "C4 chars",
   nodes: [
-    { id: "a-1", label: 'Gate [open] & "go"', x: 0, y: 0, width: 100, height: 50 },
+    {
+      id: "a-1",
+      label: 'Gate [open] & "go"',
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 50,
+    },
     { id: "b", label: "Done #now;", x: 200, y: 0, width: 100, height: 50 },
   ],
   relationships: [{ from: "a-1", to: "b", label: "A < B" }],
@@ -237,9 +244,9 @@ describe("flow mermaid", () => {
     expect([...vertices.keys()]).toEqual(["n_a-1", "n_end"]);
 
     const edges = db.getEdges!();
-    expect(edges.map((edge) => ({ start: edge.start, end: edge.end }))).toEqual([
-      { start: "n_a-1", end: "n_end" },
-    ]);
+    expect(edges.map((edge) => ({ start: edge.start, end: edge.end }))).toEqual(
+      [{ start: "n_a-1", end: "n_end" }],
+    );
   });
 });
 
@@ -263,11 +270,17 @@ describe("C4 mermaid", () => {
 
     const vertices = db.getVertices!();
     expect(vertices.get("n_person")).toMatchObject({ text: "Customer" });
-    expect(vertices.get("n_service")).toMatchObject({ text: "Billing Service" });
+    expect(vertices.get("n_service")).toMatchObject({
+      text: "Billing Service",
+    });
 
     const edges = db.getEdges!();
     expect(
-      edges.map((edge) => ({ start: edge.start, end: edge.end, text: edge.text })),
+      edges.map((edge) => ({
+        start: edge.start,
+        end: edge.end,
+        text: edge.text,
+      })),
     ).toEqual([
       { start: "n_person", end: "n_system", text: "Uses" },
       { start: "n_system", end: "n_service", text: "Routes to" },
@@ -283,9 +296,9 @@ describe("C4 mermaid", () => {
     expect([...vertices.keys()]).toEqual(["n_a-1", "n_b"]);
 
     const edges = db.getEdges!();
-    expect(edges.map((edge) => ({ start: edge.start, end: edge.end }))).toEqual([
-      { start: "n_a-1", end: "n_b" },
-    ]);
+    expect(edges.map((edge) => ({ start: edge.start, end: edge.end }))).toEqual(
+      [{ start: "n_a-1", end: "n_b" }],
+    );
   });
 });
 
@@ -411,7 +424,9 @@ function drawioCells(xml: string): DrawioCell[] {
   const parserErrors = doc.getElementsByTagName("parsererror");
 
   if (parserErrors.length > 0) {
-    throw new Error(`draw.io XML failed to parse: ${parserErrors[0]!.textContent}`);
+    throw new Error(
+      `draw.io XML failed to parse: ${parserErrors[0]!.textContent}`,
+    );
   }
 
   return doc
@@ -428,7 +443,9 @@ function drawioCells(xml: string): DrawioCell[] {
       const numericAttr = (name: string) => {
         const value = geometry?.getAttribute(name);
 
-        return value !== null && value !== undefined ? Number(value) : undefined;
+        return value !== null && value !== undefined
+          ? Number(value)
+          : undefined;
       };
 
       return {
@@ -562,7 +579,9 @@ function parseXmind(bytes: Uint8Array) {
   expect(files.get("manifest.json")).toBeTruthy();
   expect(files.get("metadata.json")).toBeTruthy();
 
-  return xmindSheetSchema.parse(JSON.parse(files.get("content.json") ?? "null"));
+  return xmindSheetSchema.parse(
+    JSON.parse(files.get("content.json") ?? "null"),
+  );
 }
 
 describe("diagramExportFilename", () => {

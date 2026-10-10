@@ -482,16 +482,19 @@ function nodeToHtml(node: MarkdownNode): string {
 
     case "listItem": {
       const checkbox =
-        node.checked === true ? `<input type="checkbox" checked disabled> `
-        : node.checked === false ? `<input type="checkbox" disabled> `
-        : "";
+        node.checked === true
+          ? `<input type="checkbox" checked disabled> `
+          : node.checked === false
+            ? `<input type="checkbox" disabled> `
+            : "";
 
       return `<li>${checkbox}${children()}</li>\n`;
     }
 
     case "link": {
       // review-source: links are internal opaque anchors — render as a plain span
-      if (node.url?.startsWith("review-source:")) return `<span>${children()}</span>`;
+      if (node.url?.startsWith("review-source:"))
+        return `<span>${children()}</span>`;
       const href = safeHref(node.url ?? "");
       const title = node.title ? ` title="${htmlEscape(node.title)}"` : "";
 
@@ -521,7 +524,9 @@ function nodeToHtml(node: MarkdownNode): string {
       // Whitelist mdast alignment to the three valid text-align values — a
       // nonstandard string would otherwise land inside a style attribute.
       const align = (node.align ?? []).map((a) =>
-        a === "left" || a === "right" || a === "center" ? ` text-align:${a};` : "",
+        a === "left" || a === "right" || a === "center"
+          ? ` text-align:${a};`
+          : "",
       );
 
       const thCells = (head?.children ?? [])

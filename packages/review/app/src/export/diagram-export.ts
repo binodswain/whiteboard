@@ -88,9 +88,9 @@ export function diagramExportFilename(title: string, ext: string): string {
 
 /** Mermaid treats `#` as a comment and `;` as a statement break. */
 export function escapeMermaidText(text: string): string {
-  return text.replace(/[\r\n]+/g, " ").replace(/[#;]/g, (ch) =>
-    ch === "#" ? "#35;" : "#59;",
-  );
+  return text
+    .replace(/[\r\n]+/g, " ")
+    .replace(/[#;]/g, (ch) => (ch === "#" ? "#35;" : "#59;"));
 }
 
 export function xmlEscape(text: string): string {
@@ -135,9 +135,7 @@ function actorLabel(actors: Record<string, string>, id: string): string {
 }
 
 function sequenceArrow(style: SequenceExportInput["steps"][number]["style"]) {
-  return style === "return" ? "-->>"
-    : style === "async" ? "-)"
-    : "->>";
+  return style === "return" ? "-->>" : style === "async" ? "-)" : "->>";
 }
 
 // ---------------------------------------------------------------------------
@@ -216,13 +214,12 @@ function c4ChildrenByParent(
   return byParent;
 }
 
-function c4VisibleRelationships(
-  input: C4ExportInput,
-): C4ExportRelationship[] {
+function c4VisibleRelationships(input: C4ExportInput): C4ExportRelationship[] {
   const idSet = new Set(input.nodes.map((node) => node.id));
 
   return input.relationships.filter(
-    (relationship) => idSet.has(relationship.from) && idSet.has(relationship.to),
+    (relationship) =>
+      idSet.has(relationship.from) && idSet.has(relationship.to),
   );
 }
 
@@ -248,7 +245,9 @@ export function c4ToMermaid(input: C4ExportInput): string {
       for (const child of children) renderNode(child, `${indent}    `);
       lines.push(`${indent}end`);
     } else {
-      lines.push(`${indent}${mermaidFlowId(node.id)}[${mermaidNodeLabel(node.label)}]`);
+      lines.push(
+        `${indent}${mermaidFlowId(node.id)}[${mermaidNodeLabel(node.label)}]`,
+      );
     }
   };
 
@@ -626,7 +625,13 @@ export function c4ToExcalidraw(input: C4ExportInput): string {
   );
 
   for (const node of ordered) {
-    const box = { x: node.x, y: node.y, width: node.width, height: node.height };
+    const box = {
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+    };
+
     const rectId = `node:${node.id}`;
     const textId = `node-text:${node.id}`;
     elements.push(

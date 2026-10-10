@@ -1267,7 +1267,10 @@ function C4MapCanvas({
    * snapshot plus layout up whenever either changes, or `null` while no
    * layout has resolved yet. */
   onExportSnapshotChange?: (
-    displayed: { snapshot: SoftwareMapResolvedSnapshot; layout: C4LayoutResult } | null,
+    displayed: {
+      snapshot: SoftwareMapResolvedSnapshot;
+      layout: C4LayoutResult;
+    } | null,
   ) => void;
 }) {
   const session = useReviewSession();
@@ -1320,7 +1323,9 @@ function C4MapCanvas({
   const { theme } = useReviewDebugSettings();
 
   useEffect(() => {
-    onExportSnapshotChange?.(layout ? { snapshot: displayedSnapshot, layout } : null);
+    onExportSnapshotChange?.(
+      layout ? { snapshot: displayedSnapshot, layout } : null,
+    );
   }, [onExportSnapshotChange, displayedSnapshot, layout]);
 
   const reactFlowInteractionProps =
