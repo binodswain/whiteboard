@@ -362,6 +362,7 @@ ${action}
       // A TLS-terminating proxy forwards over http; the callback must keep
       // the scheme the browser used or GitHub rejects the redirect_uri.
       const requestUrl = new URL(context.req.url);
+
       const forwardedProto = context.req
         .header("x-forwarded-proto")
         ?.split(",")[0]
