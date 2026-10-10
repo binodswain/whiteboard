@@ -12,6 +12,7 @@ import { DiagramHeader } from "./diagram-header";
 import { diagramStyles } from "./diagram-styles";
 import { DiagramTourOverlay, useDiagramTourShell } from "./diagram-tour";
 import { drawStyles } from "./draw-styles";
+import { DiagramExportMenu } from "./export/diagram-export-menu";
 import { FlowGraph } from "./flow-graph";
 import { documentMarker } from "./markers.stylex";
 import { useReviewPanel, useReviewPanelStore } from "./review-panel";
@@ -109,15 +110,26 @@ export function FlowDiagram({
         title={node.title}
         meta={`${node.nodes.length} ${node.nodes.length === 1 ? "node" : "nodes"}`}
         action={
-          <button
-            {...withClass("diagram-tour-button", diagramStyles.control)}
-            onClick={() => (fullscreen ? close() : open())}
-            aria-label={
-              fullscreen ? "Close expanded diagram" : "Expand diagram"
-            }
-          >
-            {fullscreen ? "Close" : "Expand"}
-          </button>
+          <div {...stylex.props(diagramStyles.actions)}>
+            <DiagramExportMenu
+              source={{
+                kind: "flow",
+                title: node.title,
+                direction: node.direction,
+                nodes: node.nodes,
+                edges: node.edges,
+              }}
+            />
+            <button
+              {...withClass("diagram-tour-button", diagramStyles.control)}
+              onClick={() => (fullscreen ? close() : open())}
+              aria-label={
+                fullscreen ? "Close expanded diagram" : "Expand diagram"
+              }
+            >
+              {fullscreen ? "Close" : "Expand"}
+            </button>
+          </div>
         }
       />
       {node.description && (
