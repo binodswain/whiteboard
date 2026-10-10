@@ -21,6 +21,7 @@ import {
 import { askAnchor } from "./ask-anchor";
 import { controlStyles } from "./controls-styles";
 import { copyAgentContext } from "./copy-agent-context";
+import { useReviewDebugSettings } from "./debug-settings";
 import { useReviewSession } from "./host/review-session";
 import {
   ChatIcon,
@@ -36,6 +37,7 @@ import {
 import { useReviewDiffFiles } from "./review-diff-files-context";
 import { useOptionalReviewPanelStore } from "./review-panel";
 import { fontSize, layer } from "./scale.stylex";
+import { withClass } from "./stylex-props";
 import { themeStyles } from "./theme-styles";
 import { useToast } from "./toast";
 import { tokens } from "./tokens.stylex";
@@ -67,6 +69,7 @@ export function AgentSelectionProvider({
   children: ReactNode;
 }) {
   const session = useReviewSession();
+  const { theme } = useReviewDebugSettings();
   const panels = useOptionalReviewPanelStore();
   // Ask needs a panel to answer in and a host that runs agents (Desktop).
   const askAgents = useAskAgents(panels ? session : null);
@@ -317,9 +320,16 @@ export function AgentSelectionProvider({
                 ]) &&
               createPortal(
                 // The toolbar starts at the selection, after a lead that
-                // gives way so it never runs past the container's edge.
+                // gives way so it never runs past the container's edge. When
+                // the selection isn't inside the document it portals to the
+                // canvas root, outside .review-app, so it carries the theme.
                 <div
-                  {...stylex.props(themeStyles.vars, styles.lane)}
+                  {...withClass(
+                    `review-app--theme-${theme}`,
+                    themeStyles.vars,
+                    theme === "light" && themeStyles.light,
+                    styles.lane,
+                  )}
                   style={{ top: selection.anchor?.y }}
                 >
                   <span

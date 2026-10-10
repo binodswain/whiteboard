@@ -1,3 +1,7 @@
+import { appMarker } from "@canvas/markers.stylex";
+import { themeStyles } from "@canvas/theme-styles";
+import * as stylex from "@stylexjs/stylex";
+
 export type DiagramRasterOptions = {
   theme: "light" | "dark";
   border: "none" | "frame" | "rounded";
@@ -46,7 +50,20 @@ export async function renderDiagramPng(
   const width = Math.max(source.scrollWidth, source.clientWidth, 1);
   const height = Math.max(source.scrollHeight, source.clientHeight, 1);
   const host = document.createElement("div");
-  host.className = `review-app review-app--theme-${options.theme}`;
+  // `review-app--theme-*` is only a marker: the token overrides and the var
+  // bridge are the StyleX classes. Without them a light export resolves the
+  // canvas root's dark tokens -- and the app marker keeps the diagram's
+  // in-app borders.
+  host.className = [
+    "review-app",
+    `review-app--theme-${options.theme}`,
+    stylex.props(
+      appMarker,
+      themeStyles.vars,
+      themeStyles.app,
+      options.theme === "light" && themeStyles.light,
+    ).className,
+  ].join(" ");
   host.style.cssText = `position:fixed;left:-100000px;top:0;width:${width}px;height:${height}px;overflow:hidden;`;
   // SAFETY: source is an HTMLElement, and deep cloning preserves its element type.
   const clone = source.cloneNode(true) as HTMLElement;
