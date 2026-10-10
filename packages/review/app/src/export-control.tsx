@@ -1,6 +1,10 @@
 import { IconButton } from "@canvas/ui/button";
+import { menuStyles } from "@canvas/ui/menu";
+import { surfaceStyles } from "@canvas/ui/surface";
+import { useAnchoredPopover } from "@canvas/use-anchored-popover";
+import { useDismissOnOutside } from "@canvas/use-dismiss-on-outside";
 import * as stylex from "@stylexjs/stylex";
-import type { ReactElement } from "react";
+import { type ReactElement, useContext, useRef, useState } from "react";
 
 import { useCurrentReviewSnapshot } from "./api-canvas";
 import { controlStyles } from "./controls-styles";
@@ -9,7 +13,7 @@ import {
   exportHtml,
   exportMarkdown,
 } from "./export/document-export";
-import { useCanvasMenu } from "./host/canvas-ui";
+import { CanvasUiContext, useCanvasMenu } from "./host/canvas-ui";
 import { shellStyles } from "./shell-styles";
 import { useTooltip } from "./use-tooltip";
 
@@ -31,49 +35,67 @@ function download(content: string, mimeType: string, filename: string) {
 export function ExportControl(): ReactElement | null {
   const snapshot = useCurrentReviewSnapshot();
   const tooltip = useTooltip("Export review");
+  const ui = useContext(CanvasUiContext);
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLDivElement>(null);
+  const popover = useAnchoredPopover(open, anchor);
+
+  useDismissOnOutside(anchor, open, setOpen);
+
+  const select = (id: string) => {
+    if (!snapshot) return;
+
+    if (id === "markdown") {
+      download(
+        exportMarkdown(snapshot),
+        "text/markdown",
+        exportFilename(snapshot, "md"),
+      );
+    } else if (id === "html") {
+      download(
+        exportHtml(snapshot),
+        "text/html",
+        exportFilename(snapshot, "html"),
+      );
+    } else if (id === "print") {
+      const printWindow = window.open("", "_blank");
+
+      if (!printWindow) return;
+      printWindow.document.open();
+      printWindow.document.write(exportHtml(snapshot));
+      printWindow.document.close();
+      // about:blank popups may never fire a load event for written content;
+      // defer past document.close instead so print() reliably runs.
+      setTimeout(() => printWindow.print(), 0);
+    }
+  };
 
   const menu = useCanvasMenu({
     items: OPTIONS.map(({ id, label }) => ({ id, label })),
-    onSelect: (id) => {
-      if (!snapshot) return;
-
-      if (id === "markdown") {
-        download(
-          exportMarkdown(snapshot),
-          "text/markdown",
-          exportFilename(snapshot, "md"),
-        );
-      } else if (id === "html") {
-        download(
-          exportHtml(snapshot),
-          "text/html",
-          exportFilename(snapshot, "html"),
-        );
-      } else if (id === "print") {
-        const printWindow = window.open("", "_blank");
-
-        if (!printWindow) return;
-        printWindow.document.open();
-        printWindow.document.write(exportHtml(snapshot));
-        printWindow.document.close();
-        // about:blank popups may never fire a load event for written content;
-        // defer past document.close instead so print() reliably runs.
-        setTimeout(() => printWindow.print(), 0);
-      }
-    },
+    onSelect: select,
   });
+
+  // Only the desktop host supplies a canvas UI; elsewhere (web) render the
+  // menu in-page instead of leaving the trigger disabled.
+  const triggerProps = ui
+    ? menu.triggerProps
+    : {
+        "aria-haspopup": "menu" as const,
+        "aria-expanded": open,
+        onClick: () => setOpen((current) => !current),
+      };
 
   // Header renders for non-ApiCanvas content too (scratchpad, tests); export
   // only makes sense with a review snapshot.
   if (!snapshot) return null;
 
   return (
-    <div {...stylex.props(styles.control)}>
+    <div ref={anchor} {...stylex.props(styles.control)}>
       <IconButton
         xstyle={shellStyles.topbarItem}
         ref={tooltip}
         aria-label="Export review"
-        {...menu.triggerProps}
+        {...triggerProps}
       >
         <svg
           {...stylex.props(controlStyles.chromeIcon)}
@@ -90,6 +112,34 @@ export function ExportControl(): ReactElement | null {
           />
         </svg>
       </IconButton>
+      {!ui && open ? (
+        <div
+          ref={popover}
+          popover="manual"
+          role="menu"
+          aria-label="Export review"
+          {...stylex.props(
+            surfaceStyles.popover,
+            menuStyles.popover,
+            menuStyles.end,
+          )}
+        >
+          {OPTIONS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              role="menuitem"
+              {...stylex.props(menuStyles.item)}
+              onClick={() => {
+                setOpen(false);
+                select(id);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
