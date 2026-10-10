@@ -1,19 +1,14 @@
-import { fontSize, fontWeight, radius } from "@canvas/scale.stylex";
-import {
-  type ShjLanguage,
-  type ShjToken,
-  tokenize,
-} from "@speed-highlight/core";
+import { fontSize, radius } from "@canvas/scale.stylex";
 import * as stylex from "@stylexjs/stylex";
-import {
-  type ComponentProps,
-  type ReactElement,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
+import { type ComponentProps, type ReactElement, useContext } from "react";
 
 import { CodeFontSizeContext } from "./code-font-size";
+import {
+  countLines,
+  normalizeMarkdownCodeLanguage,
+  renderHighlightedCode,
+  useHighlightedTokens,
+} from "./code-highlighting";
 import { CopyButton } from "./copy-text";
 import { DiagramHeader } from "./diagram-header";
 import { drawStyles } from "./draw-styles";
@@ -47,35 +42,7 @@ export function RenderedCodeBlock({
 }: RenderedCodeBlockProps): ReactElement {
   const codeFontSize = useContext(CodeFontSizeContext);
   const normalizedLanguage = normalizeMarkdownCodeLanguage(language ?? "");
-
-  const [highlightedTokens, setHighlightedTokens] = useState<
-    HighlightedToken[] | null
-  >(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!normalizedLanguage) {
-      setHighlightedTokens(null);
-
-      return;
-    }
-
-    const tokens: HighlightedToken[] = [];
-    tokenize(code, normalizedLanguage, (text, token) => {
-      tokens.push({ text, token });
-    })
-      .then(() => {
-        if (!cancelled) setHighlightedTokens(tokens);
-      })
-      .catch(() => {
-        if (!cancelled) setHighlightedTokens(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [code, normalizedLanguage]);
+  const highlightedTokens = useHighlightedTokens(code, normalizedLanguage);
 
   const displayLanguage = normalizedLanguage ?? language?.trim() ?? undefined;
   const lineCount = countLines(code);
@@ -132,103 +99,11 @@ export function RenderedCodeBlock({
           {...stylex.props(styles.code)}
           data-review-copy-prose
         >
-          {normalizedLanguage && highlightedTokens
-            ? highlightedTokens.map((item, index) =>
-                item.token ? (
-                  <span
-                    {...stylex.props(syntaxByToken.get(item.token))}
-                    key={index}
-                  >
-                    {item.text}
-                  </span>
-                ) : (
-                  item.text
-                ),
-              )
-            : code}
+          {renderHighlightedCode(code, normalizedLanguage, highlightedTokens)}
         </code>
       </pre>
     </figure>
   );
-}
-
-/** A trailing newline ends the last line rather than starting an empty one. */
-function countLines(code: string): number {
-  const lines = code.split("\n");
-
-  return lines.length > 1 && lines.at(-1) === ""
-    ? lines.length - 1
-    : lines.length;
-}
-
-interface HighlightedToken {
-  text: string;
-  token: ShjToken | undefined;
-}
-
-function normalizeMarkdownCodeLanguage(language: string): ShjLanguage | null {
-  const normalized = language.trim().toLowerCase();
-
-  switch (normalized) {
-    case "asm":
-    case "bash":
-    case "bf":
-    case "c":
-    case "css":
-    case "csv":
-    case "diff":
-    case "docker":
-    case "git":
-    case "go":
-    case "html":
-    case "http":
-    case "ini":
-    case "java":
-    case "js":
-    case "jsdoc":
-    case "json":
-    case "leanpub-md":
-    case "log":
-    case "lua":
-    case "make":
-    case "md":
-    case "pl":
-    case "plain":
-    case "py":
-    case "regex":
-    case "rs":
-    case "sql":
-    case "todo":
-    case "toml":
-    case "ts":
-    case "uri":
-    case "xml":
-    case "yaml":
-      return normalized;
-    case "javascript":
-    case "jsx":
-      return "js";
-    case "typescript":
-    case "tsx":
-      return "ts";
-    case "python":
-      return "py";
-    case "rust":
-      return "rs";
-    case "markdown":
-    case "mdx":
-      return "md";
-    case "shell":
-    case "sh":
-    case "zsh":
-      return "bash";
-    case "yml":
-      return "yaml";
-    case "text":
-      return "plain";
-    default:
-      return null;
-  }
 }
 
 const inDocument = () => stylex.when.ancestor(":is(*)", documentMarker);
@@ -322,33 +197,3 @@ const styles = stylex.create({
     userSelect: "none",
   },
 });
-
-// Syntax tokens (@speed-highlight/core). The Whiteboard palette: ink at three
-// strengths, the marker for keywords, two more blues for types and functions,
-// one warm pencil for strings and one plum for numbers. Comments are quiet and
-// italic. Diff green and red are reserved for the diff language. The editor
-// themes carry the same values.
-const syntaxStyles = stylex.create({
-  kwd: { color: tokens.accent },
-  type: { color: tokens.syntaxType },
-  class: { color: tokens.syntaxType, fontWeight: fontWeight.medium },
-  func: { color: tokens.syntaxFunction },
-  section: { color: tokens.syntaxFunction, fontWeight: fontWeight.semibold },
-  var: { color: tokens.ink },
-  str: { color: tokens.syntaxString },
-  num: { color: tokens.syntaxNumber },
-  bool: { color: tokens.syntaxNumber, fontWeight: fontWeight.medium },
-  cmnt: { color: tokens.syntaxComment, fontStyle: "italic" },
-  oper: { color: tokens.syntaxOperator },
-  insert: { color: tokens.syntaxInserted },
-  deleted: { color: tokens.syntaxDeleted },
-  err: {
-    color: tokens.syntaxDeleted,
-    textDecorationLine: "underline",
-    textDecorationStyle: "wavy",
-  },
-});
-
-const syntaxByToken = new Map<string, stylex.StyleXStyles>(
-  Object.entries(syntaxStyles),
-);
