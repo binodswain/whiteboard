@@ -74,11 +74,11 @@ const READY_NOTIFICATION_LABELS: Record<ReviewReadyNotificationChoice, string> =
 export function SettingsPage({
   settings,
   web = false,
-  onGoHome,
+  onBack,
 }: {
   settings: ReviewCanvasSettingsContent;
   web?: boolean;
-  onGoHome?(): void;
+  onBack?(): void;
 }) {
   const [telemetryEnabled, setTelemetryEnabled] = useState(
     settings.telemetryEnabled,
@@ -146,13 +146,9 @@ export function SettingsPage({
         <div {...stylex.props(homeStyles.content, styles.page)}>
           <div {...stylex.props(homeStyles.header)}>
             <h1 {...stylex.props(homeStyles.heading)}>Settings</h1>
-            {web && onGoHome ? (
-              <Button
-                variant="ghost"
-                onClick={onGoHome}
-                aria-label="Return to Home"
-              >
-                Home
+            {web && onBack ? (
+              <Button variant="ghost" onClick={onBack} aria-label="Go back">
+                Back
               </Button>
             ) : null}
           </div>

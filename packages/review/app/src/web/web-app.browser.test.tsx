@@ -350,7 +350,7 @@ describe("the web canvas entry", () => {
 
     await act(async () => {
       container!
-        .querySelector<HTMLButtonElement>('button[aria-label="Open Settings"]')!
+        .querySelector<HTMLElement>('[aria-label="Open Settings"]')!
         .click();
     });
     expect(location.pathname).toBe("/settings");
@@ -389,9 +389,7 @@ describe("the web canvas entry", () => {
 
     await act(async () => {
       container!
-        .querySelector<HTMLButtonElement>(
-          'button[aria-label="Return to Home"]',
-        )!
+        .querySelector<HTMLButtonElement>('button[aria-label="Go back"]')!
         .click();
     });
     expect(location.pathname).toBe("/");
@@ -436,6 +434,27 @@ describe("the web canvas entry", () => {
     expect(container!.textContent).toContain("Queue order");
     expect(await settled(() => activeCatalogWatches() === 0)).toBe(true);
 
+    // The brand bar's wordmark is the way out of a session: back to Home.
+    await act(async () => {
+      container!
+        .querySelector<HTMLAnchorElement>('a[aria-label="Whiteboard home"]')!
+        .click();
+    });
+    expect(location.pathname).toBe("/");
+    expect(
+      await settled(() => container!.textContent?.includes("Fixture review")),
+    ).toBe(true);
+
+    history.back();
+    expect(await settled(() => location.pathname === "/r/web-review-1")).toBe(
+      true,
+    );
+    expect(
+      await settled(
+        () => container!.querySelectorAll(".react-flow__edge").length > 0,
+      ),
+    ).toBe(true);
+
     history.back();
     expect(await settled(() => location.pathname === "/")).toBe(true);
     expect(
@@ -460,6 +479,57 @@ describe("the web canvas entry", () => {
     expect(
       container!.querySelector<HTMLElement>(".review-app")?.className,
     ).toContain("review-app--theme-dark");
+  });
+
+  it("returns from Settings to the session that opened it", async () => {
+    const snapshot = fixtureReview("web-review-1", "Fixture review");
+
+    const state: FixtureState = {
+      catalog: [summaryOf(snapshot)],
+      repositories: [{ id: "repo", name: "fixture" }],
+      snapshots: new Map([[snapshot.reviewId, snapshot]]),
+    };
+
+    const { request } = webFixtureRequest(state);
+
+    history.replaceState(null, "", "/r/web-review-1");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test",
+        serverUrl: "http://fixture.local",
+        request,
+      });
+    });
+
+    expect(
+      await settled(
+        () => container!.querySelectorAll(".react-flow__edge").length > 0,
+      ),
+    ).toBe(true);
+
+    await act(async () => {
+      container!
+        .querySelector<HTMLAnchorElement>('a[aria-label="Open Settings"]')!
+        .click();
+    });
+    expect(location.pathname).toBe("/settings");
+    expect(
+      await settled(() =>
+        container!.textContent?.includes(
+          "Settings apply to Whiteboard on this machine.",
+        ),
+      ),
+    ).toBe(true);
+
+    await act(async () => {
+      container!
+        .querySelector<HTMLButtonElement>('button[aria-label="Go back"]')!
+        .click();
+    });
+    expect(location.pathname).toBe("/r/web-review-1");
   });
 
   it("announces initial loading and renders the empty home when ready", async () => {
