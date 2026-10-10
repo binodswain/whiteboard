@@ -1,0 +1,19 @@
+#!/bin/sh
+# Lint and format-check staged files with the same tools CI runs.
+# Skip once with `git commit --no-verify`.
+set -e
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- \
+  '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.json' '*.css' |
+  grep -vE '^(apps/review-desktop/code-oss/|diffr/|packages/review/app/icons/dev-fast\.icon/)' || true)
+
+[ -z "$files" ] && exit 0
+
+lintable=$(printf '%s\n' "$files" | grep -E '\.(ts|tsx|js|jsx|mjs)$' || true)
+
+if [ -n "$lintable" ]; then
+  printf '%s\n' "$lintable" | xargs pnpm exec oxlint --disable-nested-config
+fi
+
+printf '%s\n' "$files" | xargs pnpm exec oxfmt --check ||
+  { echo "Run 'pnpm format' to fix formatting." >&2; exit 1; }
