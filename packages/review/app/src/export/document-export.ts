@@ -2,6 +2,8 @@ import { type MarkdownNode, parseMarkdown } from "@review/markdown.js";
 import type { Block } from "@review/review-api/blocks/index.js";
 import type { Snapshot } from "@review/review-api/store.js";
 
+import { flowToMermaid, sequenceToMermaid } from "./diagram-export.js";
+
 // ---------------------------------------------------------------------------
 // Filename
 // ---------------------------------------------------------------------------
@@ -100,54 +102,23 @@ function appendBlockMd(block: Block, depth: number, out: string[]): void {
       out.push(`> 📎 *Code reference: \`${block.source}\`*`, "");
       break;
 
-    case "sequence": {
-      out.push(`#### ${block.title}`, "", "```mermaid", "sequenceDiagram");
-
-      for (const [key, label] of Object.entries(block.actors))
-        out.push(`    participant ${key} as ${label}`);
-
-      for (const step of block.steps) {
-        const arrow =
-          step.style === "return"
-            ? "-->>"
-            : step.style === "async"
-              ? "->>+"
-              : "->>";
-
-        out.push(`    ${step.from}${arrow}${step.to}: ${step.label}`);
-      }
-
-      out.push("```", "");
+    case "sequence":
+      out.push(
+        `#### ${block.title}`,
+        "",
+        "```mermaid",
+        sequenceToMermaid(block),
+        "```",
+        "",
+      );
       break;
-    }
 
-    case "flow_diagram": {
-      const dir = block.direction === "down" ? "TD" : "LR";
+    case "flow_diagram":
       out.push(`#### ${block.title}`, "");
 
       if (block.description) out.push(block.description, "");
-      out.push("```mermaid", `flowchart ${dir}`);
-
-      for (const node of block.nodes) {
-        const nodeMarkup =
-          node.kind === "decision"
-            ? `{${node.label}}`
-            : node.kind === "terminal"
-              ? `([${node.label}])`
-              : `[${node.label}]`;
-
-        out.push(`    ${node.key}${nodeMarkup}`);
-      }
-
-      for (const edge of block.edges) {
-        const edgeLabel = edge.label ? `|${edge.label}|` : "";
-        const arrow = edge.style === "dashed" ? "-.->" : "-->";
-        out.push(`    ${edge.from}${arrow}${edgeLabel}${edge.to}`);
-      }
-
-      out.push("```", "");
+      out.push("```mermaid", flowToMermaid(block), "```", "");
       break;
-    }
 
     case "call_stack_diff":
       out.push(`#### ${block.title}`, "", "**Base call stack:**", "");

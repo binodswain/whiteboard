@@ -22,6 +22,9 @@ function webFixtureRequest(info: SetupInfo) {
 
     if (pathname === "/setup-info") return Promise.resolve(Response.json(info));
 
+    if (pathname === "/reviews-api/capabilities")
+      return Promise.resolve(Response.json({ localBrowserAuth: true }));
+
     if (pathname === "/reviews-api") return Promise.resolve(Response.json([]));
 
     if (pathname === "/reviews-api/repositories")

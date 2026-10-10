@@ -355,6 +355,9 @@ describe("the web canvas entry", () => {
     });
     expect(location.pathname).toBe("/settings");
     expect(container!.textContent).toContain("Structural Diffs");
+    expect(container!.textContent).toContain(
+      "Settings apply to Whiteboard on this machine.",
+    );
     expect(
       container!.querySelector<HTMLInputElement>(
         'input[aria-label="Scratchpad"]',

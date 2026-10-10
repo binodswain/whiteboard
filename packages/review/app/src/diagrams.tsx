@@ -34,6 +34,7 @@ import { hasTextSelectionWithin } from "./diagram-text-selection";
 import { DiagramTourOverlay, useDiagramTourShell } from "./diagram-tour";
 import { useMotionPhase } from "./draw-queue-provider";
 import { drawStyles } from "./draw-styles";
+import { DiagramExportMenu } from "./export/diagram-export-menu";
 import { useReviewSession } from "./host/review-session";
 import { appMarker, documentMarker } from "./markers.stylex";
 import { useReviewPanel, useReviewPanelStore } from "./review-panel";
@@ -575,20 +576,39 @@ function SequenceDiagramFigure({
           meta={`${stopCount} ${stopCount === 1 ? "stop" : "stops"}`}
           xstyle={styles.header}
           action={
-            // The tour panel's header owns the close control fullscreen.
-            onCloseTour ? null : (
-              <button
-                type="button"
-                {...withClass("diagram-tour-button", diagramStyles.control)}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  openTour();
+            <div {...stylex.props(diagramStyles.actions)}>
+              <DiagramExportMenu
+                source={{
+                  kind: "sequence",
+                  title: sequence.title,
+                  actors: Object.fromEntries(
+                    sequence.participants.map((participant) => [
+                      participant.id,
+                      participant.label,
+                    ]),
+                  ),
+                  steps: sequence.messages.map((message) => ({
+                    from: message.from.id,
+                    to: message.to.id,
+                    label: message.label,
+                    style: message.style,
+                  })),
                 }}
-              >
-                Tour
-              </button>
-            )
+              />
+              {onCloseTour ? null : (
+                <button
+                  type="button"
+                  {...withClass("diagram-tour-button", diagramStyles.control)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openTour();
+                  }}
+                >
+                  Tour
+                </button>
+              )}
+            </div>
           }
         />
         <div
