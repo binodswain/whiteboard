@@ -1,5 +1,6 @@
 import { copyText } from "@canvas/copy-text";
 import { diagramStyles } from "@canvas/diagram-styles";
+import { fontSize } from "@canvas/scale.stylex";
 import { withClass } from "@canvas/stylex-props";
 import { menuStyles } from "@canvas/ui/menu";
 import { surfaceStyles } from "@canvas/ui/surface";
@@ -27,8 +28,8 @@ import {
   sequenceToXmind,
 } from "./diagram-export";
 import {
-  renderDiagramPng,
   type DiagramRasterOptions,
+  renderDiagramPng,
 } from "./diagram-raster-export";
 
 export type DiagramExportSource =
@@ -157,8 +158,11 @@ async function exportPng(
   options: DiagramRasterOptions,
 ) {
   const body = figure.querySelector<HTMLElement>("[data-diagram-export-body]");
+
   if (!body) throw new Error("Diagram image area is unavailable");
+
   const blob = await renderDiagramPng(body, options);
+
   if (
     action === "copy" &&
     navigator.clipboard?.write &&
@@ -168,11 +172,13 @@ async function exportPng(
       await navigator.clipboard.write([
         new ClipboardItem({ "image/png": blob }),
       ]);
+
       return;
     } catch {
       // Clipboard image support varies by browser and permission state.
     }
   }
+
   triggerDownload(blob, diagramExportFilename(source.title, "png"));
 }
 
@@ -236,9 +242,11 @@ export function DiagramExportMenu({
                 Theme
                 <select
                   value={theme}
-                  onChange={(event) =>
-                    setTheme(event.target.value as typeof theme)
-                  }
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+
+                    if (value === "light" || value === "dark") setTheme(value);
+                  }}
                 >
                   <option value="light">Light</option>
                   <option value="dark">Dark</option>
@@ -248,9 +256,16 @@ export function DiagramExportMenu({
                 Border
                 <select
                   value={border}
-                  onChange={(event) =>
-                    setBorder(event.target.value as typeof border)
-                  }
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+
+                    if (
+                      value === "none" ||
+                      value === "frame" ||
+                      value === "rounded"
+                    )
+                      setBorder(value);
+                  }}
                 >
                   <option value="none">None</option>
                   <option value="frame">Padded frame</option>
@@ -264,7 +279,9 @@ export function DiagramExportMenu({
                   event.preventDefault();
                   event.stopPropagation();
                   const figure = container.current?.closest("figure");
+
                   if (!figure) return;
+
                   setOpen(false);
                   setRasterAction(null);
                   void exportPng(source, figure, rasterAction, {
@@ -337,6 +354,6 @@ const styles = stylex.create({
     gap: "8px",
     padding: "8px",
     color: "var(--ink)",
-    fontSize: "12px",
+    fontSize: fontSize.small,
   },
 });
