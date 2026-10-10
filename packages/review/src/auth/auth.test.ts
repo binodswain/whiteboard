@@ -340,6 +340,20 @@ describe("createGitHubAppCredentials", () => {
 });
 
 describe("oauth driver", () => {
+  it("keeps the forwarded https scheme in the GitHub callback", async () => {
+    const driver = oauthDriver(stubFetch({}).fetchImpl);
+
+    const started = await driver.routes.request(
+      "http://whiteboard.test/github",
+      { headers: { "x-forwarded-proto": "https" } },
+    );
+
+    const authorize = new URL(started.headers.get("location")!);
+    expect(authorize.searchParams.get("redirect_uri")).toBe(
+      "https://whiteboard.test/auth/github/callback",
+    );
+  });
+
   it("answers session state, signs a viewer in through GitHub and back out", async () => {
     const { fetchImpl } = stubFetch({
       "/login/oauth/access_token": { body: { access_token: "gho_viewer" } },

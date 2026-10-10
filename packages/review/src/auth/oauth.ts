@@ -359,7 +359,18 @@ ${action}
 
   if (oauth) {
     routes.get("/github", (context) => {
-      const origin = new URL(context.req.url).origin;
+      // A TLS-terminating proxy forwards over http; the callback must keep
+      // the scheme the browser used or GitHub rejects the redirect_uri.
+      const requestUrl = new URL(context.req.url);
+      const forwardedProto = context.req
+        .header("x-forwarded-proto")
+        ?.split(",")[0]
+        ?.trim();
+
+      if (forwardedProto === "https" || forwardedProto === "http")
+        requestUrl.protocol = `${forwardedProto}:`;
+
+      const origin = requestUrl.origin;
       const nonce = randomBytes(16).toString("base64url");
 
       const state = signState({
