@@ -349,7 +349,13 @@ describe("ReviewHome", () => {
           .click(),
       );
 
-      await act(async () => host.select(value));
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            `[role="menu"] button[data-value="${value}"]`,
+          )!
+          .click(),
+      );
     };
 
     expect(titles()).toEqual(["Alpha", "Zulu"]);
@@ -376,6 +382,77 @@ describe("ReviewHome", () => {
         .click(),
     );
     expect(onOpen).toHaveBeenCalledWith(reviews[0]);
+  });
+
+  it("filters and sorts sessions with no canvas host, as in the web app", async () => {
+    const reviews = [
+      summary({
+        reviewId: uuid(1),
+        title: "Zulu",
+        repositoryName: "alpha",
+        firstCreatedAt: "2026-01-01T00:00:00Z",
+        createdAt: "2026-03-01T00:00:00Z",
+        origin: { pullRequestNumber: 10 },
+      }),
+      summary({
+        reviewId: uuid(2),
+        title: "Alpha",
+        repositoryName: "beta",
+        firstCreatedAt: "2026-02-01T00:00:00Z",
+        createdAt: "2026-02-01T00:00:00Z",
+        origin: { pullRequestNumber: 20 },
+      }),
+    ];
+
+    const onOpen = vi.fn<(review: ReviewApiSummary) => void>();
+
+    // No CanvasUiContext.Provider: the web app never supplies one.
+    await act(async () =>
+      root.render(<ReviewHome reviews={reviews} onOpen={onOpen} />),
+    );
+
+    const titles = () =>
+      [...container.querySelectorAll("tbody button > span:first-child")].map(
+        (element) => element.textContent,
+      );
+
+    const open = (label: string) =>
+      act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+          .click(),
+      );
+
+    const pick = (value: string) =>
+      act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            `[role="menu"] button[data-value="${value}"]`,
+          )!
+          .click(),
+      );
+
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Filter by repository"]',
+      )?.disabled,
+    ).toBe(false);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Sort reviews"]',
+      )?.disabled,
+    ).toBe(false);
+
+    expect(titles()).toEqual(["Alpha", "Zulu"]);
+    await open("Sort reviews");
+    await pick("title");
+    expect(titles()).toEqual(["Alpha", "Zulu"]);
+    await open("Sort reviews");
+    await pick("oldest");
+    expect(titles()).toEqual(["Zulu", "Alpha"]);
+    await open("Filter by repository");
+    await pick("alpha");
+    expect(titles()).toEqual(["Zulu"]);
   });
 
   it("puts the scratchpad first, above the reviews and out of their workspaces", async () => {

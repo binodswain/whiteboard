@@ -40,11 +40,15 @@ import {
 
 import { homeStyles } from "./home-styles";
 import { CanvasUiContext, useCanvasMenu } from "./host/canvas-ui";
-import { OptionMenu } from "./option-menu";
+import { CheckIcon } from "./icons";
 import { ArchiveIcon } from "./review-corner-action";
 import { ReviewFilterBar } from "./review-filter-bar";
 import { withClass } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
+import { menuStyles } from "./ui/menu";
+import { surfaceStyles } from "./ui/surface";
+import { useAnchoredPopover } from "./use-anchored-popover";
+import { useDismissOnOutside } from "./use-dismiss-on-outside";
 import { WelcomePage } from "./welcome-page";
 
 type TagChange = { add: string[]; remove: string[] };
@@ -1079,37 +1083,84 @@ function TableMenu<T extends string>({
   options: { value: T; label: string }[];
   onChange(value: T): void;
 }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLDivElement>(null);
+  const menu = useAnchoredPopover(open, anchor);
+
+  useDismissOnOutside(anchor, open, setOpen);
+
   return (
-    <OptionMenu
-      ariaLabel={ariaLabel}
-      value={value}
-      options={options}
-      onChange={onChange}
-      triggerStyle={[
-        buttonStyles.base,
-        buttonStyles.secondary,
-        buttonStyles.large,
-        styles.menuTrigger,
-      ]}
-    >
-      <svg
-        {...stylex.props(styles.menuIcon)}
-        viewBox="0 0 20 20"
-        aria-hidden="true"
+    <div ref={anchor} {...stylex.props(styles.menuAnchor)}>
+      <button
+        type="button"
+        {...stylex.props(
+          buttonStyles.base,
+          buttonStyles.secondary,
+          buttonStyles.large,
+          styles.menuTrigger,
+        )}
+        aria-label={ariaLabel}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
       >
-        <path
-          d={
-            label === "Filter"
-              ? "M3 5h14M6 10h8M8.5 15h3"
-              : "M6 4v12m0 0-3-3m3 3 3-3M14 16V4m0 0-3 3m3-3 3 3"
-          }
-        />
-      </svg>
-      <span>{label}</span>
-      <strong {...stylex.props(styles.menuValue)}>
-        {options.find((option) => option.value === value)?.label ?? value}
-      </strong>
-    </OptionMenu>
+        <svg
+          {...stylex.props(styles.menuIcon)}
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+        >
+          <path
+            d={
+              label === "Filter"
+                ? "M3 5h14M6 10h8M8.5 15h3"
+                : "M6 4v12m0 0-3-3m3 3 3-3M14 16V4m0 0-3 3m3-3 3 3"
+            }
+          />
+        </svg>
+        <span>{label}</span>
+        <strong {...stylex.props(styles.menuValue)}>
+          {options.find((option) => option.value === value)?.label ?? value}
+        </strong>
+      </button>
+      {open ? (
+        <div
+          ref={menu}
+          popover="manual"
+          role="menu"
+          aria-label={ariaLabel}
+          {...stylex.props(
+            surfaceStyles.popover,
+            menuStyles.popover,
+            styles.menuList,
+          )}
+        >
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={option.value === value}
+              data-value={option.value}
+              {...stylex.props(
+                menuStyles.item,
+                option.value === value && menuStyles.itemCurrent,
+              )}
+              onClick={() => {
+                setOpen(false);
+                onChange(option.value);
+              }}
+            >
+              <span {...stylex.props(styles.menuOptionLabel)}>
+                {option.label}
+              </span>
+              {option.value === value ? (
+                <CheckIcon xstyle={menuStyles.check} />
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1871,6 +1922,16 @@ const styles = stylex.create({
     strokeWidth: "1.8",
     strokeLinecap: "round",
     strokeLinejoin: "round",
+  },
+  menuAnchor: {
+    position: "relative",
+  },
+  menuList: {
+    width: "200px",
+  },
+  menuOptionLabel: {
+    flex: "1 1 0",
+    minWidth: 0,
   },
   tableScroll: {
     overflowX: "auto",
