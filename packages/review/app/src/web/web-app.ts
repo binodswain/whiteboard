@@ -64,7 +64,10 @@ function captureFragmentToken(): string {
   return value;
 }
 
-function renderTokenPrompt(container: HTMLElement): void {
+function renderTokenPrompt(
+  container: HTMLElement,
+  signIn?: { href: string; label: string },
+): void {
   const page = document.createElement("main");
   const heading = document.createElement("h1");
   const text = document.createElement("p");
@@ -73,10 +76,11 @@ function renderTokenPrompt(container: HTMLElement): void {
   const button = document.createElement("button");
 
   heading.textContent = "Whiteboard Reviews";
-  text.textContent =
-    "This canvas needs the token from your review link. Paste it below to continue.";
+  text.textContent = signIn
+    ? "Sign in to see this team's reviews. A personal API token from Settings also works."
+    : "This canvas needs the token from your review link. Paste it below to continue.";
   input.type = "password";
-  input.placeholder = "Review token";
+  input.placeholder = signIn ? "Personal API token" : "Review token";
   input.autocomplete = "off";
   input.required = true;
   button.type = "submit";
@@ -105,7 +109,23 @@ function renderTokenPrompt(container: HTMLElement): void {
   });
 
   form.append(input, button);
-  page.append(heading, text, form);
+
+  if (signIn) {
+    const link = document.createElement("a");
+
+    link.href = `${signIn.href}?next=${encodeURIComponent(
+      `${location.pathname}${location.search}`,
+    )}`;
+    link.textContent = signIn.label;
+    link.style.cssText =
+      "display:inline-block;padding:8px 16px;border-radius:6px;" +
+      "background:#eef0f4;color:#0c0f15;font:inherit;font-weight:600;" +
+      "text-decoration:none;text-align:center;";
+    page.append(heading, text, link, form);
+  } else {
+    page.append(heading, text, form);
+  }
+
   container.append(page);
 }
 
@@ -125,14 +145,37 @@ export function startWebCanvas(
 
   const serverUrl = options.serverUrl ?? location.origin;
 
-  const request = (url: string, init?: RequestInit) => {
+  // True once a hosted deployment answered /auth/session: the canvas enters
+  // through GitHub sign-in instead of a pasted token.
+  let remoteAuth = false;
+
+  const request = async (url: string, init?: RequestInit) => {
+    // Tokenless requests still carry the hosted deployment's session cookie;
+    // a local server never sets one and treats them the same as before.
     const requestInit = token
       ? init
-      : { ...init, credentials: "omit" as const };
+      : { ...init, credentials: "same-origin" as const };
 
-    return options.request
-      ? options.request(url, requestInit)
-      : reviewFetchUrl({ serverUrl, token }, url, requestInit);
+    const response = options.request
+      ? await options.request(url, requestInit)
+      : await reviewFetchUrl({ serverUrl, token }, url, requestInit);
+
+    // A signed-in session that lapses answers API calls with 401; send the
+    // tab back through the deployment's sign-in instead of leaving errors.
+    if (
+      remoteAuth &&
+      !token &&
+      response.status === 401 &&
+      url.includes("/reviews-api")
+    ) {
+      location.assign(
+        `/auth/sign-in?next=${encodeURIComponent(
+          `${location.pathname}${location.search}`,
+        )}`,
+      );
+    }
+
+    return response;
   };
 
   // The setup landing page is reachable before any token exists: it is what
@@ -149,18 +192,61 @@ export function startWebCanvas(
     if (!disposed) renderTokenPrompt(container);
   };
 
-  void request(`${serverUrl}/reviews-api/capabilities`)
-    .then(async (response) => {
-      if (!response.ok || (await response.json()).localBrowserAuth !== true) {
-        showPrompt();
+  const showSignIn = (signIn?: string) => {
+    if (disposed) return;
 
-        return;
-      }
+    // GitHub OAuth links straight at the provider; a proxy-only deployment
+    // gets its instructions from the server's own sign-in page.
+    renderTokenPrompt(
+      container,
+      signIn
+        ? { href: signIn, label: "Sign in with GitHub" }
+        : { href: "/auth/sign-in", label: "Sign in" },
+    );
+  };
 
-      if (!disposed)
-        mounted = mountWebCanvas(container, serverUrl, token, request);
-    })
-    .catch(showPrompt);
+  const probe = async () => {
+    // Hosted deployments answer /auth/session for any caller; a local server
+    // returns 401 and the token prompt below handles it as before.
+    const session = await request(`${serverUrl}/auth/session`)
+      .then(async (response) => {
+        if (!response.ok) return undefined;
+
+        const body: unknown = await response.json().catch(() => ({}));
+
+        // SAFETY: a 2xx session answer carries these fields when present;
+        // missing keys read as unauthenticated below.
+        return body as { authenticated?: boolean; signIn?: string };
+      })
+      .catch(() => undefined);
+
+    if (session) remoteAuth = true;
+
+    if (session?.authenticated === true) {
+      mounted = mountWebCanvas(container, serverUrl, token, request);
+
+      return;
+    }
+
+    if (session?.authenticated === false) {
+      showSignIn(session.signIn);
+
+      return;
+    }
+
+    const response = await request(`${serverUrl}/reviews-api/capabilities`);
+
+    if (!response.ok || (await response.json()).localBrowserAuth !== true) {
+      showPrompt();
+
+      return;
+    }
+
+    if (!disposed)
+      mounted = mountWebCanvas(container, serverUrl, token, request);
+  };
+
+  void probe().catch(() => showPrompt());
 
   return {
     dispose() {
@@ -274,6 +360,13 @@ function mountWebCanvas(
     catalogError,
     refreshCatalog() {
       void showHome();
+    },
+    editTags: async (reviewId, change) => {
+      const result = await client.post<{ tags?: string[] }>("/commands", {
+        operation: { type: "tags", reviewId, ...change },
+      });
+
+      return result.tags ?? [];
     },
     createSession: async ({ title, repositoryId }) => {
       const result = await client.post<{ review: ReviewApiSummary }>(

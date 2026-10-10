@@ -12,6 +12,7 @@ import type {
 import * as stylex from "@stylexjs/stylex";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { AccessTokensSection } from "./access-tokens-section";
 import { ConnectCard, LegacySkillsRow } from "./connect-card";
 import { DiffrConfigSection } from "./diffr-config-section";
 import { homeStyles } from "./home-styles";
@@ -197,6 +198,12 @@ export function SettingsPage({
                   </Button>
                 )}
               </Row>
+            </Section>
+          ) : null}
+
+          {settings.accessTokens ? (
+            <Section label="API tokens">
+              <AccessTokensSection tokens={settings.accessTokens} />
             </Section>
           ) : null}
 

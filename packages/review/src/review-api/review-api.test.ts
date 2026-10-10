@@ -69,7 +69,7 @@ const edit = <Content>(reviewId: string, value: Content) =>
 const writeLens = <Edit>(reviewId: string, value: Edit) =>
   store.execute(request({ type: "lens_edit", reviewId, edit: value }));
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(path.join(tmpdir(), "review-lean-"));
   database = path.join(directory, "reviews.db");
   vi.stubEnv("DEV_REVIEW_HOME", directory);
@@ -80,7 +80,7 @@ beforeEach(() => {
       async () => {},
     ),
   };
-  store = new ReviewStore(database, providers);
+  store = await ReviewStore.open(database, providers);
 });
 
 afterEach(async () => {
@@ -112,8 +112,153 @@ it("guides missing-review reads and opens to an agent while keeping missing vers
   expect(await response.json()).toEqual({ error: "Review version not found." });
 });
 
+it("rejects non-hex catalog commit filters before querying", async () => {
+  const api = createReviewApi(store);
+  const response = await api.request("/?commit=%25_%25");
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({
+    issues: expect.arrayContaining([
+      expect.objectContaining({ path: ["commit"] }),
+    ]),
+  });
+});
+
+it("filters reviews by repo, commit, author and tags, and persists tags on reopen", async () => {
+  const repoOne = await store.registerRepository(
+    path.join(directory, "repo-one"),
+  );
+
+  const repoTwo = await store.registerRepository(
+    path.join(directory, "repo-two"),
+  );
+
+  providers.headBranch = async (reviewPins) =>
+    reviewPins.repositoryId === repoOne.id ? "main" : "feature/next";
+
+  const first = await store.execute(
+    request({
+      type: "create",
+      title: "First",
+      createdBy: "alice",
+      target: {
+        kind: "commits",
+        repositoryId: repoOne.id,
+        base: "base-one",
+        head: "head-one",
+      },
+    }),
+  );
+
+  const second = await store.execute(
+    request({
+      type: "create",
+      title: "Second",
+      createdBy: "bob",
+      target: {
+        kind: "commits",
+        repositoryId: repoTwo.id,
+        base: "base-two",
+        head: "head-two",
+      },
+    }),
+  );
+
+  await store.execute(
+    request({
+      type: "tags",
+      reviewId: first.reviewId,
+      add: ["ship", "needs-review"],
+      remove: [],
+    }),
+  );
+  await store.execute(
+    request({
+      type: "tags",
+      reviewId: first.reviewId,
+      add: [],
+      remove: ["needs-review"],
+    }),
+  );
+
+  expect(
+    (await store.list("structural", { repo: repoOne.name })).map(
+      (review) => review.reviewId,
+    ),
+  ).toContain(first.reviewId);
+  expect(
+    (await store.list("structural", { repo: repoOne.name })).map(
+      (review) => review.reviewId,
+    ),
+  ).not.toContain(second.reviewId);
+  expect(
+    (await store.list("structural", { commit: "head-on" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { branch: "main" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { branch: "feature/next" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([second.reviewId]);
+  expect(
+    (await store.list("structural", { author: "alice" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { tag: "ship" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+  expect(
+    (await store.list("structural", { tag: "needs-review" })).map(
+      (review) => review.reviewId,
+    ),
+  ).toEqual([]);
+  await store.execute(
+    request({
+      type: "set_target",
+      reviewId: first.reviewId,
+      target: {
+        kind: "commits",
+        repositoryId: repoOne.id,
+        base: "base-one",
+        head: "head-updated",
+      },
+    }),
+  );
+  expect((await store.summary(first.reviewId))?.createdBy).toBe("alice");
+
+  const response = await createReviewApi(store).request(
+    `/?repo=${repoOne.name}&tag=ship`,
+  );
+
+  expect(response.status).toBe(200);
+  expect(
+    (await response.json()).map(
+      (review: { reviewId: string }) => review.reviewId,
+    ),
+  ).toEqual([first.reviewId]);
+
+  await store.close();
+  store = await ReviewStore.open(database, providers);
+
+  expect((await store.summary(first.reviewId))?.tags).toEqual(["ship"]);
+  expect((await store.summary(first.reviewId))?.createdBy).toBe("alice");
+
+  await store.execute(request({ type: "delete", reviewId: first.reviewId }));
+});
+
 it("lists registered repositories without paths and rejects unregistered create targets", async () => {
-  const { id, name } = store.registerRepository(path.join(directory, "source"));
+  const { id, name } = await store.registerRepository(
+    path.join(directory, "source"),
+  );
 
   providers.resolveTarget = async (target) => ({
     target,
@@ -162,7 +307,7 @@ it("lists registered repositories without paths and rejects unregistered create 
 it("only recommends CODE_ROOT for missing repository paths in Docker", async () => {
   const api = createReviewApi(
     store,
-    new LocalReviewData(store, { manageWorkspaces: false }),
+    await LocalReviewData.open(store, { manageWorkspaces: false }),
   );
 
   const request = () =>
@@ -293,7 +438,7 @@ describe("snapshot authoring", () => {
       }),
     );
 
-    expect(store.list()[0]?.origin).toEqual({
+    expect((await store.list())[0]?.origin).toEqual({
       pullRequestNumber: 310,
       pullRequestUrl: url,
     });
@@ -301,7 +446,7 @@ describe("snapshot authoring", () => {
       type: "insert",
       content: { type: "markdown", markdown: "Keep this analysis" },
     });
-    const authored = store.read(reviewId);
+    const authored = await store.read(reviewId);
 
     const rebinding = request({
       type: "set_target",
@@ -311,11 +456,11 @@ describe("snapshot authoring", () => {
     });
 
     await store.execute(rebinding);
-    expect(store.read(reviewId).document).toEqual(authored.document);
-    expect(store.read(reviewId).pins).toEqual(pins);
-    expect(store.read(reviewId).origin?.pullRequestNumber).toBe(311);
+    expect((await store.read(reviewId)).document).toEqual(authored.document);
+    expect((await store.read(reviewId)).pins).toEqual(pins);
+    expect((await store.read(reviewId)).origin?.pullRequestNumber).toBe(311);
     expect(
-      store.read(reviewId, authored.version).origin?.pullRequestNumber,
+      (await store.read(reviewId, authored.version)).origin?.pullRequestNumber,
     ).toBe(310);
     await store.execute(
       request({
@@ -324,7 +469,7 @@ describe("snapshot authoring", () => {
         target: { kind: "commits", ...pins, head: "new-head" },
       }),
     );
-    expect(store.read(reviewId).origin?.pullRequestNumber).toBe(311);
+    expect((await store.read(reviewId)).origin?.pullRequestNumber).toBe(311);
     await store.execute(
       request({
         type: "set_target",
@@ -332,12 +477,12 @@ describe("snapshot authoring", () => {
         target: { kind: "commits", ...pins, repositoryId: "other-repository" },
       }),
     );
-    expect(store.read(reviewId).origin?.pullRequestUrl).toBeUndefined();
+    expect((await store.read(reviewId)).origin?.pullRequestUrl).toBeUndefined();
     await store.execute(
       request({ type: "restore", reviewId, version: authored.version }),
     );
-    expect(store.read(reviewId).origin?.pullRequestNumber).toBe(310);
-    expect(store.read(reviewId).document).toEqual(authored.document);
+    expect((await store.read(reviewId)).origin?.pullRequestNumber).toBe(310);
+    expect((await store.read(reviewId)).document).toEqual(authored.document);
     await store.execute(
       request({
         type: "set_target",
@@ -346,8 +491,10 @@ describe("snapshot authoring", () => {
         pullRequestUrl: null,
       }),
     );
-    expect(store.read(reviewId).origin?.pullRequestNumber).toBeUndefined();
-    expect(store.read(reviewId).document).toEqual(authored.document);
+    expect(
+      (await store.read(reviewId)).origin?.pullRequestNumber,
+    ).toBeUndefined();
+    expect((await store.read(reviewId)).document).toEqual(authored.document);
   });
 
   it("preserves imported provenance when attaching a PR and supports explicit repin identity", async () => {
@@ -375,7 +522,7 @@ describe("snapshot authoring", () => {
         pullRequestUrl: "https://github.com/devdotfast/review/pull/319",
       }),
     );
-    expect(store.read(reviewId).origin).toEqual({
+    expect((await store.read(reviewId)).origin).toEqual({
       branch: "feature",
       baseRef: "main",
       revision: "legacy-revision",
@@ -390,7 +537,7 @@ describe("snapshot authoring", () => {
         pullRequestUrl: null,
       }),
     );
-    expect(store.read(reviewId).origin).toEqual({
+    expect((await store.read(reviewId)).origin).toEqual({
       branch: "feature",
       baseRef: "main",
       revision: "legacy-revision",
@@ -414,7 +561,7 @@ describe("snapshot authoring", () => {
         }),
       ),
     ).toThrow(/canonical GitHub PR URL|PR number is too large/);
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
   });
 
   it("deletes one review and its history and keeps other reviews", async () => {
@@ -434,15 +581,15 @@ describe("snapshot authoring", () => {
     const deletion = request({ type: "delete", reviewId });
     const result = await store.execute(deletion);
     expect(result).toMatchObject({ reviewId, deleted: true });
-    expect(() => store.read(reviewId)).toThrow(/not found/);
-    expect(store.history(reviewId)).toEqual([]);
-    expect(store.read(other.reviewId)).toMatchObject({
+    await expect(store.read(reviewId)).rejects.toThrow(/not found/);
+    expect(await store.history(reviewId)).toEqual([]);
+    expect(await store.read(other.reviewId)).toMatchObject({
       version: 0,
       title: "Example",
     });
     await store.close();
-    store = new ReviewStore(database, providers);
-    expect(store.list().map((review) => review.reviewId)).toEqual([
+    store = await ReviewStore.open(database, providers);
+    expect((await store.list()).map((review) => review.reviewId)).toEqual([
       other.reviewId,
     ]);
     await expect(store.execute(deletion)).rejects.toThrow(/not found/);
@@ -450,7 +597,7 @@ describe("snapshot authoring", () => {
   it("persists attention without creating a document version or notifying its readers", async () => {
     const { reviewId } = await create();
     const other = await create();
-    const document = store.read(reviewId);
+    const document = await store.read(reviewId);
 
     const documents = vi.fn<Parameters<ReviewStore["subscribe"]>[0]>(),
       catalog = vi.fn<() => void>();
@@ -465,18 +612,18 @@ describe("snapshot authoring", () => {
     expect(result).toMatchObject({ version: 0, attention: true });
     expect(documents).not.toHaveBeenCalled();
     expect(catalog).toHaveBeenCalledTimes(2);
-    expect(store.read(reviewId)).toEqual(document);
-    expect(store.history(reviewId)).toHaveLength(1);
+    expect(await store.read(reviewId)).toEqual(document);
+    expect(await store.history(reviewId)).toHaveLength(1);
     await store.close();
-    store = new ReviewStore(database, providers);
+    store = await ReviewStore.open(database, providers);
     expect(
-      store.list().find((review) => review.reviewId === reviewId),
+      (await store.list()).find((review) => review.reviewId === reviewId),
     ).toMatchObject({
       viewedAt: expect.any(String),
       dismissedAt: expect.any(String),
     });
     expect(
-      store.list().find((review) => review.reviewId === other.reviewId),
+      (await store.list()).find((review) => review.reviewId === other.reviewId),
     ).toMatchObject({
       viewedAt: null,
       dismissedAt: null,
@@ -485,7 +632,8 @@ describe("snapshot authoring", () => {
       request({ type: "attention", reviewId, action: "restore" }),
     );
     expect(
-      store.list().find((review) => review.reviewId === reviewId)?.dismissedAt,
+      (await store.list()).find((review) => review.reviewId === reviewId)
+        ?.dismissedAt,
     ).toBeNull();
   });
 
@@ -552,11 +700,11 @@ describe("snapshot authoring", () => {
     async (content) => {
       const { reviewId } = await create();
       const result = await edit(reviewId, { type: "insert", content });
-      expect(store.inspect(reviewId, result.targetId)).toMatchObject({
+      expect(await store.inspect(reviewId, result.targetId)).toMatchObject({
         ...content,
         id: result.targetId,
       });
-      expect(store.inspect(reviewId)).toEqual(
+      expect(await store.inspect(reviewId)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: result.targetId, type: content.type }),
         ]),
@@ -575,10 +723,10 @@ describe("snapshot authoring", () => {
 
     await edit(first.reviewId, { type: "remove", targetId: inserted.targetId });
     await store.close();
-    store = new ReviewStore(database, providers);
-    expect(store.read(first.reviewId).document).toEqual([]);
+    store = await ReviewStore.open(database, providers);
+    expect((await store.read(first.reviewId)).document).toEqual([]);
     expect(
-      store.read(first.reviewId, inserted.version).document[0],
+      (await store.read(first.reviewId, inserted.version)).document[0],
     ).toMatchObject({ id: inserted.targetId, markdown: "Keep history" });
     await store.execute(
       request({
@@ -594,7 +742,7 @@ describe("snapshot authoring", () => {
     });
 
     expect(next.targetId).not.toBe(inserted.targetId);
-    const beforeRepin = store.read(first.reviewId);
+    const beforeRepin = await store.read(first.reviewId);
     await store.execute(
       request({
         type: "set_target",
@@ -602,16 +750,16 @@ describe("snapshot authoring", () => {
         target: { kind: "commits", ...pins, head: "new-head" },
       }),
     );
-    expect(store.read(first.reviewId)).toMatchObject({
+    expect(await store.read(first.reviewId)).toMatchObject({
       document: beforeRepin.document,
       pins: { head: "new-head" },
     });
-    expect(store.read(second.reviewId)).toMatchObject({
+    expect(await store.read(second.reviewId)).toMatchObject({
       document: [],
       version: 0,
       pins,
     });
-    expect(store.list()).toHaveLength(2);
+    expect(await store.list()).toHaveLength(2);
   });
 
   it("retains stale references on repin, reports them, and allows incremental repairs", async () => {
@@ -624,7 +772,7 @@ describe("snapshot authoring", () => {
       type: "insert",
       content: { type: "software_map", mapVersionId: "map" },
     });
-    const original = store.read(reviewId);
+    const original = await store.read(reviewId);
     vi.mocked(providers.validateSource).mockRejectedValue(
       new ReviewInputError("File is unavailable at the pinned commit.", 404),
     );
@@ -644,8 +792,8 @@ describe("snapshot authoring", () => {
       "block-2 (software_map): Map does not match this review's source pins.",
       "head/src/store.ts#L1-L5: File is unavailable at the pinned commit.",
     ]);
-    expect(store.read(reviewId).document).toEqual(original.document);
-    expect(store.read(reviewId, original.version)).toEqual(original);
+    expect((await store.read(reviewId)).document).toEqual(original.document);
+    expect(await store.read(reviewId, original.version)).toEqual(original);
     await edit(reviewId, {
       type: "insert",
       content: { type: "markdown", markdown: "Working on the update" },
@@ -656,7 +804,7 @@ describe("snapshot authoring", () => {
       targetId: original.document[0]!.id!,
       changes: { source: rangeAnchor({ ...source, file: "renamed.ts" }) },
     });
-    expect(store.read(reviewId).document[0]).toMatchObject({
+    expect((await store.read(reviewId)).document[0]).toMatchObject({
       id: original.document[0]!.id,
       source: "head/renamed.ts#L1-L5",
     });
@@ -716,7 +864,7 @@ describe("snapshot authoring", () => {
       type: "insert",
       content: { type: "code_peek", source: rangeAnchor(source) },
     });
-    const original = store.read(reviewId);
+    const original = await store.read(reviewId);
     vi.mocked(providers.validatePins).mockRejectedValueOnce(
       new ReviewInputError("Missing commit"),
     );
@@ -741,7 +889,7 @@ describe("snapshot authoring", () => {
         }),
       ),
     ).rejects.toThrow("Repository read failed");
-    expect(store.read(reviewId)).toEqual(original);
+    expect(await store.read(reviewId)).toEqual(original);
   });
 
   it("patches and reorders individual steps, and replacement gives descendants new IDs", async () => {
@@ -752,15 +900,15 @@ describe("snapshot authoring", () => {
       content: diagram,
     });
 
-    const value = () => {
-      const block = store.read(reviewId).document[0]!;
+    const value = async () => {
+      const block = (await store.read(reviewId)).document[0]!;
 
       if (block.type !== "sequence") throw new Error("Expected sequence");
 
       return block;
     };
 
-    const step = value().steps[0]!.id;
+    const step = (await value()).steps[0]!.id;
 
     const second = await edit(reviewId, {
       type: "insert",
@@ -780,7 +928,7 @@ describe("snapshot authoring", () => {
       targetId: step,
       changes: { label: "Commit" },
     });
-    expect(value().steps[0]).toMatchObject({
+    expect((await value()).steps[0]).toMatchObject({
       id: step,
       label: "Commit",
       source: rangeAnchor(source),
@@ -792,10 +940,13 @@ describe("snapshot authoring", () => {
       parentId: targetId,
       afterId: second.targetId,
     });
-    expect(value().steps.map((s) => s.id)).toEqual([second.targetId, step]);
+    expect((await value()).steps.map((s) => s.id)).toEqual([
+      second.targetId,
+      step,
+    ]);
     await edit(reviewId, { type: "replace", targetId, content: diagram });
-    expect(value().id).toBe(targetId);
-    expect(value().steps[0]!.id).not.toBe(step);
+    expect((await value()).id).toBe(targetId);
+    expect((await value()).steps[0]!.id).not.toBe(step);
     await expect(
       edit(reviewId, { type: "remove", targetId: step }),
     ).rejects.toThrow(/does not exist/);
@@ -821,22 +972,22 @@ describe("snapshot authoring", () => {
       },
     });
 
-    const saved = () => {
-      const block = store.read(reviewId).document[0]!;
+    const saved = async () => {
+      const block = (await store.read(reviewId)).document[0]!;
 
       if (block.type !== "section") throw new Error("Expected section");
 
       return block;
     };
 
-    const listed = () =>
-      saved().children.map(({ id, type }) => ({ id: id!, type }));
+    const listed = async () =>
+      (await saved()).children.map(({ id, type }) => ({ id: id!, type }));
 
     // Grandchildren inside the callout are one read away, not listed here.
     expect(section).toMatchObject({
-      targetId: saved().id,
+      targetId: (await saved()).id,
       type: "section",
-      children: listed(),
+      children: await listed(),
     });
     expect(section.children?.map((child) => child.type)).toEqual([
       "markdown",
@@ -869,7 +1020,7 @@ describe("snapshot authoring", () => {
     expect(replaced).toMatchObject({
       targetId: section.targetId,
       type: "section",
-      children: listed(),
+      children: await listed(),
     });
     expect(
       replaced.children?.some((child) =>
@@ -903,7 +1054,7 @@ describe("snapshot authoring", () => {
       },
     });
 
-    const block = store.read(reviewId).document[0]!;
+    const block = (await store.read(reviewId)).document[0]!;
 
     if (block.type !== "flow_diagram") throw new Error("Expected flow");
     expect(flow).toMatchObject({
@@ -917,7 +1068,7 @@ describe("snapshot authoring", () => {
 
     const sequence = await edit(reviewId, { type: "insert", content: diagram });
 
-    const steps = store.read(reviewId).document[1]!;
+    const steps = (await store.read(reviewId)).document[1]!;
 
     if (steps.type !== "sequence") throw new Error("Expected sequence");
     expect(sequence).toMatchObject({
@@ -947,12 +1098,12 @@ describe("snapshot authoring", () => {
       },
     });
 
-    const block = store.read(reviewId).document[0]!;
+    const block = (await store.read(reviewId)).document[0]!;
 
     if (block.type !== "flow_diagram") throw new Error("Expected flow");
     const [a, b, c] = block.nodes.map((node) => node.id);
     const [ac, ab, cb] = block.edges.map((edge) => edge.id);
-    expect(store.read(reviewId).lastEdit).toMatchObject({
+    expect((await store.read(reviewId)).lastEdit).toMatchObject({
       type: "insert",
       targetId,
       units: [a, b, ab, c, ac, cb],
@@ -984,10 +1135,10 @@ describe("snapshot authoring", () => {
       },
     });
 
-    const replaced = store.read(reviewId).document[0]!;
+    const replaced = (await store.read(reviewId)).document[0]!;
 
     if (replaced.type !== "sequence") throw new Error("Expected sequence");
-    expect(store.read(reviewId).lastEdit).toMatchObject({
+    expect((await store.read(reviewId)).lastEdit).toMatchObject({
       type: "replace",
       targetId: sequence.targetId,
       units: replaced.steps.map((step) => step.id),
@@ -1007,17 +1158,17 @@ describe("snapshot authoring", () => {
       },
     });
 
-    const value = () => {
-      const block = store.read(reviewId).document[0]!;
+    const value = async () => {
+      const block = (await store.read(reviewId)).document[0]!;
 
       if (block.type !== "flow_diagram") throw new Error("Expected flow");
 
       return block;
     };
 
-    const session = value().nodes[0]!.id!;
+    const session = (await value()).nodes[0]!.id!;
     expect(session).toMatch(/^node-/);
-    expect(store.read(reviewId).lastEdit).toEqual({
+    expect((await store.read(reviewId)).lastEdit).toEqual({
       type: "insert",
       targetId: diagramId,
       blockId: diagramId,
@@ -1048,7 +1199,7 @@ describe("snapshot authoring", () => {
       },
     });
 
-    expect(value().nodes.map((node) => node.key)).toEqual([
+    expect((await value()).nodes.map((node) => node.key)).toEqual([
       "session",
       "sup",
       "broker",
@@ -1066,7 +1217,7 @@ describe("snapshot authoring", () => {
     });
 
     expect(acquires.targetId).toMatch(/^edge-/);
-    expect(store.read(reviewId).lastEdit).toEqual({
+    expect((await store.read(reviewId)).lastEdit).toEqual({
       type: "insert",
       targetId: acquires.targetId,
       blockId: diagramId,
@@ -1085,14 +1236,14 @@ describe("snapshot authoring", () => {
       targetId: broker.targetId,
       changes: { label: "Broker", kind: "decision" },
     });
-    expect(value().nodes[2]).toMatchObject({
+    expect((await value()).nodes[2]).toMatchObject({
       id: broker.targetId,
       type: "flow_node",
       key: "broker",
       label: "Broker",
       kind: "decision",
     });
-    expect(store.read(reviewId).lastEdit).toMatchObject({
+    expect((await store.read(reviewId)).lastEdit).toMatchObject({
       type: "update",
       kind: "flow_node",
       fields: ["label", "kind"],
@@ -1103,13 +1254,15 @@ describe("snapshot authoring", () => {
       targetId: acquires.targetId,
       changes: { label: "acquires a lease" },
     });
-    expect(value().edges[0]).toMatchObject({ label: "acquires a lease" });
+    expect((await value()).edges[0]).toMatchObject({
+      label: "acquires a lease",
+    });
 
     // The outline and a targeted read see the units.
     expect(
-      inspectSnapshot(store.read(reviewId), broker.targetId),
+      inspectSnapshot(await store.read(reviewId), broker.targetId),
     ).toMatchObject({ type: "flow_node", key: "broker" });
-    const outline = inspectSnapshot(store.read(reviewId));
+    const outline = inspectSnapshot(await store.read(reviewId));
     expect(
       Array.isArray(outline) ? outline.map((entry) => entry.type) : outline,
     ).toEqual([
@@ -1127,7 +1280,7 @@ describe("snapshot authoring", () => {
       parentId: diagramId,
       afterId: session,
     });
-    expect(value().nodes.map((node) => node.key)).toEqual([
+    expect((await value()).nodes.map((node) => node.key)).toEqual([
       "session",
       "broker",
       "sup",
@@ -1160,12 +1313,15 @@ describe("snapshot authoring", () => {
     ).rejects.toThrow(/Unknown flow endpoint/);
 
     await edit(reviewId, { type: "remove", targetId: broker.targetId });
-    expect(value().nodes.map((node) => node.key)).toEqual(["session", "sup"]);
-    expect(value().edges).toEqual([]);
+    expect((await value()).nodes.map((node) => node.key)).toEqual([
+      "session",
+      "sup",
+    ]);
+    expect((await value()).edges).toEqual([]);
     expect(supervisor.targetId).toMatch(/^node-/);
 
     // A removed unit is still attributed to its diagram; a rename is not an edit.
-    expect(store.read(reviewId).lastEdit).toEqual({
+    expect((await store.read(reviewId)).lastEdit).toEqual({
       type: "remove",
       targetId: broker.targetId,
       blockId: diagramId,
@@ -1173,7 +1329,7 @@ describe("snapshot authoring", () => {
       unit: "flow_node",
     });
     await store.execute(request({ type: "rename", reviewId, title: "Leases" }));
-    expect(store.read(reviewId).lastEdit).toBeUndefined();
+    expect((await store.read(reviewId)).lastEdit).toBeUndefined();
 
     // A node can arrive with the edge that attaches it, in one version.
     const sweeper = await edit(reviewId, {
@@ -1188,21 +1344,21 @@ describe("snapshot authoring", () => {
       },
     });
 
-    expect(value().nodes.at(-1)).toMatchObject({
+    expect((await value()).nodes.at(-1)).toMatchObject({
       id: sweeper.targetId,
       key: "sweeper",
     });
-    expect(value().nodes.at(-1)).not.toHaveProperty("link");
-    expect(value().edges).toMatchObject([
+    expect((await value()).nodes.at(-1)).not.toHaveProperty("link");
+    expect((await value()).edges).toMatchObject([
       { from: "sup", to: "sweeper", label: "expires", style: "dashed" },
     ]);
-    expect(store.read(reviewId).lastEdit).toEqual({
+    expect((await store.read(reviewId)).lastEdit).toEqual({
       type: "insert",
       targetId: sweeper.targetId,
       blockId: diagramId,
       kind: "flow_node",
       unit: "flow_node",
-      linkId: value().edges[0]!.id,
+      linkId: (await value()).edges[0]!.id,
     });
     await expect(
       edit(reviewId, {
@@ -1256,7 +1412,7 @@ describe("snapshot authoring", () => {
       },
     });
 
-    const block = store.read(reviewId).document[0]!;
+    const block = (await store.read(reviewId)).document[0]!;
 
     if (block.type !== "flow_diagram") throw new Error("Expected flow");
     expect(
@@ -1282,11 +1438,19 @@ describe("snapshot authoring", () => {
     ).targetId;
 
     await edit(reviewId, { type: "move", targetId: c, afterId: a });
-    expect(store.read(reviewId).document.map((b) => b.id)).toEqual([a, c, b]);
+    expect((await store.read(reviewId)).document.map((b) => b.id)).toEqual([
+      a,
+      c,
+      b,
+    ]);
     await edit(reviewId, { type: "move", targetId: a, afterId: b });
-    expect(store.read(reviewId).document.map((b) => b.id)).toEqual([c, b, a]);
+    expect((await store.read(reviewId)).document.map((b) => b.id)).toEqual([
+      c,
+      b,
+      a,
+    ]);
     await edit(reviewId, { type: "move", targetId: a, parentId: c });
-    expect(store.read(reviewId).document).toMatchObject([
+    expect((await store.read(reviewId)).document).toMatchObject([
       { id: c, children: [{ id: a }] },
       { id: b },
     ]);
@@ -1297,7 +1461,7 @@ describe("snapshot authoring", () => {
 
   it("does not save any part of an invalid edit or failed external check", async () => {
     const { reviewId } = await create();
-    const before = store.read(reviewId);
+    const before = await store.read(reviewId);
 
     const invalid = [
       { type: "insert", afterId: "missing", content: { type: "divider" } },
@@ -1327,8 +1491,10 @@ describe("snapshot authoring", () => {
         content: { type: "code_peek", source: rangeAnchor(source) },
       }),
     ).rejects.toThrow(/Range/);
-    expect(store.read(reviewId)).toEqual(before);
-    expect(store.history(reviewId).map((item) => item.version)).toEqual([0]);
+    expect(await store.read(reviewId)).toEqual(before);
+    expect((await store.history(reviewId)).map((item) => item.version)).toEqual(
+      [0],
+    );
     expect(
       (await edit(reviewId, { type: "insert", content: { type: "divider" } }))
         .targetId,
@@ -1337,7 +1503,7 @@ describe("snapshot authoring", () => {
 
   it("rejects whitespace-only ranges wherever they render as a peek", async () => {
     const { reviewId } = await create();
-    const before = store.read(reviewId);
+    const before = await store.read(reviewId);
     const calls: boolean[] = [];
 
     providers.validateSource = async (_pins, _source, options) => {
@@ -1403,7 +1569,7 @@ describe("snapshot authoring", () => {
         /contains only whitespace/,
       );
 
-    expect(store.read(reviewId)).toEqual(before);
+    expect(await store.read(reviewId)).toEqual(before);
 
     const link = await edit(reviewId, {
       type: "insert",
@@ -1484,11 +1650,11 @@ describe("snapshot authoring", () => {
   it("keeps one scratchpad: made on demand, drawn on at explicit pins only, outside the review lifecycle", async () => {
     await store.ensureScratchpad();
     await store.ensureScratchpad();
-    const pad = store.read(SCRATCHPAD_ID);
+    const pad = await store.read(SCRATCHPAD_ID);
     expect(pad).toMatchObject({ kind: "scratchpad", title: "Scratchpad" });
     expect(pad.pins).toBeUndefined();
     expect(pad.target).toBeUndefined();
-    expect(store.list()).toMatchObject([
+    expect(await store.list()).toMatchObject([
       { reviewId: SCRATCHPAD_ID, kind: "scratchpad" },
     ]);
     await expect(
@@ -1542,21 +1708,21 @@ describe("snapshot authoring", () => {
       await expect(store.execute(request(operation))).rejects.toMatchObject({
         status: 409,
       });
-    expect(store.read(SCRATCHPAD_ID).version).toBe(2);
+    expect((await store.read(SCRATCHPAD_ID)).version).toBe(2);
     await store.execute(
       request({ type: "restore", reviewId: SCRATCHPAD_ID, version: 1 }),
     );
-    expect(store.read(SCRATCHPAD_ID).document).toHaveLength(1);
+    expect((await store.read(SCRATCHPAD_ID)).document).toHaveLength(1);
   });
 
   it("logs the scratchpad newest first while a review keeps appending", async () => {
     await store.ensureScratchpad();
     const note = (markdown: string) => ({ type: "markdown", markdown });
 
-    const order = (reviewId: string) =>
-      store
-        .read(reviewId)
-        .document.map((block) => "markdown" in block && block.markdown);
+    const order = async (reviewId: string) =>
+      (await store.read(reviewId)).document.map(
+        (block) => "markdown" in block && block.markdown,
+      );
 
     const first = await edit(SCRATCHPAD_ID, {
       type: "insert",
@@ -1564,7 +1730,7 @@ describe("snapshot authoring", () => {
     });
 
     await edit(SCRATCHPAD_ID, { type: "insert", content: note("second") });
-    expect(order(SCRATCHPAD_ID)).toEqual(["second", "first"]);
+    expect(await order(SCRATCHPAD_ID)).toEqual(["second", "first"]);
 
     // An explicit anchor still wins: the block lands after it, not on top.
     await edit(SCRATCHPAD_ID, {
@@ -1572,12 +1738,16 @@ describe("snapshot authoring", () => {
       content: note("after first"),
       afterId: first.targetId,
     });
-    expect(order(SCRATCHPAD_ID)).toEqual(["second", "first", "after first"]);
+    expect(await order(SCRATCHPAD_ID)).toEqual([
+      "second",
+      "first",
+      "after first",
+    ]);
 
     const { reviewId } = await create();
     await edit(reviewId, { type: "insert", content: note("first") });
     await edit(reviewId, { type: "insert", content: note("second") });
-    expect(order(reviewId)).toEqual(["first", "second"]);
+    expect(await order(reviewId)).toEqual(["first", "second"]);
   });
 
   it("serializes edits through async validation and preserves different-field patches", async () => {
@@ -1623,7 +1793,7 @@ describe("snapshot authoring", () => {
 
     release();
     await Promise.all([pending, a, b]);
-    expect(store.inspect(reviewId, targetId)).toMatchObject({
+    expect(await store.inspect(reviewId, targetId)).toMatchObject({
       text: "first",
       caption: "second",
     });
@@ -1632,7 +1802,7 @@ describe("snapshot authoring", () => {
       targetId,
       changes: { text: "last" },
     });
-    expect(store.inspect(reviewId, targetId)).toMatchObject({
+    expect(await store.inspect(reviewId, targetId)).toMatchObject({
       text: "last",
       caption: "second",
     });
@@ -1687,8 +1857,8 @@ describe("create for a pull request", () => {
     expect(again.note).toEqual(expect.any(String));
     expect(again.working).toBeUndefined();
     expect(again.otherReviewIds).toBeUndefined();
-    expect(store.list()).toHaveLength(1);
-    expect(store.read(first.reviewId)).toMatchObject({
+    expect(await store.list()).toHaveLength(1);
+    expect(await store.read(first.reviewId)).toMatchObject({
       title: "PR review",
       version: 1,
       origin: { pullRequestUrl: url },
@@ -1702,7 +1872,7 @@ describe("create for a pull request", () => {
 
     expect(moved).toMatchObject({ created: false, reviewId, headMoved: true });
     expect(moved.note).toMatch(/review_set_target/);
-    expect(store.read(reviewId).pins).toEqual(pins);
+    expect((await store.read(reviewId)).pins).toEqual(pins);
   });
 
   it("compares a requested target by the head it resolves to", async () => {
@@ -1773,12 +1943,12 @@ describe("create for a pull request", () => {
       reviewId: oldest.reviewId,
       otherReviewIds: [newer.reviewId],
     });
-    expect(store.list()).toHaveLength(2);
+    expect(await store.list()).toHaveLength(2);
   });
 
   it("says an agent is working on the review it returns", async () => {
     const { reviewId } = await createFor(url);
-    store.activity.update(reviewId, {
+    await store.activity.update(reviewId, {
       action: "begin",
       focus: { description: "Writing the summary" },
     });
@@ -1798,8 +1968,8 @@ describe("create for a pull request", () => {
     for (const result of [first, second, otherPr, samePrElsewhere])
       expect(result).toMatchObject({ created: true });
     await store.ensureScratchpad();
-    expect(store.read(SCRATCHPAD_ID).kind).toBe("scratchpad");
-    expect(store.list()).toHaveLength(5);
+    expect((await store.read(SCRATCHPAD_ID)).kind).toBe("scratchpad");
+    expect(await store.list()).toHaveLength(5);
   });
 
   it("takes the source and title from the PR when only its URL is given", async () => {
@@ -1827,12 +1997,12 @@ describe("create for a pull request", () => {
       }),
     );
 
-    expect(store.read(untitled.reviewId)).toMatchObject({
+    expect(await store.read(untitled.reviewId)).toMatchObject({
       title: "From GitHub",
       pins,
       origin: { pullRequestUrl: url },
     });
-    expect(store.read(titled.reviewId).title).toBe("Mine");
+    expect((await store.read(titled.reviewId)).title).toBe("Mine");
     expect(resolvePullRequest.mock.calls).toEqual([
       [url, { id: undefined, preferred: undefined }],
       [url, { id: "repo", preferred: undefined }],
@@ -1866,7 +2036,7 @@ describe("create for a pull request", () => {
         }),
       ),
     ).rejects.toThrow(/checkout for the PR applies only/);
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
   });
 });
 
@@ -1892,7 +2062,7 @@ it("serves the experiment through the real desktop HTTP server and existing auth
     token: "test-token",
     discoveryPath: path.join(directory, "desktop.json"),
     reviewStore: store,
-    reviewData: new LocalReviewData(store),
+    reviewData: await LocalReviewData.open(store),
     relay,
   });
 
@@ -2122,17 +2292,17 @@ it("reads, updates and restores a section saved with the retired status field, a
     `UPDATE versions SET snapshot=json_set(snapshot,'$.document[0].status','in_progress') WHERE review_id=?`,
   ).run(reviewId);
   db.close();
-  store = new ReviewStore(database, providers);
+  store = await ReviewStore.open(database, providers);
 
-  expect(store.read(reviewId).document[0]).not.toHaveProperty("status");
-  expect(documentText(store.read(reviewId))).not.toContain("Status");
+  expect((await store.read(reviewId)).document[0]).not.toHaveProperty("status");
+  expect(documentText(await store.read(reviewId))).not.toContain("Status");
 
   await edit(reviewId, {
     type: "update",
     targetId: inserted.targetId,
     changes: { title: "Design notes" },
   });
-  expect(store.read(reviewId).document[0]).toEqual({
+  expect((await store.read(reviewId)).document[0]).toEqual({
     id: inserted.targetId,
     type: "section",
     title: "Design notes",
@@ -2142,14 +2312,14 @@ it("reads, updates and restores a section saved with the retired status field, a
   await store.execute(
     request({ type: "restore", reviewId, version: inserted.version }),
   );
-  expect(store.read(reviewId).document[0]).toEqual({
+  expect((await store.read(reviewId)).document[0]).toEqual({
     id: inserted.targetId,
     type: "section",
     title: "Design",
     children: [],
   });
 
-  const version = store.read(reviewId).version;
+  const version = (await store.read(reviewId)).version;
 
   await expect(
     edit(reviewId, {
@@ -2169,13 +2339,13 @@ it("reads, updates and restores a section saved with the retired status field, a
       },
     }),
   ).rejects.toThrow(/Unrecognized key/);
-  expect(store.read(reviewId).version).toBe(version);
+  expect((await store.read(reviewId)).version).toBe(version);
 });
 
 it("persists partial coverage outside document versions and resets it for a changed file", async () => {
   const { reviewId } = await create();
-  const version = store.read(reviewId).version;
-  store.updateViewedCoverage(
+  const version = (await store.read(reviewId)).version;
+  await store.updateViewedCoverage(
     reviewId,
     [
       {
@@ -2186,7 +2356,7 @@ it("persists partial coverage outside document versions and resets it for a chan
     ],
     true,
   );
-  store.updateViewedCoverage(
+  await store.updateViewedCoverage(
     reviewId,
     [
       {
@@ -2197,25 +2367,27 @@ it("persists partial coverage outside document versions and resets it for a chan
     ],
     true,
   );
-  expect(store.viewedCoverage(reviewId).get("a.ts")?.coverage.head).toEqual([
-    [0, 15],
-  ]);
-  expect(store.read(reviewId).version).toBe(version);
+  expect(
+    (await store.viewedCoverage(reviewId)).get("a.ts")?.coverage.head,
+  ).toEqual([[0, 15]]);
+  expect((await store.read(reviewId)).version).toBe(version);
   await store.close();
-  store = new ReviewStore(database, providers);
-  expect(store.viewedCoverage(reviewId).get("a.ts")?.coverage.head).toEqual([
-    [0, 15],
-  ]);
-  store.updateViewedCoverage(
+  store = await ReviewStore.open(database, providers);
+  expect(
+    (await store.viewedCoverage(reviewId)).get("a.ts")?.coverage.head,
+  ).toEqual([[0, 15]]);
+  await store.updateViewedCoverage(
     reviewId,
     [{ path: "a.ts", fingerprint: "old", scope: { base: [], head: [[4, 8]] } }],
     false,
   );
-  expect(store.viewedCoverage(reviewId).get("a.ts")?.coverage.head).toEqual([
+  expect(
+    (await store.viewedCoverage(reviewId)).get("a.ts")?.coverage.head,
+  ).toEqual([
     [0, 4],
     [8, 15],
   ]);
-  store.updateViewedCoverage(
+  await store.updateViewedCoverage(
     reviewId,
     [
       {
@@ -2226,15 +2398,15 @@ it("persists partial coverage outside document versions and resets it for a chan
     ],
     true,
   );
-  expect(store.viewedCoverage(reviewId).get("a.ts")?.coverage.head).toEqual([
-    [20, 22],
-  ]);
+  expect(
+    (await store.viewedCoverage(reviewId)).get("a.ts")?.coverage.head,
+  ).toEqual([[20, 22]]);
 });
 
 it("keeps reference coverage apart by pins: one path, changed under one comparison and not another", async () => {
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   const text = "first\nsecond\nthird";
   const changed = { ...pins, base: "other-base", head: "other-head" };
   const same = { repositoryId: pins.repositoryId, head: "other-head" };
@@ -2317,7 +2489,11 @@ it("keeps reference coverage apart by pins: one path, changed under one comparis
     },
   });
 
-  const progress = await reviewProgress(store, data, store.read(reviewId));
+  const progress = await reviewProgress(
+    store,
+    data,
+    await store.read(reviewId),
+  );
 
   // The document's own comparison stays in `files`; each reference's
   // comparison is its own group.
@@ -2338,7 +2514,7 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
   const { createReviewApi } = await import("./http.js");
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   let head = "first\nsecond\ncontext";
   let base = "first\nold\ncontext";
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
@@ -2387,16 +2563,16 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
     text: side === "head" ? head : base,
   }));
   const api = createReviewApi(store, data);
-  const initial = await reviewProgress(store, data, store.read(reviewId));
+  const initial = await reviewProgress(store, data, await store.read(reviewId));
 
   await data.coverage(reviewId, pins, "structural");
-  expect(store.list()[0].diffStats).toEqual({
+  expect((await store.list())[0].diffStats).toEqual({
     fileCount: 1,
     additions: 1,
     deletions: 1,
   });
   expect(data.structuralChanges).toHaveBeenCalledTimes(1);
-  expect(store.list("textual")[0].diffStats).toBeNull();
+  expect((await store.list("textual"))[0].diffStats).toBeNull();
 
   const mark = (fingerprint: string, version: number) =>
     api.request(`/${reviewId}/progress`, {
@@ -2426,8 +2602,8 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
     }),
   );
   expect(
-    (await reviewProgress(store, data, store.read(reviewId))).files[0].viewed
-      .head,
+    (await reviewProgress(store, data, await store.read(reviewId))).files[0]
+      .viewed.head,
   ).toEqual([[1, 2]]);
   head += "\nchanged outside the hunk";
   await store.execute(
@@ -2438,14 +2614,20 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
     }),
   );
   expect(
-    (await reviewProgress(store, data, store.read(reviewId))).files[0].viewed
-      .head,
+    (await reviewProgress(store, data, await store.read(reviewId))).files[0]
+      .viewed.head,
   ).toEqual([]);
   expect((await mark(initial.files[0].fingerprint, 0)).status).toBe(409);
-  const next = await reviewProgress(store, data, store.read(reviewId));
+  const next = await reviewProgress(store, data, await store.read(reviewId));
   expect(
-    (await mark(next.files[0].fingerprint, store.read(reviewId).version))
-      .status,
+    (
+      await mark(
+        next.files[0].fingerprint,
+        (
+          await store.read(reviewId)
+        ).version,
+      )
+    ).status,
   ).toBe(200);
   base += "\nnew base context";
   await store.execute(
@@ -2461,15 +2643,15 @@ it("preserves unchanged partial file coverage across pins and rejects stale writ
     }),
   );
   expect(
-    (await reviewProgress(store, data, store.read(reviewId))).files[0].viewed
-      .head,
+    (await reviewProgress(store, data, await store.read(reviewId))).files[0]
+      .viewed.head,
   ).toEqual([]);
 });
 
 it("counts readable files when the comparison includes a non-UTF-8 fixture", async () => {
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2512,7 +2694,12 @@ it("counts readable files when the comparison includes a non-UTF-8 fixture", asy
     yield { type: "complete", succeeded: 1, failed: 1 };
   });
 
-  const progress = await reviewProgress(store, data, store.read(reviewId));
+  const progress = await reviewProgress(
+    store,
+    data,
+    await store.read(reviewId),
+  );
+
   expect(progress.files.map((file) => file.path)).toEqual(["a.ts"]);
   expect(progress.files[0].changed.head).toEqual([[0, 1]]);
 });
@@ -2520,7 +2707,7 @@ it("counts readable files when the comparison includes a non-UTF-8 fixture", asy
 it("still reports structural read failures", async () => {
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2543,7 +2730,7 @@ it("still reports structural read failures", async () => {
     yield { type: "complete", succeeded: 0, failed: 1 };
   });
   await expect(
-    reviewProgress(store, data, store.read(reviewId)),
+    reviewProgress(store, data, await store.read(reviewId)),
   ).rejects.toThrow("Cannot count a.ts: unreadable");
 });
 
@@ -2551,7 +2738,7 @@ it("textual coverage uses Git ranges without launching diffr", async () => {
   const { createReviewApi } = await import("./http.js");
   const { coverageProgress } = await import("@review/viewed-coverage.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2642,7 +2829,7 @@ it("textual coverage uses Git ranges without launching diffr", async () => {
     deletions: 0,
   });
   expect(structural).toHaveBeenCalledTimes(1);
-  expect(store.list("textual")[0].diffStats).toEqual(
+  expect((await store.list("textual"))[0].diffStats).toEqual(
     textualCatalog[0].diffStats,
   );
 });
@@ -2662,7 +2849,7 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
       title,
       targets: [{ kind: "files", patterns }],
     });
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2708,7 +2895,7 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
     commit: _pins[side],
     text: `${side}\ncontext\nmore context`,
   }));
-  const initial = await reviewProgress(store, data, store.read(reviewId));
+  const initial = await reviewProgress(store, data, await store.read(reviewId));
   const [docs, guide, tests] = initial.lenses;
   expect(docs.fileCount).toBe(1);
   expect(docs.sources).toEqual([
@@ -2719,7 +2906,7 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
   expect(tests.fileCount).toBe(0);
   expect(tests.sources).toEqual([]);
   expect(tests.unavailable).toBeTruthy();
-  store.updateViewedCoverage(
+  await store.updateViewedCoverage(
     reviewId,
     initial.files.map((file) => ({
       path: file.path,
@@ -2728,7 +2915,7 @@ it("resolves file lenses to whole changed files, preserves empty groups, and sha
     })),
     true,
   );
-  const viewed = await reviewProgress(store, data, store.read(reviewId));
+  const viewed = await reviewProgress(store, data, await store.read(reviewId));
   expect(coverageProgress(viewed.files, docs.sources).state).toBe("viewed");
   expect(coverageProgress(viewed.files, guide.sources).state).toBe("viewed");
   expect(coverageProgress(viewed.files).total).toEqual({
@@ -2782,7 +2969,7 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
       ],
     },
   });
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2828,7 +3015,7 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
     commit: _pins[side],
     text: `${side}1\n${side}2\n${side}3`,
   }));
-  const result = await reviewProgress(store, data, store.read(reviewId));
+  const result = await reviewProgress(store, data, await store.read(reviewId));
 
   const lens = result.lenses[0],
     rest = result.lenses.find((lens) => lens.id === "automatic-uncategorized")!;
@@ -2848,7 +3035,7 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
     deletions: 2,
   });
   expect(rest.wholeFiles).toBe(false);
-  store.updateViewedCoverage(
+  await store.updateViewedCoverage(
     reviewId,
     result.files.map((file) => ({
       path: file.path,
@@ -2857,7 +3044,7 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
     })),
     true,
   );
-  const viewed = await reviewProgress(store, data, store.read(reviewId));
+  const viewed = await reviewProgress(store, data, await store.read(reviewId));
   expect(coverageProgress(viewed.files, lens.sources).state).toBe("viewed");
   expect(coverageProgress(viewed.files, rest.sources).remaining).toEqual({
     additions: 2,
@@ -2874,7 +3061,7 @@ it("validates range lens evidence and scopes progress and Uncategorized to disti
       },
     ],
   });
-  const stale = await reviewProgress(store, data, store.read(reviewId));
+  const stale = await reviewProgress(store, data, await store.read(reviewId));
   expect(stale.lenses[0].unavailable).toBeTruthy();
   expect(
     coverageProgress(stale.files, stale.lenses.at(-1)!.sources).total,
@@ -2901,13 +3088,13 @@ it("rejects unsafe patterns and missing range sources", async () => {
       targets: [{ kind: "ranges", sources: [rangeAnchor(source)] }],
     }),
   ).rejects.toThrow("File is unavailable");
-  expect(store.read(reviewId).lenses).toBeUndefined();
+  expect((await store.read(reviewId)).lenses).toBeUndefined();
 });
 
 it("returns coverage and lenses after initial files without requesting summary events", async () => {
   const { reviewProgress } = await import("./review-progress.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -2936,19 +3123,25 @@ it("returns coverage and lenses after initial files without requesting summary e
     };
     throw new Error("Coverage must not await enrichment");
   });
-  const progress = await reviewProgress(store, data, store.read(reviewId));
+
+  const progress = await reviewProgress(
+    store,
+    data,
+    await store.read(reviewId),
+  );
+
   expect(progress.files[0].changed).toEqual({ base: [], head: [[0, 1]] });
   expect(
     progress.lenses.find((lens) => lens.id === "automatic-uncategorized")
       ?.sources,
   ).toEqual([{ side: "head", file: "a.ts", fromLine: 1, toLine: 1 }]);
-  data.close();
+  await data.close();
 });
 
 it("returns pending progress without waiting for coverage and signals completion to late watchers", async () => {
   const { createReviewApi } = await import("./http.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   let release!: () => void;
 
   const gate = new Promise<void>((resolve) => {
@@ -3004,7 +3197,7 @@ it("returns pending progress without waiting for coverage and signals completion
 it("logs a provider failure and names its kind without returning its local detail", async () => {
   const { createReviewApi } = await import("./http.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -3060,7 +3253,7 @@ it("makes a diagram step's selection usable before an unrelated file finishes co
       })),
     },
   });
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   let release!: () => void;
 
   const gate = new Promise<void>((resolve) => {
@@ -3094,7 +3287,7 @@ it("makes a diagram step's selection usable before an unrelated file finishes co
     text: side === "head" ? "new" : "old",
   }));
   const api = createReviewApi(store, data);
-  const route = `/${reviewId}/progress?version=${store.read(reviewId).version}&mode=textual&wait=false`;
+  const route = `/${reviewId}/progress?version=${(await store.read(reviewId)).version}&mode=textual&wait=false`;
 
   try {
     await api.request(route);
@@ -3136,17 +3329,17 @@ it("makes a diagram step's selection usable before an unrelated file finishes co
 it("Home reads persisted counts without scheduling comparisons, and changed pins start unknown", async () => {
   const { createReviewApi } = await import("./http.js");
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   const comparison = vi.spyOn(data, "coverage");
   const api = createReviewApi(store, data);
   expect((await (await api.request("/")).json())[0].diffStats).toBeNull();
   expect(comparison).not.toHaveBeenCalled();
   const counts = { fileCount: 2, additions: 9, deletions: 3 };
-  store.setDiffStats(pins, counts, "structural");
+  await store.setDiffStats(pins, counts, "structural");
   await store.close();
-  store = new ReviewStore(database, providers);
-  expect(store.list()[0].diffStats).toEqual(counts);
-  expect(store.list("textual")[0].diffStats).toBeNull();
+  store = await ReviewStore.open(database, providers);
+  expect((await store.list())[0].diffStats).toEqual(counts);
+  expect((await store.list("textual"))[0].diffStats).toBeNull();
   await store.execute(
     request({
       type: "set_target",
@@ -3154,7 +3347,7 @@ it("Home reads persisted counts without scheduling comparisons, and changed pins
       target: { kind: "commits", ...pins, head: "new-head" },
     }),
   );
-  expect(store.list()[0].diffStats).toBeNull();
+  expect((await store.list())[0].diffStats).toBeNull();
   await store.execute(
     request({
       type: "set_target",
@@ -3162,12 +3355,12 @@ it("Home reads persisted counts without scheduling comparisons, and changed pins
       target: { kind: "commits", ...pins },
     }),
   );
-  expect(store.list()[0].diffStats).toEqual(counts);
+  expect((await store.list())[0].diffStats).toEqual(counts);
 });
 
 it("shares pending comparison work even when more than 32 reviews are opened", async () => {
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   let release!: () => void;
 
   const gate = new Promise<void>((resolve) => {

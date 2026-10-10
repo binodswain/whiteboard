@@ -1,0 +1,127 @@
+/** Versioned migrations, applied in order inside one transaction each. v1 is
+ * the Postgres equivalent of the SQLite schema in `sqlite.ts`: same tables
+ * and constraints, with `rowid` made explicit where queries order by it and
+ * millisecond timestamps widened to BIGINT. */
+export const POSTGRES_MIGRATIONS: {
+  version: number;
+  name: string;
+  sql: string;
+}[] = [
+  {
+    version: 1,
+    name: "initial",
+    sql: `
+      CREATE TABLE reviews(rowid BIGINT GENERATED ALWAYS AS IDENTITY,
+        id TEXT PRIMARY KEY, version INTEGER NOT NULL, next_id INTEGER NOT NULL);
+      CREATE TABLE versions(review_id TEXT REFERENCES reviews(id), version INTEGER, snapshot TEXT NOT NULL,
+        PRIMARY KEY(review_id,version));
+      CREATE TABLE review_attention(review_id TEXT PRIMARY KEY REFERENCES reviews(id), viewed_at TEXT, dismissed_at TEXT);
+      CREATE TABLE repositories(rowid BIGINT GENERATED ALWAYS AS IDENTITY,
+        id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, name TEXT NOT NULL);
+      CREATE TABLE resources(id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(id),
+        kind TEXT NOT NULL, mime_type TEXT NOT NULL, data BYTEA NOT NULL);
+      CREATE TABLE review_coverage(review_id TEXT REFERENCES reviews(id), file TEXT, fingerprint TEXT NOT NULL, coverage TEXT NOT NULL,
+        PRIMARY KEY(review_id,file));
+      CREATE TABLE comparison_stats(identity TEXT PRIMARY KEY, stats TEXT NOT NULL);
+      CREATE TABLE server_identity(one INTEGER PRIMARY KEY CHECK(one=1), id TEXT NOT NULL);
+      CREATE TABLE authoring_presences(rowid BIGINT GENERATED ALWAYS AS IDENTITY,
+        activity_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, slot INTEGER NOT NULL,
+        started_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, focus TEXT, surface TEXT);
+      CREATE TABLE ask_conversations(
+        id TEXT PRIMARY KEY,
+        review_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        head TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        selection TEXT NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        entries TEXT,
+        bypass INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(agent, session_id));
+      CREATE INDEX ask_conversations_review ON ask_conversations(review_id, updated_at);
+      CREATE TABLE ask_agent_offers(agent TEXT PRIMARY KEY, offer TEXT NOT NULL);
+      CREATE TABLE ask_agent_model_offers(agent TEXT NOT NULL, model TEXT NOT NULL, offer TEXT NOT NULL, PRIMARY KEY(agent, model));
+      CREATE TABLE headless_imports(path TEXT PRIMARY KEY);
+      CREATE TABLE pinned_environments(id TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE workspace_leases(review_id TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL);`,
+  },
+  {
+    version: 2,
+    name: "review_jobs",
+    sql: `CREATE TABLE jobs_jobs(
+      id TEXT PRIMARY KEY, job_key TEXT NOT NULL UNIQUE, type TEXT NOT NULL, input TEXT NOT NULL,
+      status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease_until BIGINT,
+      review_id TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE INDEX jobs_jobs_claim ON jobs_jobs(status, lease_until, created_at);`,
+  },
+  {
+    version: 3,
+    name: "review_job_url",
+    sql: "ALTER TABLE jobs_jobs ADD COLUMN url TEXT",
+  },
+  {
+    version: 4,
+    name: "review_comments",
+    sql: `CREATE TABLE review_comments(
+      id TEXT PRIMARY KEY, review_id TEXT NOT NULL, version INTEGER NOT NULL,
+      anchor TEXT, parent_id TEXT, body TEXT NOT NULL, author TEXT NOT NULL,
+      resolved INTEGER NOT NULL DEFAULT 0, outdated INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE INDEX review_comments_review ON review_comments(review_id, created_at);`,
+  },
+  {
+    version: 5,
+    name: "review_list_filters",
+    sql: `
+      ALTER TABLE reviews ADD COLUMN branch TEXT, ADD COLUMN base_sha TEXT, ADD COLUMN head_sha TEXT, ADD COLUMN created_by TEXT;
+      UPDATE reviews SET
+        branch=(SELECT versions.snapshot::jsonb #>> '{origin,branch}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        base_sha=(SELECT versions.snapshot::jsonb #>> '{pins,base}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        head_sha=(SELECT versions.snapshot::jsonb #>> '{pins,head}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version),
+        created_by=(SELECT versions.snapshot::jsonb #>> '{createdBy}' FROM versions WHERE versions.review_id=reviews.id AND versions.version=reviews.version);
+      CREATE INDEX reviews_branch ON reviews(branch);
+      CREATE INDEX reviews_created_by ON reviews(created_by);
+      CREATE TABLE review_tags(review_id TEXT REFERENCES reviews(id), tag TEXT NOT NULL, PRIMARY KEY(review_id,tag));
+      CREATE INDEX review_tags_tag ON review_tags(tag);`,
+  },
+  {
+    version: 6,
+    name: "hosted_ask_queue",
+    sql: `CREATE TABLE asks(
+      id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
+      claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
+      result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+      CREATE INDEX asks_pending ON asks(status, created_at);`,
+  },
+  {
+    version: 7,
+    name: "auth",
+    sql: `
+      CREATE TABLE auth_users(
+        id TEXT PRIMARY KEY, login TEXT NOT NULL, name TEXT, avatar_url TEXT,
+        github_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE auth_sessions(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+      CREATE INDEX auth_sessions_user ON auth_sessions(user_id);
+      CREATE TABLE auth_api_tokens(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES auth_users(id),
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL, last_used_at TEXT);
+      CREATE TABLE auth_repo_access(
+        user_id TEXT NOT NULL REFERENCES auth_users(id), repo TEXT NOT NULL,
+        allowed INTEGER NOT NULL, checked_at TEXT NOT NULL,
+        PRIMARY KEY(user_id, repo));`,
+  },
+  {
+    version: 8,
+    name: "review_job_submitter",
+    sql: "ALTER TABLE jobs_jobs ADD COLUMN submitter_id TEXT",
+  },
+];

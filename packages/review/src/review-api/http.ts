@@ -1,11 +1,14 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { type JsonObject, isJsonObject } from "@dev.fast/json";
 import {
   REVIEW_CLIENT_HEADER,
   REVIEW_CLIENT_REMOTE,
+  type ReviewApiSummary,
   type ReviewStructuralDiffEvent,
 } from "@dev.fast/review-protocol";
 import { errorMessage } from "@dev.fast/trace-core";
@@ -27,7 +30,9 @@ import {
 } from "@review/ask/thread-state.js";
 import type { AskThreads } from "@review/ask/threads.js";
 import { watchAskThreads } from "@review/ask/watch.js";
+import type { AuthPrincipal } from "@review/auth/index.js";
 import { fuzzyRank } from "@review/fuzzy-match.js";
+import type { JobRunner } from "@review/jobs/job-runner.js";
 import { resolveReviewStackLayers } from "@review/review-stack.js";
 import { readBoundedRequestJson } from "@review/server/hono-http.js";
 import { HttpJsonError } from "@review/server/http-json.js";
@@ -48,8 +53,9 @@ import { z } from "zod";
 
 import { anchorQuotes } from "./anchor-quotes.js";
 import { authoringTools } from "./authoring-tools.js";
+import { commentInputSchema } from "./comments.js";
 import { documentText } from "./document-text.js";
-import { ReviewInputError } from "./document.js";
+import { ReviewInputError, sourceReferences } from "./document.js";
 import {
   instructionsQuerySchema,
   renderInstructions,
@@ -65,6 +71,11 @@ import {
   type ReviewRequestVia,
   reviewRequestOrigin,
 } from "./request-origin.js";
+import {
+  type ReviewFilter,
+  matchesReviewFilter,
+  reviewFilterSchema,
+} from "./review-filter.js";
 import {
   type UncategorizedReport,
   coverageModeSchema,
@@ -136,6 +147,26 @@ const askDecisionSchema = z.strictObject({
   optionId: z.string().min(1),
 });
 
+const queuedAskSchema = z.strictObject({
+  reviewId: z.string().min(1),
+  prompt: z.string().min(1).max(20_000),
+  createdBy: z.string().min(1).max(200).default("board"),
+});
+
+const claimAskSchema = z.strictObject({ runnerId: z.string().min(1).max(200) });
+
+const heartbeatAskSchema = claimAskSchema;
+
+const completeAskSchema = z.strictObject({
+  runnerId: z.string().min(1).max(200),
+  resultRefs: z.array(z.string().min(1).max(500)).max(500),
+});
+
+const failAskSchema = z.strictObject({
+  runnerId: z.string().min(1).max(200),
+  error: z.string().min(1).max(2000),
+});
+
 export interface AuthoringCapabilities {
   desktopAvailable: boolean;
   softwareMapEnabled: boolean;
@@ -160,6 +191,27 @@ export interface ReviewApiHooks {
   }) => void;
   sharing?: SharingHostEvents;
 }
+
+/**
+ * Remote-mode authorization for the API: who the caller is and whether their
+ * GitHub identity can read a repository path. Local mode passes nothing and
+ * every check below is skipped.
+ */
+export interface ReviewApiAccess {
+  authenticate(request: Request): Promise<AuthPrincipal | null>;
+  canReadRepo(principal: AuthPrincipal, repoPath: string): Promise<boolean>;
+  /** The canonical remote URL a `repositoryPath` input names, or undefined
+   * for a path that is not a repository on the remote host. */
+  normalizeRepoPath?(repoPath: string): string | undefined;
+}
+
+export type ReviewApiApp = Hono & {
+  /** Executes an in-process server job with its repository-scoped principal. */
+  fetchAsPrincipal(
+    request: Request,
+    principal: AuthPrincipal,
+  ): Promise<Response>;
+};
 
 /** A gateway forwarding from another machine; it gets no local paths. */
 const remoteCaller = (context: Context) =>
@@ -216,6 +268,10 @@ export function createReviewApi(
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   },
   headlessOpenUrl?: (reviewId: string) => string,
+  /** Remote-mode repository authorization; absent locally, where the outer
+   * token wall remains the whole boundary. */
+  access?: ReviewApiAccess,
+  jobs?: JobRunner,
 ) {
   const app = new Hono();
   app.onError((error, context) => {
@@ -248,12 +304,133 @@ export function createReviewApi(
     );
   });
 
+  // Remote mode authenticates here too — an internal caller such as MCP's
+  // fetch carries forwarded headers, so this API answers its own principal.
+  // The caller is held for the request's duration, which is how streamed
+  // reads still see it after the middleware returns.
+  const authScope = access ? new AsyncLocalStorage<AuthPrincipal>() : undefined;
+
+  if (access && authScope)
+    app.use("*", async (context, next) => {
+      const principal =
+        authScope.getStore() ?? (await access.authenticate(context.req.raw));
+
+      if (!principal) return context.json({ error: "Unauthorized" }, 401);
+
+      return authScope.run(principal, next);
+    });
+
   if (data)
     app.use("*", async (context, next) => {
       if (context.req.method === "GET" && !context.req.query("version"))
         await store.refreshWorktrees();
       await next();
     });
+
+  // Hosted connectors poll these short requests; no connection is held open.
+  app.post("/asks", async (context) => {
+    const input = queuedAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    await assertRepoAccess(input.reviewId);
+    await readReview(input.reviewId);
+    const askId = await store.askQueue.create(input);
+
+    return context.json({ askId }, 202);
+  });
+  app.get("/asks/pending", async (context) => {
+    await store.askQueue.reapExpired();
+
+    const asks = await store.askQueue.pending();
+
+    const visible = await Promise.all(
+      asks.map(async (ask) => {
+        try {
+          await assertRepoAccess(ask.reviewId);
+
+          return ask;
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    return context.json({ asks: visible.filter((ask) => ask !== null) });
+  });
+  app.get("/asks/:askId", async (context) => {
+    const ask = await assertAskAccess(context.req.param("askId"));
+
+    return ask
+      ? context.json({ ask })
+      : context.json({ error: "Ask not found." }, 404);
+  });
+  app.post("/asks/:askId/claim", async (context) => {
+    const { runnerId } = claimAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    await assertAskAccess(context.req.param("askId"));
+
+    const ask = await store.askQueue.claim(
+      context.req.param("askId"),
+      runnerId,
+    );
+
+    return ask
+      ? context.json({ ask })
+      : context.json({ error: "Ask is not claimable." }, 409);
+  });
+  app.post("/asks/:askId/complete", async (context) => {
+    const input = completeAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    await assertAskAccess(context.req.param("askId"));
+
+    const completed = await store.askQueue.complete(
+      context.req.param("askId"),
+      input.runnerId,
+      input.resultRefs,
+    );
+
+    return completed
+      ? context.json({ ok: true })
+      : context.json({ error: "Ask is not owned by this runner." }, 409);
+  });
+  app.post("/asks/:askId/heartbeat", async (context) => {
+    const { runnerId } = heartbeatAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    await assertAskAccess(context.req.param("askId"));
+
+    const renewed = await store.askQueue.heartbeat(
+      context.req.param("askId"),
+      runnerId,
+    );
+
+    return renewed
+      ? context.json({ ok: true })
+      : context.json({ error: "Ask is not owned by this runner." }, 409);
+  });
+  app.post("/asks/:askId/fail", async (context) => {
+    const input = failAskSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    await assertAskAccess(context.req.param("askId"));
+
+    const failed = await store.askQueue.fail(
+      context.req.param("askId"),
+      input.runnerId,
+      input.error,
+    );
+
+    return failed
+      ? context.json({ ok: true })
+      : context.json({ error: "Ask is not owned by this runner." }, 409);
+  });
 
   if (webSettings) {
     app.get("/settings", async (context) =>
@@ -303,7 +480,7 @@ export function createReviewApi(
       version: context.req.query("version"),
     });
 
-    readReview(id, query.version);
+    await readReview(id, query.version);
 
     if (
       context.req.method !== "GET" &&
@@ -318,12 +495,110 @@ export function createReviewApi(
   app.use("/:id", sharedGuard);
   app.use("/:id/*", sharedGuard);
 
+  /**
+   * Every repository path a snapshot's content can name: its own pins, its
+   * target's, and each source reference's explicit pins.
+   */
+  const reviewRepoPaths = async (
+    id: string,
+  ): Promise<{ paths: string[]; unresolvable: boolean; missing: boolean }> => {
+    let snapshot: Snapshot;
+
+    try {
+      snapshot = await readReview(id);
+    } catch {
+      return { paths: [], unresolvable: false, missing: true };
+    }
+
+    const ids = new Set<string>();
+
+    if (snapshot.pins?.repositoryId) ids.add(snapshot.pins.repositoryId);
+
+    if (snapshot.target?.repositoryId) ids.add(snapshot.target.repositoryId);
+
+    for (const { source } of sourceReferences(snapshot.document, {
+      tolerant: true,
+    }))
+      if (source.pins?.repositoryId) ids.add(source.pins.repositoryId);
+
+    const paths: string[] = [];
+    let unresolvable = false;
+
+    for (const repoId of ids) {
+      const repoPath = await store
+        .repositoryPath(repoId)
+        .catch(() => undefined);
+
+      if (repoPath === undefined) unresolvable = true;
+      else paths.push(repoPath);
+    }
+
+    return { paths, unresolvable, missing: false };
+  };
+
+  /**
+   * Remote mode: the caller must read every repository a review names before
+   * any `/:id` route answers. A denied or unresolvable repository answers the
+   * same 404 a missing review would, so repository names never leak.
+   */
+  const assertRepoAccess = async (id: string, principal?: AuthPrincipal) => {
+    if (!access || !authScope) return;
+
+    const caller = principal ?? authScope.getStore();
+
+    if (!caller) return;
+
+    const found = await reviewRepoPaths(id);
+
+    if (found.missing) return;
+
+    if (
+      found.unresolvable ||
+      (
+        await Promise.all(
+          found.paths.map((repoPath) => access.canReadRepo(caller, repoPath)),
+        )
+      ).some((allowed) => !allowed)
+    )
+      throw new ReviewInputError("Review not found.", 404);
+  };
+
+  const assertAskAccess = async (askId: string) => {
+    const ask = await store.askQueue.get(askId);
+
+    if (ask) await assertRepoAccess(ask.reviewId);
+
+    return ask;
+  };
+
+  if (access && authScope) {
+    const repoGuard: MiddlewareHandler = async (context, next) => {
+      const id = context.req.param("id");
+
+      if (id) await assertRepoAccess(id);
+
+      return next();
+    };
+
+    app.use("/:id", repoGuard);
+    app.use("/:id/*", repoGuard);
+
+    // Sharing is a local-desktop flow; hosted deployments have no share host
+    // sign-in, so /sharing/* endpoints deny like any other unavailable route.
+    app.use("/sharing/*", () => {
+      throw new ReviewInputError("Review not found.", 404);
+    });
+  }
+
   if (shared && data) {
     shared.connect(store, data);
     mountSharingHost(app, store, data, shared, hooks.sharing);
   }
 
-  const readReview = (id: string, version?: number): Snapshot => {
+  const readReview = async (
+    id: string,
+    version?: number,
+  ): Promise<Snapshot> => {
     if (!id.startsWith("shared-")) return store.read(id, version);
     const snapshot = shared?.get(id).snapshot;
 
@@ -333,33 +608,110 @@ export function createReviewApi(
     return snapshot;
   };
 
-  const catalog = (mode: "structural" | "textual" = "structural") => {
-    const local = store.list(mode);
+  const catalog = async (
+    mode: "structural" | "textual" = "structural",
+    principal?: AuthPrincipal,
+    filter: ReviewFilter = {},
+  ) => {
+    const local = await store.list(mode, filter);
 
-    return [
+    const sharedSummaries = ((await shared?.list(mode)) ?? []).filter(
+      (summary) => matchesReviewFilter(summary, filter),
+    );
+
+    const summaries = [
       ...(scratchpadEnabled()
         ? local
         : local.filter((summary) => summary.kind !== "scratchpad")),
-      ...(shared?.list(mode) ?? []),
+      ...sharedSummaries,
     ];
+
+    if (!access || !principal) return summaries;
+
+    // One verdict per repository path, shared across summaries.
+    const verdicts = new Map<string, Promise<boolean>>();
+
+    const allowed = (repoPath: string) => {
+      let verdict = verdicts.get(repoPath);
+
+      if (!verdict) {
+        verdict = access.canReadRepo(principal, repoPath);
+        verdicts.set(repoPath, verdict);
+      }
+
+      return verdict;
+    };
+
+    // The list join exposes pins.repositoryId's path; a review whose
+    // repositories only its target names is checked through the id. A
+    // repository id that no longer resolves hides the summary rather than
+    // risk leaking one its row rename detached.
+    const visible = async (summary: ReviewApiSummary) => {
+      const paths = new Set<string>();
+      const repoIds = new Set<string>();
+
+      if (summary.repositoryPath) paths.add(summary.repositoryPath);
+
+      if (summary.pins?.repositoryId) repoIds.add(summary.pins.repositoryId);
+
+      if (summary.target?.repositoryId)
+        repoIds.add(summary.target.repositoryId);
+
+      for (const repoId of repoIds) {
+        const repoPath = await store
+          .repositoryPath(repoId)
+          .catch(() => undefined);
+
+        if (repoPath === undefined) return false;
+
+        paths.add(repoPath);
+      }
+
+      for (const repoPath of paths)
+        if (!(await allowed(repoPath))) return false;
+
+      return true;
+    };
+
+    const flags = await Promise.all(summaries.map(visible));
+
+    return summaries.filter((_, index) => flags[index]);
   };
 
   app.get("/", async (context) => {
     await ensureScratchpad();
 
     return context.json(
-      catalog(coverageModeSchema.parse(context.req.query("mode"))),
+      await catalog(
+        coverageModeSchema.parse(context.req.query("mode")),
+        authScope?.getStore(),
+        reviewFilterSchema.parse(context.req.query()),
+      ),
     );
   });
 
-  app.get("/repositories", (context) =>
-    context.json(
-      store.repositories().map(({ id, path: root }) => ({
-        id,
-        name: path.basename(root),
-      })),
-    ),
-  );
+  app.get("/repositories", async (context) => {
+    const principal = authScope?.getStore();
+
+    const repositories = (await store.repositories()).map(
+      ({ id, path: root }) => ({ id, name: path.basename(root), path: root }),
+    );
+
+    if (!access || !principal)
+      return context.json(repositories.map(({ id, name }) => ({ id, name })));
+
+    const visible = await Promise.all(
+      repositories.map(async (repo) =>
+        (await access.canReadRepo(principal, repo.path)) ? repo : null,
+      ),
+    );
+
+    return context.json(
+      visible
+        .filter((repo): repo is NonNullable<typeof repo> => repo !== null)
+        .map(({ id, name }) => ({ id, name })),
+    );
+  });
 
   // Server-owned state only: asking the Desktop canvas would let a stalled
   // renderer block tool listing and the first instructions call.
@@ -376,9 +728,78 @@ export function createReviewApi(
       authoringTools(
         scratchpadAvailable(instructions),
         instructions.traceEnabled,
+      ).filter(
+        ({ name }) =>
+          jobs || !["generate_review", "review_job_status"].includes(name),
       ),
     );
   });
+
+  if (jobs) {
+    app.post("/jobs", async (context) => {
+      const input = z
+        .strictObject({
+          repository: z.string().trim().min(1),
+          base: z.string().trim().min(1),
+          head: z.string().trim().min(1),
+        })
+        .parse(await readBoundedRequestJson(context.req.raw));
+
+      const principal = authScope?.getStore();
+
+      if (access && principal) {
+        const repoPath = access.normalizeRepoPath?.(input.repository);
+
+        if (!repoPath || !(await access.canReadRepo(principal, repoPath)))
+          throw new ReviewInputError("Repository not found.", 404);
+      }
+
+      const job = await jobs.submit(
+        {
+          repo: input.repository,
+          baseSha: input.base,
+          headSha: input.head,
+        },
+        authScope?.getStore()?.id,
+      );
+
+      const status = {
+        status: job.status,
+        ...(job.id && { jobId: job.id }),
+        ...(job.reviewId && { reviewId: job.reviewId }),
+        ...(job.url && { url: job.url }),
+        ...(job.error && { error: job.error }),
+      };
+
+      return context.json(
+        status,
+        job.status === "succeeded" || job.status === "failed" ? 200 : 202,
+      );
+    });
+    app.get("/jobs/:jobId", async (context) => {
+      const job = await jobs.get(context.req.param("jobId"));
+
+      if (!job) return context.json({ error: "Review job not found." }, 404);
+
+      const principal = authScope?.getStore();
+
+      if (access && principal) {
+        const repoPath = access.normalizeRepoPath?.(job.input.repo);
+
+        if (!repoPath || !(await access.canReadRepo(principal, repoPath)))
+          throw new ReviewInputError("Review job not found.", 404);
+      }
+
+      return context.json({
+        status: job.status,
+        ...(job.id && { jobId: job.id }),
+        ...(job.reviewId && { reviewId: job.reviewId }),
+        ...(job.url && { url: job.url }),
+        ...(job.error && { error: job.error }),
+      });
+    });
+  }
+
   app.get("/instructions", async (context) => {
     const { topic } = instructionsQuerySchema.parse(context.req.query());
 
@@ -397,7 +818,7 @@ export function createReviewApi(
       })
       .parse(context.req.query());
 
-    const snapshot = readReview(context.req.param("id"), query.version);
+    const snapshot = await readReview(context.req.param("id"), query.version);
 
     const documentPins =
       query.wait === "false" && snapshot.pins
@@ -444,7 +865,7 @@ export function createReviewApi(
 
     const id = context.req.param("id");
 
-    const snapshot = store.read(id);
+    const snapshot = await store.read(id);
 
     const progress = await reviewProgress(
       store,
@@ -470,18 +891,18 @@ export function createReviewApi(
       };
     });
 
-    if (store.read(id).version !== snapshot.version)
+    if ((await store.read(id)).version !== snapshot.version)
       throw new ReviewInputError(
         "Review changed during this update. Try again.",
         409,
       );
-    store.updateViewedCoverage(id, files, input.viewed);
+    await store.updateViewedCoverage(id, files, input.viewed);
 
     return context.json(
       await reviewProgress(
         store,
         data,
-        store.read(id, input.version),
+        await store.read(id, input.version),
         context.req.raw.signal,
         input.mode,
       ),
@@ -492,7 +913,7 @@ export function createReviewApi(
   app.get("/:id/lenses", async (context) => {
     if (!data) throw new ReviewInputError("Source data is unavailable.", 409);
 
-    const snapshot = readReview(context.req.param("id"));
+    const snapshot = await readReview(context.req.param("id"));
 
     return context.json({
       version: snapshot.version,
@@ -517,14 +938,14 @@ export function createReviewApi(
     }),
   );
 
-  app.get("/:id/activity", (context) => {
+  app.get("/:id/activity", async (context) => {
     const id = context.req.param("id");
-    readReview(id);
+    await readReview(id);
 
     return context.json(
       isShared(id)
         ? { workingCount: 0, expiresAt: null }
-        : store.activity.read(id),
+        : await store.activity.read(id),
     );
   });
 
@@ -533,10 +954,10 @@ export function createReviewApi(
     app.post(`/:id/activity/${action}`, async (context) => {
       const input = await readBoundedRequestJson(context.req.raw);
       const id = context.req.param("id");
-      store.assertExists(id);
+      await store.assertExists(id);
 
       return context.json(
-        store.activity.update(
+        await store.activity.update(
           id,
           isJsonObject(input) ? { ...input, action } : input,
         ),
@@ -544,6 +965,9 @@ export function createReviewApi(
     });
   app.get("/watch", async (context) => {
     const query = context.req.query("subscriptions");
+
+    // The stream's reads run after the middleware returned; keep the caller.
+    const principal = authScope?.getStore();
 
     if (query !== undefined) {
       let input: unknown;
@@ -580,30 +1004,36 @@ export function createReviewApi(
       };
 
       return watch(
-        () =>
-          subscriptions.map(({ reviewId, mode }, index) => {
-            if (!dirty.delete(index)) return null;
+        async () =>
+          Promise.all(
+            subscriptions.map(async ({ reviewId, mode }, index) => {
+              if (!dirty.delete(index)) return null;
 
-            try {
-              return {
-                value:
-                  reviewId === null
-                    ? catalog(mode)
-                    : {
-                        ...readReview(reviewId),
-                        activity: store.activity.read(reviewId),
-                        coverageRevision: data?.coverageRevision ?? 0,
-                      },
-              };
-            } catch (error) {
-              return {
-                error:
-                  error instanceof ReviewInputError
-                    ? error.message
-                    : "Could not read review.",
-              };
-            }
-          }),
+              try {
+                return {
+                  value:
+                    reviewId === null
+                      ? await catalog(mode, principal)
+                      : await (async () => {
+                          await assertRepoAccess(reviewId, principal);
+
+                          return {
+                            ...(await readReview(reviewId)),
+                            activity: await store.activity.read(reviewId),
+                            coverageRevision: data?.coverageRevision ?? 0,
+                          };
+                        })(),
+                };
+              } catch (error) {
+                return {
+                  error:
+                    error instanceof ReviewInputError
+                      ? error.message
+                      : "Could not read review.",
+                };
+              }
+            }),
+          ),
         (notify) => {
           const stopRefresh = store.watchWorktrees();
 
@@ -644,7 +1074,8 @@ export function createReviewApi(
     await ensureScratchpad();
 
     return watch(
-      () => catalog(coverageModeSchema.parse(context.req.query("mode"))),
+      () =>
+        catalog(coverageModeSchema.parse(context.req.query("mode")), principal),
       (notify) => {
         const local = store.subscribeCatalog(notify);
         const activity = store.activity.subscribeWorking(notify);
@@ -678,7 +1109,7 @@ export function createReviewApi(
         void data?.workspaces
           .open(review.reviewId, review.pins)
           .catch(() => {});
-      environmentIssues = data?.currentEnvironmentIssues(review);
+      environmentIssues = await data?.currentEnvironmentIssues(review);
     } catch (error) {
       environmentIssues = [
         {
@@ -704,7 +1135,10 @@ export function createReviewApi(
       if (!open || !(await capabilities()).desktopAvailable)
         return { opened: false };
 
-      return { opened: true, ...(await openReview(store.read(reviewId))) };
+      return {
+        opened: true,
+        ...(await openReview(await store.read(reviewId))),
+      };
     } catch (error) {
       return {
         opened: false,
@@ -718,20 +1152,23 @@ export function createReviewApi(
 
     if (isShared(id)) await shared?.assertReady(id);
 
-    return context.json({ ok: true, ...(await openReview(readReview(id))) });
+    return context.json({
+      ok: true,
+      ...(await openReview(await readReview(id))),
+    });
   });
-  app.get("/:id/watch", (context) => {
+  app.get("/:id/watch", async (context) => {
     const id = context.req.param("id");
 
     // Activity changes every renewal; reload the document only when it changed.
     let document: Snapshot | undefined;
 
     return watch(
-      () => ({
-        ...(document ??= readReview(id)),
+      async () => ({
+        ...(document ??= await readReview(id)),
         activity: isShared(id)
           ? { workingCount: 0, expiresAt: null }
-          : store.activity.read(id),
+          : await store.activity.read(id),
       }),
       (notify) => {
         const stopRefresh = store.watchWorktrees();
@@ -763,8 +1200,8 @@ export function createReviewApi(
     });
 
     // Traces are stored beside the review's own repository.
-    const tracePins = (id: string, version?: number) => {
-      const { pins } = readReview(id, version);
+    const tracePins = async (id: string, version?: number) => {
+      const { pins } = await readReview(id, version);
 
       if (!pins)
         throw new ReviewInputError(
@@ -777,11 +1214,11 @@ export function createReviewApi(
 
     app.get("/:id/agent-traces", async (context) => {
       const query = traceQuery.parse(context.req.query());
-      const pins = tracePins(context.req.param("id"), query.version);
+      const pins = await tracePins(context.req.param("id"), query.version);
 
       return context.json(
         await listPinnedTraces(
-          store.repositoryPath(pins.repositoryId),
+          await store.repositoryPath(pins.repositoryId),
           pins,
           query.storage,
         ),
@@ -789,10 +1226,10 @@ export function createReviewApi(
     });
     app.get("/:id/agent-traces/:sessionId", async (context) => {
       const query = traceQuery.parse(context.req.query());
-      const pins = tracePins(context.req.param("id"), query.version);
+      const pins = await tracePins(context.req.param("id"), query.version);
 
       const result = await readStoredTrace(
-        store.repositoryPath(pins.repositoryId),
+        await store.repositoryPath(pins.repositoryId),
         context.req.param("sessionId"),
         query.trace,
         query.storage,
@@ -820,7 +1257,7 @@ export function createReviewApi(
 
       return context.json(
         await data.navigatorWorkspace(
-          readReview(context.req.param("id"), input.version),
+          await readReview(context.req.param("id"), input.version),
           {
             ...input,
             empty: input.empty === "true",
@@ -833,7 +1270,7 @@ export function createReviewApi(
       const input = readQuerySchemas.tree.parse(context.req.query());
 
       const { pins } = await data.resolveSource(
-        readReview(context.req.param("id"), input.version),
+        await readReview(context.req.param("id"), input.version),
         input.commit,
         queryAnchor(input),
       );
@@ -854,7 +1291,7 @@ export function createReviewApi(
 
       return context.json(
         await data.map(
-          await data.sourcePins(readReview(id, query.version)),
+          await data.sourcePins(await readReview(id, query.version)),
           z.string().parse(context.req.param("resourceId")),
         ),
       );
@@ -863,6 +1300,22 @@ export function createReviewApi(
       const input = z
         .strictObject({ path: z.string().min(1) })
         .parse(await readBoundedRequestJson(context.req.raw));
+
+      if (access) {
+        const principal = authScope!.getStore()!;
+        const remote = access.normalizeRepoPath?.(input.path);
+
+        if (!remote)
+          throw new ReviewInputError(
+            "Remote deployments register GitHub repository URLs.",
+            400,
+          );
+
+        if (!(await access.canReadRepo(principal, remote)))
+          throw new ReviewInputError("Repository is not registered.", 404);
+
+        return context.json(await store.registerRemoteRepository(remote));
+      }
 
       return context.json(await data!.register(input.path));
     });
@@ -875,7 +1328,7 @@ export function createReviewApi(
     );
     app.get("/:id/resources/:resourceId", async (context) => {
       const id = context.req.param("id");
-      const snapshot = readReview(id);
+      const snapshot = await readReview(id);
 
       const resource =
         id && isShared(id)
@@ -886,7 +1339,9 @@ export function createReviewApi(
               )),
               repositoryId: snapshot.pins?.repositoryId ?? "",
             }
-          : store.resource(z.string().parse(context.req.param("resourceId")));
+          : await store.resource(
+              z.string().parse(context.req.param("resourceId")),
+            );
 
       // A document with pins serves only its repository's resources.
       if (snapshot.pins && resource.repositoryId !== snapshot.pins.repositoryId)
@@ -910,7 +1365,7 @@ export function createReviewApi(
         })
         .parse(context.req.query());
 
-      const snapshot = readReview(context.req.param("id"), input.version);
+      const snapshot = await readReview(context.req.param("id"), input.version);
 
       const environment = await data.languageEnvironment(
         snapshot,
@@ -943,7 +1398,7 @@ export function createReviewApi(
 
       return context.json({
         issues: await data.environmentIssues(
-          readReview(context.req.param("id")),
+          await readReview(context.req.param("id")),
           input.retry,
         ),
       });
@@ -956,12 +1411,12 @@ export function createReviewApi(
       if (input.workspaceId)
         await data.workspaces.retryCleanup(input.workspaceId);
 
-      return context.json({ failures: data.workspaces.failures() });
+      return context.json({ failures: await data.workspaces.failures() });
     });
-    app.get("/:id/workspaces", (context) => {
-      readReview(context.req.param("id"));
+    app.get("/:id/workspaces", async (context) => {
+      await readReview(context.req.param("id"));
 
-      return context.json(data.workspaces.list(context.req.param("id")));
+      return context.json(await data.workspaces.list(context.req.param("id")));
     });
     app.post("/:id/workspaces/:workspaceId/retry", async (context) => {
       return context.json(
@@ -982,7 +1437,7 @@ export function createReviewApi(
       const anchor = queryAnchor(input);
 
       const { snapshot, pins } = await data.resolveSource(
-        readReview(id, input.version),
+        await readReview(id, input.version),
         input.commit,
         anchor,
       );
@@ -1019,7 +1474,7 @@ export function createReviewApi(
       const id = context.req.param("id");
 
       const { pins } = await data.resolveSource(
-        readReview(id, input.version),
+        await readReview(id, input.version),
         input.commit,
         queryAnchor(input),
       );
@@ -1067,7 +1522,7 @@ export function createReviewApi(
       const input = readQuerySchemas.diff.parse(context.req.query());
 
       const { pins } = await data.resolveSource(
-        readReview(context.req.param("id"), input.version),
+        await readReview(context.req.param("id"), input.version),
         input.commit,
         queryAnchor(input),
       );
@@ -1081,7 +1536,7 @@ export function createReviewApi(
         await data.commits(
           (
             await data.resolveSource(
-              readReview(context.req.param("id"), input.version),
+              await readReview(context.req.param("id"), input.version),
             )
           ).pins,
         ),
@@ -1117,7 +1572,7 @@ export function createReviewApi(
     if (selection.apiSource && selection.apiSource.reviewId !== reviewId)
       throw new ReviewInputError("Selection belongs to another review.");
 
-    const snapshot = readReview(
+    const snapshot = await readReview(
       reviewId,
       selection.apiSource?.version ?? version,
     );
@@ -1254,7 +1709,7 @@ export function createReviewApi(
     app.get("/:id/ask/agents/:agent/offer", async (context) => {
       const agent = z.enum(askAgentIds).parse(context.req.param("agent"));
       const { model } = askOfferQuerySchema.parse(context.req.query());
-      const stored = store.askHistory.offer(agent);
+      const stored = await store.askHistory.offer(agent);
 
       // An offer of nothing to choose was saved before the agent's
       // settings were known; the agent says again.
@@ -1268,12 +1723,12 @@ export function createReviewApi(
         model !== models?.current &&
         (!models || models.options.some((option) => option.value === model));
 
-      const known = another ? store.askHistory.offer(agent, model) : last;
+      const known = another ? await store.askHistory.offer(agent, model) : last;
 
       if (known) return context.json({ offer: known });
 
       const checkout = await data.agentCheckout(
-        readReview(context.req.param("id")),
+        await readReview(context.req.param("id")),
       );
 
       const offer = await ask.threads.offered(
@@ -1282,8 +1737,8 @@ export function createReviewApi(
         another ? model : undefined,
       );
 
-      if (last) store.askHistory.saveModelOffer(agent, offer);
-      else store.askHistory.saveOffer(agent, offer);
+      if (last) await store.askHistory.saveModelOffer(agent, offer);
+      else await store.askHistory.saveOffer(agent, offer);
 
       return context.json({ offer });
     });
@@ -1296,7 +1751,7 @@ export function createReviewApi(
 
       const cwd = thread
         ? readThread(reviewId, thread).read().cwd
-        : (await data.agentCheckout(readReview(reviewId))).rootPath;
+        : (await data.agentCheckout(await readReview(reviewId))).rootPath;
 
       const files = fuzzyRank(query, await mentionableFiles(cwd), (file) => [
         file,
@@ -1317,7 +1772,7 @@ export function createReviewApi(
         await readBoundedRequestJson(context.req.raw, ASK_REQUEST_MAX_BYTES),
       );
 
-      const snapshot = readReview(reviewId, version);
+      const snapshot = await readReview(reviewId, version);
       const checkout = await data.agentCheckout(snapshot);
       const target = input.selection.target;
       const id = crypto.randomUUID();
@@ -1330,9 +1785,11 @@ export function createReviewApi(
         // Saved once the agent has a session to reopen; a later one
         // replaces a session the agent could not reopen.
         onSession: (sessionId) =>
-          store.askHistory.get(id)
-            ? store.askHistory.updateSession(id, sessionId)
-            : store.askHistory.save({
+          void (async () => {
+            if (await store.askHistory.get(id))
+              await store.askHistory.updateSession(id, sessionId);
+            else
+              await store.askHistory.save({
                 id,
                 reviewId,
                 agent: input.agent,
@@ -1345,14 +1802,19 @@ export function createReviewApi(
                 createdAt,
                 updatedAt: createdAt,
                 bypass: input.bypass,
-              }),
-        onTurn: () => store.askHistory.touch(id),
-        onSave: (entries) => store.askHistory.saveEntries(id, entries),
+              });
+          })().catch(() => {}),
+        onTurn: () => void store.askHistory.touch(id).catch(() => {}),
+        onSave: (entries) =>
+          void store.askHistory.saveEntries(id, entries).catch(() => {}),
         picks: input.picks,
         bypass: input.bypass,
-        onBypass: (bypass) => store.askHistory.setBypass(id, bypass),
-        onOffer: (offer) => store.askHistory.saveOffer(input.agent, offer),
-        onTitle: (title) => store.askHistory.rename(id, title),
+        onBypass: (bypass) =>
+          void store.askHistory.setBypass(id, bypass).catch(() => {}),
+        onOffer: (offer) =>
+          void store.askHistory.saveOffer(input.agent, offer).catch(() => {}),
+        onTitle: (title) =>
+          void store.askHistory.rename(id, title).catch(() => {}),
         cwd: checkout.rootPath,
         head: checkout.head,
         selection: {
@@ -1372,12 +1834,12 @@ export function createReviewApi(
       return context.json({ threadId: thread.id });
     });
 
-    app.get("/:id/ask/threads", (context) => {
+    app.get("/:id/ask/threads", async (context) => {
       const reviewId = context.req.param("id");
 
-      readReview(reviewId);
+      await readReview(reviewId);
 
-      return context.json({ threads: store.askHistory.list(reviewId) });
+      return context.json({ threads: await store.askHistory.list(reviewId) });
     });
 
     // The threads of every open Ask in a review, over one connection. Before
@@ -1385,7 +1847,7 @@ export function createReviewApi(
     app.post("/:id/ask/watch", async (context) => {
       const reviewId = context.req.param("id");
 
-      readReview(reviewId);
+      await readReview(reviewId);
 
       const { threads } = askWatchSchema.parse(
         await readBoundedRequestJson(context.req.raw),
@@ -1406,8 +1868,8 @@ export function createReviewApi(
     });
 
     // A saved conversation, without starting its agent.
-    app.get("/:id/ask/:threadId", (context) => {
-      const record = store.askHistory.get(context.req.param("threadId"));
+    app.get("/:id/ask/:threadId", async (context) => {
+      const record = await store.askHistory.get(context.req.param("threadId"));
 
       if (record?.reviewId !== context.req.param("id"))
         throw new ReviewInputError("This conversation was not found.", 404);
@@ -1439,7 +1901,7 @@ export function createReviewApi(
       const live = ask.threads.get(threadId);
 
       if (live?.reviewId === reviewId) return context.json({ threadId });
-      const record = store.askHistory.get(threadId);
+      const record = await store.askHistory.get(threadId);
 
       const { picks } = askOpenSchema.parse(
         await readBoundedRequestJson(context.req.raw, undefined, {}),
@@ -1448,7 +1910,7 @@ export function createReviewApi(
       if (record?.reviewId !== reviewId)
         throw new ReviewInputError("This conversation was not found.", 404);
 
-      const snapshot = readReview(reviewId, record.version);
+      const snapshot = await readReview(reviewId, record.version);
       const checkout = await data.agentCheckout(snapshot);
       const target = record.selection.target;
 
@@ -1472,14 +1934,20 @@ export function createReviewApi(
           record.version,
         ),
         onSession: (sessionId) =>
-          store.askHistory.updateSession(record.id, sessionId),
-        onTurn: () => store.askHistory.touch(record.id),
-        onSave: (entries) => store.askHistory.saveEntries(record.id, entries),
+          void store.askHistory
+            .updateSession(record.id, sessionId)
+            .catch(() => {}),
+        onTurn: () => void store.askHistory.touch(record.id).catch(() => {}),
+        onSave: (entries) =>
+          void store.askHistory.saveEntries(record.id, entries).catch(() => {}),
         picks,
         bypass: record.bypass,
-        onBypass: (bypass) => store.askHistory.setBypass(record.id, bypass),
-        onOffer: (offer) => store.askHistory.saveOffer(record.agent, offer),
-        onTitle: (title) => store.askHistory.rename(record.id, title),
+        onBypass: (bypass) =>
+          void store.askHistory.setBypass(record.id, bypass).catch(() => {}),
+        onOffer: (offer) =>
+          void store.askHistory.saveOffer(record.agent, offer).catch(() => {}),
+        onTitle: (title) =>
+          void store.askHistory.rename(record.id, title).catch(() => {}),
       });
 
       return context.json({ threadId: record.id });
@@ -1643,37 +2111,79 @@ export function createReviewApi(
     });
 
     // Forgets a saved conversation. The agent keeps its own transcript.
-    app.delete("/:id/ask/:threadId", (context) => {
+    app.delete("/:id/ask/:threadId", async (context) => {
       const reviewId = context.req.param("id");
       const threadId = context.req.param("threadId");
 
-      if (store.askHistory.get(threadId)?.reviewId !== reviewId)
+      if ((await store.askHistory.get(threadId))?.reviewId !== reviewId)
         throw new ReviewInputError("This conversation was not found.", 404);
 
       if (ask.threads.get(threadId)?.reviewId === reviewId)
         ask.threads.close(threadId);
-      store.askHistory.delete(threadId);
+      await store.askHistory.delete(threadId);
 
       return context.json({ ok: true });
     });
   }
 
+  app.get("/:id/comments", async (context) => {
+    const reviewId = context.req.param("id");
+
+    await readReview(reviewId);
+
+    return context.json({ comments: await store.comments.list(reviewId) });
+  });
+
+  app.post("/:id/comments", async (context) => {
+    const reviewId = context.req.param("id");
+    const snapshot = await readReview(reviewId);
+
+    const input = commentInputSchema.parse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    return context.json(
+      await store.comments.add(reviewId, snapshot.version, {
+        ...input,
+        author: input.author ?? os.userInfo().username,
+      }),
+      201,
+    );
+  });
+
+  app.post("/:id/comments/resolve", async (context) => {
+    const reviewId = context.req.param("id");
+
+    await readReview(reviewId);
+
+    const { commentId, resolved } = z
+      .strictObject({
+        commentId: z.string().min(1),
+        resolved: z.boolean().default(true),
+      })
+      .parse(await readBoundedRequestJson(context.req.raw));
+
+    return context.json({
+      comments: await store.comments.setResolved(reviewId, commentId, resolved),
+    });
+  });
+
   app.get("/:id/stack", async (context) => {
     const query = readQuerySchemas.get.parse(context.req.query());
     const id = context.req.param("id");
-    const snapshot = readReview(id, query.version);
+    const snapshot = await readReview(id, query.version);
 
     if (isShared(id) || !snapshot.pins) return context.json({ layers: [] });
-    const layers = await resolveReviewStackLayers(snapshot, store.list());
+    const layers = await resolveReviewStackLayers(snapshot, await store.list());
 
     return context.json({ layers });
   });
 
-  app.get("/:id/history", (context) => {
+  app.get("/:id/history", async (context) => {
     const id = context.req.param("id");
 
-    if (!isShared(id)) return context.json(store.history(id));
-    const snapshot = readReview(id);
+    if (!isShared(id)) return context.json(await store.history(id));
+    const snapshot = await readReview(id);
 
     return context.json([
       {
@@ -1683,10 +2193,10 @@ export function createReviewApi(
       },
     ]);
   });
-  app.get("/:id/inspect", (context) => {
+  app.get("/:id/inspect", async (context) => {
     const query = inspectQuerySchema.parse(context.req.query());
     const id = context.req.param("id");
-    const snapshot = readReview(id, query.version);
+    const snapshot = await readReview(id, query.version);
 
     return context.json(
       query.format === "text"
@@ -1701,7 +2211,9 @@ export function createReviewApi(
   app.get("/:id", async (context) => {
     const query = readQuerySchemas.get.parse(context.req.query());
 
-    const snapshot = { ...readReview(context.req.param("id"), query.version) };
+    const snapshot = {
+      ...(await readReview(context.req.param("id"), query.version)),
+    };
 
     if (data && query.full) {
       try {
@@ -1736,7 +2248,7 @@ export function createReviewApi(
           await reviewProgress(
             store,
             data,
-            store.read(reviewId, version),
+            await store.read(reviewId, version),
             request.signal,
           ),
         ),
@@ -1755,7 +2267,34 @@ export function createReviewApi(
       await readBoundedRequestJson(context.req.raw),
     );
 
-    const request = await locateRepositories(body, (path) => {
+    const request = await locateRepositories(body, async (path) => {
+      // Remote mode registers by remote URL, and only once the caller's
+      // GitHub identity proves it can read the repository.
+      if (access) {
+        const caller = authScope!.getStore()!;
+        const remote = access.normalizeRepoPath?.(path);
+
+        if (
+          !remote &&
+          caller.via === "job" &&
+          caller.jobCheckoutPath === path &&
+          data &&
+          existsSync(path)
+        )
+          return data.register(path);
+
+        if (!remote)
+          throw new ReviewInputError(
+            "Remote deployments register GitHub repository URLs.",
+            400,
+          );
+
+        if (!(await access.canReadRepo(caller, remote)))
+          throw new ReviewInputError("Repository is not registered.", 404);
+
+        return store.registerRemoteRepository(remote);
+      }
+
       if (!data) throw new ReviewInputError("Repositories are unavailable.");
 
       if (!existsSync(path))
@@ -1770,6 +2309,38 @@ export function createReviewApi(
 
     const input = commandSchema.parse(request);
 
+    // Commands that name ids directly skip locateRepositories, so the
+    // caller's access is checked against each named review and repository.
+    if (access) {
+      const caller = authScope!.getStore()!;
+      const operation = input.operation;
+
+      if ("reviewId" in operation && operation.reviewId)
+        await assertRepoAccess(operation.reviewId, caller);
+
+      const namedRepositoryId =
+        (operation.type === "create" || operation.type === "set_target"
+          ? operation.target?.repositoryId
+          : undefined) ??
+        (operation.type === "create" ? operation.repositoryId : undefined);
+
+      if (namedRepositoryId) {
+        const repoPath = await store
+          .repositoryPath(namedRepositoryId)
+          .catch(() => undefined);
+
+        if (!repoPath || !(await access.canReadRepo(caller, repoPath)))
+          throw new ReviewInputError("Repository is not registered.", 404);
+      }
+
+      if (operation.type === "create" && operation.pullRequestUrl) {
+        const repoPath = operation.pullRequestUrl.replace(/\/pull\/\d+.*$/, "");
+
+        if (!(await access.canReadRepo(caller, repoPath)))
+          throw new ReviewInputError("Repository is not registered.", 404);
+      }
+    }
+
     const targetRepositoryId =
       input.operation.type === "create" &&
       input.operation.target?.kind === "worktree"
@@ -1778,7 +2349,7 @@ export function createReviewApi(
 
     if (
       targetRepositoryId &&
-      !store.repositories().some(({ id }) => id === targetRepositoryId)
+      !(await store.repositories()).some(({ id }) => id === targetRepositoryId)
     )
       throw new ReviewInputError("Select a registered repository.", 400);
 
@@ -1832,9 +2403,9 @@ export function createReviewApi(
     if (input.operation.type === "edit" && data && !result.deleted) {
       const { quotes, unquoted } = await anchorQuotes(
         result.version > 0
-          ? store.read(result.reviewId, result.version - 1)
+          ? await store.read(result.reviewId, result.version - 1)
           : undefined,
-        store.read(result.reviewId, result.version),
+        await store.read(result.reviewId, result.version),
         async (pins, side, file) => (await data.file(pins, side, file)).text,
       );
 
@@ -1868,20 +2439,26 @@ export function createReviewApi(
       hooks.onReviewCreated?.({
         reviewId: result.reviewId,
         kind: input.operation.kind === "scratchpad" ? "scratchpad" : "review",
-        blocks: store.read(result.reviewId).document.length,
+        blocks: (await store.read(result.reviewId)).document.length,
         ...reviewRequestOrigin(context.req.raw.headers),
       });
 
     return context.json({
       ...result,
-      review: store.summary(result.reviewId),
+      review: await store.summary(result.reviewId),
       ...(requestedOpen === false
         ? { opened: false }
         : await openCreated(result.reviewId)),
     });
   });
 
-  return app;
+  return Object.assign(app, {
+    fetchAsPrincipal(request: Request, principal: AuthPrincipal) {
+      return authScope
+        ? authScope.run(principal, () => app.fetch(request))
+        : app.fetch(request);
+    },
+  });
 }
 
 const systemErrorSchema = z.object({ code: z.string().regex(/^[A-Z0-9_]+$/) });
@@ -1954,37 +2531,69 @@ async function locateRepositories(
 }
 
 /** Send committed state, coalescing updates when the reader falls behind. */
-function watch<T>(
-  read: () => T,
+async function watch<T>(
+  read: () => T | Promise<T>,
   subscribe: (notify: () => void) => () => void,
-  probe: () => void = read,
+  probe?: () => void | Promise<void>,
 ) {
-  probe(); // Return a normal 404 before opening the response.
+  // Return a normal 404 before opening the response.
+  if (probe) await probe();
+  else await read();
+
   let stop = () => {};
 
   let dirty = true;
+  let reading = false;
+  // A read result that already consumed its marks, held while back-pressured.
+  let buffered: string | undefined;
   const encoder = new TextEncoder();
 
   const send = (controller: ReadableStreamDefaultController<Uint8Array>) => {
     if (
+      buffered &&
+      controller.desiredSize !== null &&
+      controller.desiredSize > 0
+    ) {
+      const line = buffered;
+      buffered = undefined;
+
+      try {
+        controller.enqueue(encoder.encode(line));
+      } catch (error) {
+        // A review can be deleted while this stream is open. Do not throw into
+        // the already-committed writer; close this reader and unsubscribe it.
+        stop();
+        controller.error(error);
+
+        return;
+      }
+    }
+
+    if (
+      reading ||
       !dirty ||
+      buffered ||
       controller.desiredSize === null ||
       controller.desiredSize <= 0
     )
       return;
 
-    try {
-      const line = JSON.stringify(read()) + "\n";
+    dirty = false;
+    reading = true;
 
-      // enqueue can pull synchronously; clear first so it doesn't resend.
-      dirty = false;
-      controller.enqueue(encoder.encode(line));
-    } catch (error) {
-      // A review can be deleted while this stream is open. Do not throw into
-      // the already-committed writer; close this reader and unsubscribe it.
-      stop();
-      controller.error(error);
-    }
+    void Promise.resolve()
+      .then(read)
+      .then((value) => {
+        reading = false;
+        buffered = JSON.stringify(value) + "\n";
+        send(controller);
+      })
+      .catch((error) => {
+        // The same close, for a read that fails.
+        reading = false;
+        stop();
+        controller.error(error);
+      });
   };
 
   const body = new ReadableStream<Uint8Array>({

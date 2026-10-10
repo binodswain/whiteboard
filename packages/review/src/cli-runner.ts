@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
@@ -5,6 +6,8 @@ import { createInterface } from "node:readline/promises";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { isJsonObject } from "@dev.fast/json";
+import type { ReviewApiSummary } from "@dev.fast/review-protocol";
 import {
   StoreApiError,
   processIsAlive,
@@ -58,7 +61,9 @@ import {
   findReviewPackageRoot,
   readReviewPackageVersion,
 } from "./package-paths";
+import { preflight, resolveTarget } from "./preflight.js";
 import { reviewAgentCliHelp } from "./review-api/agent-cli";
+import { connectReviewInstance } from "./review-api/agent-client.js";
 import { ReviewApiError } from "./review-api/client";
 import {
   type ReviewAppEvent,
@@ -496,7 +501,7 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         });
 
         try {
-          return local.store.resetServerId();
+          return await local.store.resetServerId();
         } finally {
           await local.data.close();
           await local.store.close();
@@ -646,6 +651,282 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     "plain",
   ).action(pickReview);
 
+  configureJsonOutput(
+    program
+      .command("review")
+      .description("Create and open a review of selected commits")
+      .option("--commit <sha>", "review one commit against its first parent")
+      .option("--range <range>", "review a commit range such as a..b")
+      .option("--branch <name>", "review a branch against the default branch")
+      .option("--pick <sha>", "review a selected commit")
+      .option(
+        "--repo <path>",
+        "repository path; defaults to the current directory",
+      ),
+    "plain",
+  ).action(
+    async (options: {
+      commit?: string;
+      range?: string;
+      branch?: string;
+      pick?: string;
+      repo?: string;
+      json?: boolean;
+    }) => {
+      const repositoryPath = path.resolve(cwd, options.repo ?? ".");
+
+      const target = await resolveTarget(repositoryPath, {
+        commit: options.commit,
+        range: options.range,
+        branch: options.branch,
+        pick: options.pick,
+      });
+
+      const connected = await connectReviewInstance(authoringEnv());
+
+      const healthResponse = await fetch(
+        new URL("/health", connected.client.connection.serverUrl),
+        {
+          headers: connected.client.connection.token
+            ? { "x-review-token": connected.client.connection.token }
+            : undefined,
+        },
+      );
+
+      const health: unknown = healthResponse.ok
+        ? await healthResponse.json()
+        : null;
+
+      const deployment = isJsonObject(health) ? health.deployment : undefined;
+
+      const remote =
+        (isJsonObject(health) && health.mode === "remote") ||
+        (isJsonObject(deployment) && deployment.mode === "remote");
+
+      if (remote) {
+        const { errors } = await preflight(repositoryPath, { remote: true });
+
+        if (errors.length) {
+          for (const error of errors) input.stderr.write(`${error.message}\n`);
+
+          state.exitCode = 1;
+
+          return;
+        }
+      }
+
+      const created = await connected.client.post<{ reviewId: string }>(
+        "/commands",
+        {
+          operation: {
+            type: "create",
+            target: {
+              kind: "commits",
+              repositoryPath,
+              base: target.baseSha,
+              head: target.headSha,
+            },
+          },
+          open: false,
+        },
+      );
+
+      const opened = await connected.client.post<{ url?: string }>(
+        `/${encodeURIComponent(created.reviewId)}/open`,
+        {},
+      );
+
+      const url =
+        opened.url ??
+        `${connected.client.connection.serverUrl}/r/${encodeURIComponent(created.reviewId)}`;
+
+      input.stdout.write(
+        options.json
+          ? `${JSON.stringify({ event: "review.created", reviewId: created.reviewId, url, ...target })}\n`
+          : `${url}\n`,
+      );
+      state.exitCode = 0;
+    },
+  );
+
+  program
+    .command("comment")
+    .description("Comment on a review, on a file line or the whole review")
+    .argument("<review>", "review ID")
+    .argument("<text>", "comment text")
+    .option("--file <path:line>", "anchor to a line of the head commit")
+    .option("--reply-to <commentId>", "reply in an existing thread")
+    .action(
+      async (
+        reviewId: string,
+        text: string,
+        options: { file?: string; replyTo?: string },
+      ) => {
+        const connected = await connectReviewInstance(authoringEnv());
+        const fileLine = options.file?.match(/^(.+):(\d+)$/);
+
+        if (options.file && !fileLine)
+          throw new Error("--file takes path:line, such as src/app.ts:12.");
+
+        const comment = await connected.client.post<{ id: string }>(
+          `/${encodeURIComponent(reviewId)}/comments`,
+          {
+            body: text,
+            author: gitUserName(cwd),
+            ...(fileLine && { anchor: `head/${fileLine[1]}#L${fileLine[2]}` }),
+            ...(options.replyTo && { parentId: options.replyTo }),
+          },
+        );
+
+        input.stdout.write(`${comment.id}\n`);
+        state.exitCode = 0;
+      },
+    );
+
+  program
+    .command("comments")
+    .description("List a review's comment threads")
+    .argument("<review>", "review ID")
+    .action(async (reviewId: string) => {
+      const connected = await connectReviewInstance(authoringEnv());
+
+      const { comments } = await connected.client.read<{
+        comments: {
+          id: string;
+          anchor?: string;
+          parentId?: string;
+          body: string;
+          author: string;
+          resolved: boolean;
+          outdated: boolean;
+        }[];
+      }>(`/${encodeURIComponent(reviewId)}/comments`);
+
+      for (const comment of comments.filter((item) => !item.parentId)) {
+        const flags = [
+          comment.resolved ? "resolved" : "open",
+          comment.outdated ? "outdated" : undefined,
+        ].filter(Boolean);
+
+        const place = comment.anchor ?? "review";
+
+        input.stdout.write(
+          `${comment.id} [${flags.join(", ")}] ${place} ${comment.author}: ${comment.body}\n`,
+        );
+
+        for (const reply of comments.filter(
+          (item) => item.parentId === comment.id,
+        )) {
+          input.stdout.write(`  ${reply.id} ${reply.author}: ${reply.body}\n`);
+        }
+      }
+
+      state.exitCode = 0;
+    });
+
+  const reviews = configureJsonOutput(
+    program
+      .command("reviews")
+      .description("List saved reviews and manage their tags"),
+    "plain",
+  );
+
+  configureJsonOutput(
+    reviews
+      .command("list")
+      .description("List saved reviews, optionally filtered")
+      .option("--repo <name>", "repository name or id")
+      .option("--branch <name>", "branch the review was created from")
+      .option("--commit <sha>", "prefix of the base or head commit")
+      .option("--author <name>", "who created the review")
+      .option("--tag <tag>", "reviews carrying this tag"),
+    "plain",
+  ).action(
+    async (options: {
+      repo?: string;
+      branch?: string;
+      commit?: string;
+      author?: string;
+      tag?: string;
+      json?: boolean;
+    }) => {
+      const connected = await connectReviewInstance(authoringEnv());
+
+      const query = new URLSearchParams();
+
+      const filters: [string, string | undefined][] = [
+        ["repo", options.repo],
+        ["branch", options.branch],
+        ["commit", options.commit],
+        ["author", options.author],
+        ["tag", options.tag],
+      ];
+
+      for (const [key, value] of filters) if (value) query.set(key, value);
+
+      const summaries = (
+        await connected.client.read<ReviewApiSummary[]>(`/?${query}`)
+      ).filter((summary) => summary.kind !== "scratchpad");
+
+      const serverUrl = connected.client.connection.serverUrl;
+
+      if (options.json) {
+        input.stdout.write(`${JSON.stringify(summaries)}\n`);
+      } else {
+        for (const summary of summaries) {
+          const details = [
+            summary.origin?.branch,
+            summary.pins?.head.slice(0, 7),
+            summary.createdBy,
+            summary.tags?.length ? `#${summary.tags.join(" #")}` : undefined,
+          ].filter(Boolean);
+
+          input.stdout.write(
+            `${serverUrl}/r/${encodeURIComponent(summary.reviewId)}  ${summary.title}${details.length ? `  (${details.join(", ")})` : ""}\n`,
+          );
+        }
+      }
+
+      state.exitCode = 0;
+    },
+  );
+
+  const tag = reviews.command("tag").description("Add or remove review tags");
+
+  for (const action of ["add", "remove"] as const) {
+    configureJsonOutput(
+      tag
+        .command(`${action} <reviewId> <tags...>`)
+        .description(`${action === "add" ? "Add" : "Remove"} tags on a review`),
+      "plain",
+    ).action(
+      async (reviewId: string, tags: string[], options: { json?: boolean }) => {
+        const connected = await connectReviewInstance(authoringEnv());
+
+        const result = await connected.client.post<{ tags?: string[] }>(
+          "/commands",
+          {
+            operation: {
+              type: "tags",
+              reviewId,
+              add: action === "add" ? tags : [],
+              remove: action === "remove" ? tags : [],
+            },
+          },
+        );
+
+        const current = result.tags ?? [];
+
+        input.stdout.write(
+          options.json
+            ? `${JSON.stringify({ event: "review.tags", reviewId, tags: current })}\n`
+            : `${current.length ? current.join(" ") : "(no tags)"}\n`,
+        );
+        state.exitCode = 0;
+      },
+    );
+  }
+
   const instanceOutput = (command: Command) => ({
     env,
     stdout: input.stdout,
@@ -707,8 +988,11 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     program
       .command("connect")
       .description(
-        "Print the prompt that connects a coding agent to Whiteboard",
+        "Connect a coding agent to Whiteboard or run a hosted ask connector",
       )
+      .option("--server <url>", "run a laptop connector for hosted asks")
+      .option("--token <token>", "server token; defaults to WHITEBOARD_TOKEN")
+      .option("--agent <agent>", "installed CLI agent to run", "claude")
       .addArgument(
         new Argument("[target...]", "coding agent").choices([
           "claude",
@@ -725,49 +1009,96 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
     "plain",
   );
 
-  connect.action(async (targets: string[], options: { json?: boolean }) => {
-    const selected = parseTargets(targets);
+  connect.action(
+    async (
+      targets: string[],
+      options: {
+        json?: boolean;
+        server?: string;
+        token?: string;
+        agent: string;
+      },
+    ) => {
+      if (options.server) {
+        const { askAgentIds } = await import("./ask/thread-state.js");
+        const agent = askAgentIds.find((id) => id === options.agent);
 
-    const { homeDir, devHome } = scope;
+        if (!agent)
+          throw new ReviewCliUsageError(
+            `--agent must be one of: ${askAgentIds.join(", ")}.`,
+          );
 
-    const prompts = connectPrompts({
-      legacyPaths: await scanLegacySkills(homeDir),
-      hasShim:
-        (await isOwnedShim(pathShimPath(homeDir))) ||
-        (await windowsInstallerCommand(
-          findReviewPackageRoot(import.meta.url),
-          env,
-        )) !== undefined,
-      traceEnabled: await traceMachineEnabled({ homeDir, env }),
-      fffBinaryPath: path.join(homeDir, ".local", "bin", "fff-mcp"),
-      fffCorpusRoot: path.join(devHome, "trace-search"),
-    });
+        const cliPath = input.cliPaths?.effectivePath ?? process.argv[1];
 
-    const output = {
-      json: options.json,
-      stdout: input.stdout,
-      stderr: input.stderr,
-    };
+        if (!cliPath)
+          throw new ReviewCliUsageError("Could not locate the Whiteboard CLI.");
 
-    if (options.json) {
-      emitJsonEvent(output, {
-        event: "connect",
-        prompts: Object.fromEntries(
-          selected.map((target) => [target, prompts[target]]),
-        ),
+        const { runAskConnector } = await import("./ask/runner/connector.js");
+        const controller = new AbortController();
+        const stop = () => controller.abort();
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+
+        try {
+          await runAskConnector({
+            server: options.server,
+            token: options.token ?? env.WHITEBOARD_TOKEN,
+            agent,
+            cliPath,
+            signal: controller.signal,
+            onStatus: (message) => input.stdout.write(`${message}\n`),
+          });
+        } finally {
+          process.off("SIGINT", stop);
+          process.off("SIGTERM", stop);
+        }
+
+        return;
+      }
+
+      const selected = parseTargets(targets);
+
+      const { homeDir, devHome } = scope;
+
+      const prompts = connectPrompts({
+        legacyPaths: await scanLegacySkills(homeDir),
+        hasShim:
+          (await isOwnedShim(pathShimPath(homeDir))) ||
+          (await windowsInstallerCommand(
+            findReviewPackageRoot(import.meta.url),
+            env,
+          )) !== undefined,
+        traceEnabled: await traceMachineEnabled({ homeDir, env }),
+        fffBinaryPath: path.join(homeDir, ".local", "bin", "fff-mcp"),
+        fffCorpusRoot: path.join(devHome, "trace-search"),
       });
 
-      return;
-    }
+      const output = {
+        json: options.json,
+        stdout: input.stdout,
+        stderr: input.stderr,
+      };
 
-    const sections = selected.map((target) =>
-      selected.length > 1
-        ? `## ${TARGET_LABELS[target]}\n\n${prompts[target]}`
-        : prompts[target],
-    );
+      if (options.json) {
+        emitJsonEvent(output, {
+          event: "connect",
+          prompts: Object.fromEntries(
+            selected.map((target) => [target, prompts[target]]),
+          ),
+        });
 
-    humanStream(output).write(`${sections.join("\n\n")}\n`);
-  });
+        return;
+      }
+
+      const sections = selected.map((target) =>
+        selected.length > 1
+          ? `## ${TARGET_LABELS[target]}\n\n${prompts[target]}`
+          : prompts[target],
+      );
+
+      humanStream(output).write(`${sections.join("\n\n")}\n`);
+    },
+  );
 
   const migrate = configureOutput(
     program.command("migrate", { hidden: true }),
@@ -1206,6 +1537,15 @@ const TARGET_LABELS: Record<InstallTarget, string> = {
   omp: "oh-my-pi",
   copilot: "Copilot CLI",
 };
+
+/** The checkout's git identity, which names the comment's author locally. */
+function gitUserName(cwd: string): string | undefined {
+  const name = spawnSync("git", ["-C", cwd, "config", "user.name"], {
+    encoding: "utf8",
+  }).stdout.trim();
+
+  return name || undefined;
+}
 
 function parseTargets(targets: readonly string[]): InstallTarget[] {
   if (targets.length === 0 || targets.includes("all")) {

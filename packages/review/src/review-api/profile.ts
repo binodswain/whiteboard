@@ -1,11 +1,15 @@
-import { access, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import { withFileLock } from "@dev.fast/trace-core";
+import type { DeploymentConfig } from "@review/server/deployment-config.js";
 
 import { openLocalReviewStore } from "./local-data.js";
-import { initializeReviewStoreSchema } from "./store-schema.js";
+import {
+  type MetadataStoreConfig,
+  createMetadataStore,
+} from "./storage/metadata-store.js";
+import { importHeadlessStore } from "./storage/sqlite.js";
 
 const lockOptions = {
   retryMs: 50,
@@ -16,21 +20,35 @@ const lockOptions = {
 
 export async function openReviewProfile(
   home: string,
-  options: { manageWorkspaces: boolean },
+  options: { manageWorkspaces: boolean; deployment?: DeploymentConfig },
 ) {
   await mkdir(home, { recursive: true, mode: 0o700 });
+  const deployment = options.deployment;
+  const metadataConfig = metadataStoreConfig(home, deployment);
 
   const outcome = await withFileLock(
     path.join(home, ".review-profile-startup"),
     lockOptions,
     async () => {
-      for (const source of [
-        path.join(home, "review-server", "reviews.db"),
-        path.join(home, "reviews.db"),
-      ])
-        await importHeadlessStore(home, source);
+      if (metadataConfig.kind === "sqlite")
+        for (const source of [
+          path.join(home, "review-server", "reviews.db"),
+          path.join(home, "reviews.db"),
+        ])
+          await importHeadlessStore(home, source, lockOptions);
 
-      return openLocalReviewStore(path.join(home, "review-api.db"), options);
+      if (metadataConfig.kind === "postgres") {
+        const metadataStore = await createMetadataStore(metadataConfig);
+
+        try {
+          return await openLocalReviewStore(metadataStore, options);
+        } catch (error) {
+          await metadataStore.close().catch(() => {});
+          throw error;
+        }
+      }
+
+      return openLocalReviewStore(metadataConfig.dir, options);
     },
   );
 
@@ -42,105 +60,16 @@ export async function openReviewProfile(
   return outcome.result;
 }
 
-/** Preserve preview headless IDs, history and resources; leave originals as backups. */
-async function importHeadlessStore(home: string, source: string) {
-  try {
-    await access(source);
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return;
-    throw error;
+export function metadataStoreConfig(
+  home: string,
+  deployment?: Pick<DeploymentConfig, "db" | "postgresUrl">,
+): MetadataStoreConfig {
+  if (deployment?.db === "postgres") {
+    if (!deployment.postgresUrl)
+      throw new Error("Postgres deployment requires WHITEBOARD_DB URL.");
+
+    return { kind: "postgres", url: deployment.postgresUrl };
   }
 
-  const database = new DatabaseSync(path.join(home, "review-api.db"), {
-    timeout: 5000,
-  });
-
-  try {
-    database.exec(
-      "PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS headless_imports(path TEXT PRIMARY KEY)",
-    );
-
-    if (
-      database
-        .prepare("SELECT 1 FROM headless_imports WHERE path=?")
-        .get(source)
-    )
-      return;
-
-    initializeReviewStoreSchema(database);
-
-    const outcome = await withFileLock(
-      path.join(path.dirname(source), "server.lock"),
-      { ...lockOptions, timeoutMs: 0 },
-      async () => {
-        database.prepare("ATTACH DATABASE ? AS headless").run(source);
-        database.exec("BEGIN IMMEDIATE");
-
-        try {
-          if (
-            database
-              .prepare(
-                "SELECT 1 FROM headless.reviews s JOIN reviews t ON s.id=t.id LIMIT 1",
-              )
-              .get()
-          )
-            throw new Error(
-              `Cannot merge ${source}: the shared store already contains one of its review IDs. Both databases are unchanged.`,
-            );
-          database.exec(`
-          INSERT INTO repositories SELECT s.* FROM headless.repositories s WHERE NOT EXISTS (SELECT 1 FROM repositories t WHERE t.path=s.path);
-          CREATE TEMP TABLE repository_ids AS SELECT s.id old_id,t.id new_id FROM headless.repositories s JOIN repositories t ON s.path=t.path;
-        `);
-
-          if (
-            database
-              .prepare(
-                `SELECT 1 FROM headless.versions s LEFT JOIN repository_ids r ON json_extract(s.snapshot,'$.pins.repositoryId')=r.old_id WHERE r.old_id IS NULL LIMIT 1`,
-              )
-              .get()
-          )
-            throw new Error(
-              `Cannot merge ${source}: a version refers to an unregistered repository. Both databases are unchanged.`,
-            );
-
-          if (
-            database
-              .prepare(`SELECT 1 FROM headless.resources s JOIN resources t ON s.id=t.id JOIN repository_ids r ON s.repository_id=r.old_id
-          WHERE t.repository_id!=r.new_id OR t.kind!=s.kind OR t.mime_type!=s.mime_type OR t.data IS NOT s.data LIMIT 1`)
-              .get()
-          )
-            throw new Error(
-              `Cannot merge ${source}: a resource ID has different content. Both databases are unchanged.`,
-            );
-
-          database.exec(`
-          INSERT OR IGNORE INTO resources SELECT s.id,r.new_id,s.kind,s.mime_type,s.data FROM headless.resources s JOIN repository_ids r ON s.repository_id=r.old_id;
-          INSERT INTO reviews SELECT * FROM headless.reviews;
-          INSERT INTO versions SELECT s.review_id,s.version,
-            CASE WHEN json_type(s.snapshot,'$.target')='object'
-              THEN json_set(s.snapshot,'$.pins.repositoryId',r.new_id,'$.target.repositoryId',r.new_id)
-              ELSE json_set(s.snapshot,'$.pins.repositoryId',r.new_id) END
-            FROM headless.versions s JOIN repository_ids r ON json_extract(s.snapshot,'$.pins.repositoryId')=r.old_id;
-          INSERT INTO review_attention SELECT * FROM headless.review_attention;
-        `);
-
-          database
-            .prepare("INSERT INTO headless_imports VALUES(?)")
-            .run(source);
-          database.exec("COMMIT");
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
-      },
-    );
-
-    if (!outcome.acquired)
-      throw new Error(
-        `Stop the old headless server using ${path.dirname(source)}, then retry. Its reviews will be moved into the shared profile automatically.`,
-      );
-  } finally {
-    database.close();
-  }
+  return { kind: "sqlite", dir: path.join(home, "review-api.db") };
 }

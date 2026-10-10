@@ -5,10 +5,12 @@ import {
   activityEndSchema,
   activityUpdateSchema,
 } from "./activity.js";
+import { commentInputSchema } from "./comments.js";
 import { pathTargetSchema, publishedEditSchema } from "./document.js";
 import { instructionsQuerySchema } from "./instructions.js";
 import { uploadSchema } from "./local-data.js";
 import { inspectQuerySchema } from "./read-schemas.js";
+import { reviewFilterSchema } from "./review-filter.js";
 import { REVIEW_STATUS_TOOL } from "./status-tool.js";
 import { commandSchema } from "./store.js";
 
@@ -53,6 +55,7 @@ export function authoringTools(
       "Restore title, source pins, PR identity and content from a saved version.",
     attention:
       "Mark a review viewed, dismissed or restored without changing its content.",
+    tags: 'Add and remove short labels on a review (add and remove take lowercase tags such as "ship" or "needs-review"). Tags only label a review; they do not change its content or history.',
     delete: "Permanently delete this review and its history.",
   };
 
@@ -77,6 +80,42 @@ export function authoringTools(
 
   return [
     REVIEW_STATUS_TOOL,
+    {
+      name: "generate_review",
+      description:
+        "Prepare a review for immutable commits and return its job status. Local mode completes inline; hosted queue mode returns a jobId to poll with review_job_status.",
+      inputSchema: {
+        ...z.toJSONSchema(
+          z.strictObject({
+            repository: z
+              .string()
+              .min(1)
+              .describe(
+                "GitHub owner/repository or an absolute local repository path.",
+              ),
+            base: z.string().min(1).describe("Base commit SHA."),
+            head: z.string().min(1).describe("Head commit SHA."),
+          }),
+          { io: "input" },
+        ),
+        type: "object" as const,
+      },
+      method: "POST" as const,
+      path: "/jobs",
+    },
+    {
+      name: "review_job_status",
+      description:
+        "Read the status, review link, or failure for a review preparation job.",
+      inputSchema: {
+        ...z.toJSONSchema(z.strictObject({ jobId: z.string().min(1) }), {
+          io: "input",
+        }),
+        type: "object" as const,
+      },
+      method: "GET" as const,
+      path: "/jobs/:jobId",
+    },
     tool(
       "capabilities",
       "Discover whether Desktop is available and optional software-map generation is enabled. Read before authoring.",
@@ -150,7 +189,13 @@ export function authoringTools(
         type,
       );
     }),
-    tool("list", "List saved reviews.", z.strictObject({}), "GET", ""),
+    tool(
+      "list",
+      "List saved reviews. Filter by repo (name or id), branch, commit (a prefix of the base or head commit), author (who created it) or tag.",
+      z.strictObject(reviewFilterSchema.shape),
+      "GET",
+      "",
+    ),
     tool(
       "get",
       "Read a readable, nested text outline with editable IDs. targetId reads one component in full; full:true reads all content. Use format:json for raw node data or snapshots instead of text.",
@@ -199,6 +244,34 @@ export function authoringTools(
       z.strictObject({ path: id }),
       "POST",
       "/repositories",
+    ),
+    tool(
+      "add_comment",
+      "Comment on a review: on a source range (anchor head/path#L10-L12 or base/path#L7), a diagram element (anchor element:<id>), or the whole review when anchor is omitted. Pass parentId to reply in a thread. The comment is authored as the server's user and reads in the viewer alongside readers' comments.",
+      z.strictObject({
+        ...review,
+        ...commentInputSchema.omit({ author: true }).shape,
+      }),
+      "POST",
+      "/:reviewId/comments",
+    ),
+    tool(
+      "list_comments",
+      "List a review's comment threads, with each thread's anchor, whether its lines changed in a later version (outdated), and whether it is resolved.",
+      z.strictObject(review),
+      "GET",
+      "/:reviewId/comments",
+    ),
+    tool(
+      "resolve_comment",
+      "Resolve or reopen the thread a comment belongs to (resolved defaults to true). Returns the review's comments.",
+      z.strictObject({
+        ...review,
+        commentId: id,
+        resolved: z.boolean().optional(),
+      }),
+      "POST",
+      "/:reviewId/comments/resolve",
     ),
     tool(
       "upload",

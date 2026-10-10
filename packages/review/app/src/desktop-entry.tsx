@@ -118,6 +118,7 @@ function Home({
   const deleteReview = content.deleteReview;
   const dismissReview = content.dismissReview;
   const restoreReview = content.restoreReview;
+  const editTags = content.editTags;
 
   return (
     <ReviewHome
@@ -137,6 +138,11 @@ function Home({
       }
       onRestore={
         restoreReview ? (review) => restoreReview(review.reviewId) : undefined
+      }
+      onEditTags={
+        editTags
+          ? (review, change) => editTags(review.reviewId, change)
+          : undefined
       }
       install={content.install}
       setupActions={content.setupActions}

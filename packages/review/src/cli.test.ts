@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -36,6 +37,76 @@ import {
 import { runTraceStatus as runTraceStatusActual } from "./trace-cli";
 
 describe("Whiteboard CLI", () => {
+  it("blocks a dirty working tree before creating a remote review", async () => {
+    const repo = await mkdtemp(
+      path.join(os.tmpdir(), "whiteboard-review-cli-"),
+    );
+
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+
+    git("init", "-q");
+    git("config", "user.name", "Whiteboard Test");
+    git("config", "user.email", "test@example.invalid");
+
+    await writeFile(path.join(repo, "example.ts"), "export const x = 1;\n");
+
+    git("add", ".");
+    git("commit", "-qm", "base");
+
+    const base = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim();
+
+    await writeFile(path.join(repo, "example.ts"), "export const x = 2;\n");
+
+    git("commit", "-qam", "head");
+
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim();
+
+    await writeFile(path.join(repo, "example.ts"), "export const x = 3;\n");
+
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({
+        ok: true,
+        instanceId: "remote-server",
+        deployment: { mode: "remote" },
+      }),
+    );
+
+    vi.stubGlobal("fetch", fetch);
+    const stdout = outputStream();
+    const stderr = outputStream();
+    let errorOutput = "";
+    stderr.on("data", (chunk) => (errorOutput += String(chunk)));
+
+    try {
+      const code = await runReviewCli({
+        argv: ["review", "--range", `${base}..${head}`],
+        cwd: repo,
+        env: { WHITEBOARD_URL: "https://whiteboard.example.invalid" },
+        stdout,
+        stderr,
+      });
+
+      expect(code).toBe(1);
+      expect(errorOutput).toContain("Commit your changes and push");
+      expect(errorOutput).toContain("example.ts");
+      expect(
+        fetch.mock.calls.every(([request]) =>
+          String(request).endsWith("/health"),
+        ),
+      ).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("routes Cursor install instructions without connecting to Desktop", async () => {
     const { code, stdout, stderr } = await runConnect(
       ["connect", "cursor", "--json"],

@@ -112,7 +112,7 @@ export async function createNativeTutorial(input: {
   );
 
   return {
-    snapshot: input.store.read(result.reviewId),
+    snapshot: await input.store.read(result.reviewId),
     contentHash: assets.contentHash,
   };
 }
@@ -138,8 +138,8 @@ export function createTutorialService(input: {
     try {
       const stamp = await readStamp();
 
-      if (!stamp || !input.store.has(stamp.reviewUuid)) return null;
-      const snapshot = input.store.read(stamp.reviewUuid);
+      if (!stamp || !(await input.store.has(stamp.reviewUuid))) return null;
+      const snapshot = await input.store.read(stamp.reviewUuid);
       const assets = await readTutorialAssets(assetsRoot);
 
       const [head, base] = await Promise.all([
@@ -163,14 +163,14 @@ export function createTutorialService(input: {
   }
 
   async function cleanup() {
-    for (const reviewId of input.store.tutorialIds())
+    for (const reviewId of await input.store.tutorialIds())
       await input.store.execute({
         operation: { type: "delete", reviewId },
       });
 
     // Windows cannot delete a checkout while its Git reader or watchers
     // hold it open, and handles can outlive their close briefly.
-    for (const repository of input.store.repositories()) {
+    for (const repository of await input.store.repositories()) {
       const relative = path.relative(tutorialRoot, repository.path);
 
       if (relative && !relative.startsWith("..") && !path.isAbsolute(relative))
@@ -189,7 +189,8 @@ export function createTutorialService(input: {
     },
     async referencesReview(id: string) {
       return (
-        input.store.has(id) && input.store.read(id).origin?.tutorial === true
+        (await input.store.has(id)) &&
+        (await input.store.read(id)).origin?.tutorial === true
       );
     },
     async prepare(options?: { beforeReset(): Promise<void> }) {

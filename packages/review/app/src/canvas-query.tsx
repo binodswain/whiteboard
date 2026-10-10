@@ -55,6 +55,7 @@ export const canvasQueryKeys = {
   lensProgress: (version: number, mode: "structural" | "textual") =>
     ["lens-progress", version, mode] as const,
   allLensProgress: () => ["lens-progress"] as const,
+  comments: (version: number) => ["comments", version] as const,
 };
 
 const pendingDisposals = new WeakMap<

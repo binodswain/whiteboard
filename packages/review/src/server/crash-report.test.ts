@@ -393,7 +393,7 @@ describe("POST /crash-reports", () => {
     const dumpsDir = path.join(home, "review-crashes");
     await mkdir(dumpsDir);
     const outside = await writeDump(home, "secret.dmp");
-    const local = openLocalReviewStore(path.join(home, "review-api.db"));
+    const local = await openLocalReviewStore(path.join(home, "review-api.db"));
     const token = "crash-report-test-token";
 
     const server = createGlobalReviewServer({

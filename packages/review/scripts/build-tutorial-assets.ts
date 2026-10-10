@@ -180,7 +180,7 @@ export async function buildTutorialAssets(
 
     await writeFile(path.join(validationAssets, "pins.json"), pins);
 
-    const local = openLocalReviewStore(
+    const local = await openLocalReviewStore(
       path.join(temporaryRoot, "validation.db"),
     );
 

@@ -71,7 +71,7 @@ async function maybeDelegateToDesktopCli(
   if (
     argv.some(
       (argument) =>
-        ["api", "mcp", "server", "instances"].includes(argument) ||
+        ["api", "mcp", "connect", "server", "instances"].includes(argument) ||
         /^--state-dir(?:=|$)/.test(argument),
     ) ||
     env.DEV_REVIEW_SERVER_DIR?.trim()

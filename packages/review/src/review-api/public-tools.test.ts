@@ -8,10 +8,12 @@ import { ReviewStore } from "./store.js";
 
 const stores: ReviewStore[] = [];
 
-afterEach(() => stores.splice(0).forEach((store) => store.close()));
+afterEach(async () => {
+  for (const store of stores.splice(0)) await store.close();
+});
 
 test("public session tools create, edit and retry against the unchanged review store", async () => {
-  const store = new ReviewStore(":memory:", {
+  const store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -44,7 +46,7 @@ test("public session tools create, edit and retry against the unchanged review s
 
   expect(create).toHaveProperty("sessionId");
   expect(create).not.toHaveProperty("reviewId");
-  const sessionId = store.list()[0].reviewId;
+  const sessionId = (await store.list())[0].reviewId;
 
   const literal =
     "Keep reviewId, sessionId and review_create verbatim in authored content.";
@@ -55,8 +57,10 @@ test("public session tools create, edit and retry against the unchanged review s
   };
 
   await call("session_edit", edit);
-  expect(store.read(sessionId).version).toBe(1);
-  expect(JSON.stringify(store.read(sessionId).document)).toContain(literal);
+  expect((await store.read(sessionId)).version).toBe(1);
+  expect(JSON.stringify((await store.read(sessionId)).document)).toContain(
+    literal,
+  );
 
   const snapshot = await call("session_get", {
     sessionId,
@@ -88,4 +92,35 @@ test("response translation leaves authored and arbitrary payload fields intact",
     session: { sessionId: "id", document },
     document,
   });
+});
+
+test("job tools keep their public names and reviewId result fields", async () => {
+  const statusTool = publicTool({
+    name: "review_job_status",
+    description: "Read review_job_status.",
+    inputSchema: {
+      type: "object",
+      properties: { jobId: { type: "string" } },
+      required: ["jobId"],
+    },
+    method: "GET",
+    path: "/jobs/:jobId",
+  });
+
+  const generateTool = publicTool({
+    ...statusTool,
+    name: "generate_review",
+    method: "POST",
+    path: "/jobs",
+  });
+
+  const client = new ReviewApiClient({ serverUrl: "http://test" }, async () =>
+    Response.json({ reviewId: "review-1", url: "/r/review-1" }),
+  );
+
+  expect(statusTool.name).toBe("review_job_status");
+  expect(generateTool.name).toBe("generate_review");
+  await expect(
+    callPublicTool(client, statusTool, { jobId: "job-1" }),
+  ).resolves.toEqual({ reviewId: "review-1", url: "/r/review-1" });
 });

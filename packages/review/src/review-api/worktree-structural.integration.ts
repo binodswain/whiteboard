@@ -64,7 +64,7 @@ it.each([
       repository = checkout;
     }
 
-    const local = openLocalReviewStore(path.join(root, "reviews.db"));
+    const local = await openLocalReviewStore(path.join(root, "reviews.db"));
 
     const selection = {
       file: "value.ts",
@@ -112,7 +112,7 @@ it.each([
           `export const value = ${value};\n`,
         );
         await local.store.refreshWorktrees();
-        const snapshot = local.store.read(reviewId);
+        const snapshot = await local.store.read(reviewId);
         expect(snapshot.pins!.base).toBe(base);
         expect(snapshot.pins!.head).toBe(
           explicitBase ? git("rev-parse", "HEAD") : base,
@@ -206,7 +206,7 @@ it("streams added, deleted, renamed and binary working files and respects path f
   git("add", "added file.ts");
   writeFileSync(path.join(repository, "binary.bin"), Buffer.from([0, 4, 5, 6]));
   const index = git("diff", "--cached");
-  const local = openLocalReviewStore(path.join(root, "reviews.db"));
+  const local = await openLocalReviewStore(path.join(root, "reviews.db"));
 
   try {
     const { id } = await local.data.register(repository);
@@ -285,7 +285,7 @@ it("compares a staged file in an unborn repository with empty source", async () 
   execFileSync("git", ["-C", repository, "init", "-q", "-b", "main"]);
   writeFileSync(path.join(repository, "first.ts"), "export const first = 1;\n");
   execFileSync("git", ["-C", repository, "add", "first.ts"]);
-  const local = openLocalReviewStore(path.join(root, "reviews.db"));
+  const local = await openLocalReviewStore(path.join(root, "reviews.db"));
 
   try {
     const { id } = await local.data.register(repository);

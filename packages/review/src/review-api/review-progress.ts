@@ -67,9 +67,8 @@ export async function reviewProgress(
 ): Promise<ReviewProgress> {
   // A shared review is read-only and never enters the store, so it has no
   // persisted marks to look up.
-  const marks: ReturnType<ReviewStore["viewedCoverage"]> = snapshot.shared
-    ? new Map()
-    : store.viewedCoverage(snapshot.reviewId);
+  const marks: Awaited<ReturnType<ReviewStore["viewedCoverage"]>> =
+    snapshot.shared ? new Map() : await store.viewedCoverage(snapshot.reviewId);
 
   const pins = snapshot.pins
     ? (await data.resolveSource(snapshot)).pins

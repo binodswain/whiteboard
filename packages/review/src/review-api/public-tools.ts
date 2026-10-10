@@ -53,7 +53,10 @@ export function publicTool(tool: AuthoringTool): AuthoringTool {
 
   return {
     ...tool,
-    name: tool.name.replace(/^review_/, "session_"),
+    name:
+      tool.name === "review_job_status"
+        ? tool.name
+        : tool.name.replace(/^review_/, "session_"),
     description: publicDescription(tool.description),
     inputSchema,
   };
@@ -98,5 +101,9 @@ export async function callPublicTool(
   if (sessionId !== undefined) fields.reviewId = sessionId;
   const result = await callAuthoringTool(client, tool, fields, signal);
 
-  return result instanceof ToolText ? result : publicResult(result);
+  return result instanceof ToolText ||
+    tool.name === "generate_review" ||
+    tool.name === "review_job_status"
+    ? result
+    : publicResult(result);
 }

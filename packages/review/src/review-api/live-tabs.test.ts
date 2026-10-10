@@ -11,7 +11,7 @@ import { ReviewStore } from "./store";
 it("shares one live connection across reviews, reconnects, and isolates a deleted review", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "review-live-tabs-"));
 
-  const store = new ReviewStore(path.join(directory, "review.db"), {
+  const store = await ReviewStore.open(path.join(directory, "review.db"), {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -107,13 +107,13 @@ it("shares one live connection across reviews, reconnects, and isolates a delete
       expect(seen.get("a")).toMatchObject({ title: "A updated", version: 1 }),
     );
     expect(seen.get("b")).toMatchObject({ title: "B", version: 0 });
-    const { activityId } = store.activity.update(b, { action: "begin" });
+    const { activityId } = await store.activity.update(b, { action: "begin" });
     await vi.waitFor(() =>
       expect(seen.get("b")).toMatchObject({ activity: { workingCount: 1 } }),
     );
 
     requests.at(-1)!.stream.error(new Error("Network interrupted"));
-    store.activity.update(b, { action: "end", activityId: activityId! });
+    await store.activity.update(b, { action: "end", activityId: activityId! });
     await vi.waitFor(() =>
       expect(errors.get("b")).toContain("Network interrupted"),
     );

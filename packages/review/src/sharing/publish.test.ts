@@ -121,7 +121,7 @@ it.each([
         );
       const result = await response;
       expect(result.status).toBe(verified ? 200 : 422);
-      const version = fixture.store.read(fixture.reviewId).version;
+      const version = (await fixture.store.read(fixture.reviewId)).version;
       expect(published).toEqual(
         verified ? [{ reviewId: fixture.reviewId, version }] : [],
       );

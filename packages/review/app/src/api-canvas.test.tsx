@@ -33,11 +33,11 @@ const pins = { repositoryId: "repo", base: "base", head: "head" };
 const command = <Operation,>(operation: Operation) =>
   store.execute({ operation });
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
   directory = mkdtempSync(path.join(tmpdir(), "review-api-canvas-"));
-  store = new ReviewStore(path.join(directory, "review.db"), {
+  store = await ReviewStore.open(path.join(directory, "review.db"), {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -164,9 +164,11 @@ it("mounts the existing canvas and preserves a section's DOM and collapsed state
   expect(node.textContent).toContain("1 paragraph");
   let activityId = "";
   await act(async () => {
-    activityId = store.activity.update(review.reviewId, {
-      action: "begin",
-    }).activityId!;
+    activityId = (
+      await store.activity.update(review.reviewId, {
+        action: "begin",
+      })
+    ).activityId!;
   });
   await vi.waitFor(async () => {
     await act(async () => {});
@@ -228,7 +230,7 @@ it("mounts the existing canvas and preserves a section's DOM and collapsed state
     container.querySelector(`[data-review-node-id="${inserted.targetId}"]`),
   ).toBe(node);
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
-  const section = store.read(review.reviewId).document[0]!;
+  const section = (await store.read(review.reviewId)).document[0]!;
 
   if (section.type !== "section") throw new Error("Expected section");
   await act(async () => {
@@ -284,9 +286,11 @@ it("mounts the existing canvas and preserves a section's DOM and collapsed state
   });
   expect(container.textContent).not.toContain("Next section");
   await act(async () => {
-    activityId = store.activity.update(review.reviewId, {
-      action: "begin",
-    }).activityId!;
+    activityId = (
+      await store.activity.update(review.reviewId, {
+        action: "begin",
+      })
+    ).activityId!;
   });
   expect(container.textContent).not.toContain("Agent working…");
   await act(async () => {
@@ -354,7 +358,7 @@ it("keeps sequence step identities and supports explanation/code steps without i
     },
   });
 
-  const node = store.read(review.reviewId).document[0]!;
+  const node = (await store.read(review.reviewId)).document[0]!;
 
   if (node.type !== "sequence") throw new Error("Expected sequence");
 
@@ -408,10 +412,10 @@ it("dismisses immediately through the API without changing the saved document", 
 
   await act(async () => dismiss.click());
 
-  await vi.waitFor(() =>
-    expect(store.list()[0]?.dismissedAt).toEqual(expect.any(String)),
+  await vi.waitFor(async () =>
+    expect((await store.list())[0]?.dismissedAt).toEqual(expect.any(String)),
   );
-  expect(store.read(reviewId).version).toBe(0);
+  expect((await store.read(reviewId)).version).toBe(0);
 });
 
 it.each([false, true])(
@@ -653,7 +657,7 @@ it("copies prose and code from the displayed historical JSON review", async () =
     reviewId: review.reviewId,
     target: { kind: "commits", ...pins, head: "new-head" },
   });
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "commits").mockResolvedValue([]);
   vi.spyOn(data, "sourcePins").mockImplementation(
     async (snapshot) => snapshot.pins,
@@ -825,7 +829,7 @@ it("copies prose and code from the displayed historical JSON review", async () =
 it("reads a worktree review's range as its base against the working tree, and a commit review's as two commits", async () => {
   const head = "c14db2183b0e6c1f4a4a5c3f2d9e8b7a6f5e4d3c";
 
-  const store = new ReviewStore(path.join(directory, "worktree.db"), {
+  const store = await ReviewStore.open(path.join(directory, "worktree.db"), {
     resolveTarget: async (target) => ({
       target,
       pins: { repositoryId: target.repositoryId, base: head, head },
@@ -903,7 +907,7 @@ it("reads a worktree review's range as its base against the working tree, and a 
 it("offers to dismiss a review whose worktree is gone, without reading its diff", async () => {
   let removed = false;
 
-  const gone = new ReviewStore(path.join(directory, "gone.db"), {
+  const gone = await ReviewStore.open(path.join(directory, "gone.db"), {
     resolveTarget: async (target) => {
       if (removed)
         throw new ReviewInputError(
@@ -994,8 +998,8 @@ it("offers to dismiss a review whose worktree is gone, without reading its diff"
       );
 
     await act(async () => dismiss()!.click());
-    await vi.waitFor(() =>
-      expect(gone.list()[0]?.dismissedAt).toEqual(expect.any(String)),
+    await vi.waitFor(async () =>
+      expect((await gone.list())[0]?.dismissedAt).toEqual(expect.any(String)),
     );
     expect(dismiss()).toBeUndefined();
   } finally {
@@ -1006,7 +1010,7 @@ it("offers to dismiss a review whose worktree is gone, without reading its diff"
 it("offers the Diff view for a live worktree review and refreshes it on each save", async () => {
   const live = { ...pins, base: "head", worktreeRevision: "first-save" };
 
-  const worktree = new ReviewStore(path.join(directory, "worktree.db"), {
+  const worktree = await ReviewStore.open(path.join(directory, "worktree.db"), {
     resolveTarget: async (target) => ({ target, pins: { ...live } }),
     validatePins: async () => {},
     validateSource: async () => {},

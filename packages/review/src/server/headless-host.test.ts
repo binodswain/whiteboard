@@ -1045,7 +1045,7 @@ it.each([false, true])(
     });
 
     try {
-      expect(local.store.list()).toEqual([]);
+      expect(await local.store.list()).toEqual([]);
     } finally {
       await local.data.close();
       await local.store.close();
@@ -1395,7 +1395,7 @@ it.each(["attached", "not yet attached"])(
       await local.store.close();
     });
     await desktop.listen();
-    const before = local.store.serverId();
+    const before = await local.store.serverId();
 
     const attached =
       window === "attached" ? await attachDesktop(desktop.discovery) : null;
@@ -1408,7 +1408,7 @@ it.each(["attached", "not yet attached"])(
 
       expect(refused.exitCode).toBe(1);
       expect(JSON.parse(refused.output).error.message).toMatch(/Stop it first/);
-      expect(local.store.serverId()).toBe(before);
+      expect(await local.store.serverId()).toBe(before);
       expect(await serverIdOf(desktop.discovery)).toBe(before);
     } finally {
       attached?.detach();
@@ -1418,7 +1418,7 @@ it.each(["attached", "not yet attached"])(
 
 it("refuses to reset the id while a Desktop record cannot be read", async () => {
   const local = await openReviewProfile(root, { manageWorkspaces: false });
-  const before = local.store.serverId();
+  const before = await local.store.serverId();
   await local.data.close();
   await local.store.close();
   const instances = path.join(root, "review-desktop", "instances");
@@ -1437,7 +1437,7 @@ it("refuses to reset the id while a Desktop record cannot be read", async () => 
     await reopened.data.close();
     await reopened.store.close();
   });
-  expect(reopened.store.serverId()).toBe(before);
+  expect(await reopened.store.serverId()).toBe(before);
 });
 
 it("refuses to reset the id where there is no store, and creates none", async () => {

@@ -2,6 +2,7 @@ name: whiteboard
 
 services:
   whiteboard:
+    profiles: [local]
     build:
       context: .
       target: runtime
@@ -14,14 +15,26 @@ services:
       - "127.0.0.1:${WHITEBOARD_PORT:-7421}:${WHITEBOARD_PORT:-7421}"
     volumes:
       - "${WHITEBOARD_DATA_DIR:-${HOME}/.whiteboard/docker}:/data"
-      - "${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}"
+      - "${CODE_ROOT:-/workspace}:${CODE_ROOT:-/workspace}"
     environment:
       HOME: /tmp
       WHITEBOARD_PORT: ${WHITEBOARD_PORT:-7421}
+      WHITEBOARD_MODE: ${WHITEBOARD_MODE:-local}
+      WHITEBOARD_DB: ${WHITEBOARD_DB:-}
+      WHITEBOARD_BLOBS: ${WHITEBOARD_BLOBS:-}
+      WHITEBOARD_S3_ENDPOINT: ${WHITEBOARD_S3_ENDPOINT:-}
+      WHITEBOARD_S3_REGION: ${WHITEBOARD_S3_REGION:-}
+      WHITEBOARD_S3_KEY: ${WHITEBOARD_S3_KEY:-}
+      WHITEBOARD_S3_SECRET: ${WHITEBOARD_S3_SECRET:-}
+      WHITEBOARD_REPO_SOURCE: ${WHITEBOARD_REPO_SOURCE:-}
+      WHITEBOARD_JOBS: ${WHITEBOARD_JOBS:-}
+      WHITEBOARD_AUTH: ${WHITEBOARD_AUTH:-}
       WHITEBOARD_TOKEN: ${WHITEBOARD_TOKEN:-}
+      WHITEBOARD_JOB_SECRET: ${WHITEBOARD_JOB_SECRET:-}
       WHITEBOARD_LOCAL_BROWSER_AUTH: ${WHITEBOARD_LOCAL_BROWSER_AUTH:-1}
-      CODE_ROOT: ${CODE_ROOT:?set CODE_ROOT}
+      CODE_ROOT: ${CODE_ROOT:-/workspace}
       GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_TOKEN: ${GH_TOKEN:-}
       GH_ENTERPRISE_TOKEN: ${GH_ENTERPRISE_TOKEN:-}
       GH_HOST: ${GH_HOST:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -37,3 +50,162 @@ services:
       - --web
       - /app/web
     restart: unless-stopped
+
+  whiteboard-remote:
+    profiles: [remote-dev]
+    build:
+      context: .
+      target: runtime
+      args:
+        AGENT: none
+    init: true
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:${WHITEBOARD_PORT:-7421}:${WHITEBOARD_PORT:-7421}"
+    environment:
+      HOME: /tmp
+      WHITEBOARD_PORT: ${WHITEBOARD_PORT:-7421}
+      WHITEBOARD_MODE: remote
+      WHITEBOARD_DB: ${WHITEBOARD_DB:-postgres://whiteboard:whiteboard@postgres:5432/whiteboard}
+      WHITEBOARD_BLOBS: ${WHITEBOARD_BLOBS:-s3://whiteboard}
+      WHITEBOARD_S3_ENDPOINT: ${WHITEBOARD_S3_ENDPOINT:-http://minio:9000}
+      WHITEBOARD_S3_REGION: ${WHITEBOARD_S3_REGION:-us-east-1}
+      WHITEBOARD_S3_KEY: ${WHITEBOARD_S3_KEY:-whiteboard}
+      WHITEBOARD_S3_SECRET: ${WHITEBOARD_S3_SECRET:-whiteboard-secret}
+      WHITEBOARD_REPO_SOURCE: ${WHITEBOARD_REPO_SOURCE:-github}
+      WHITEBOARD_JOBS: ${WHITEBOARD_JOBS:-queue}
+      WHITEBOARD_AUTH: ${WHITEBOARD_AUTH:-oauth}
+      WHITEBOARD_AUTH_SECRET: ${WHITEBOARD_AUTH_SECRET:-remote-dev-session-secret}
+      WHITEBOARD_AUTH_PROXY_HEADER: ${WHITEBOARD_AUTH_PROXY_HEADER:-x-whiteboard-user}
+      WHITEBOARD_AUTH_PROXY_SECRET: ${WHITEBOARD_AUTH_PROXY_SECRET:-remote-dev-proxy-secret}
+      WHITEBOARD_AUTH_PROXY_SECRET_HEADER: ${WHITEBOARD_AUTH_PROXY_SECRET_HEADER:-x-whiteboard-proxy-secret}
+      WHITEBOARD_TOKEN: ${WHITEBOARD_TOKEN:-remote-dev-shared-token-change-me-please}
+      WHITEBOARD_JOB_SECRET: ${WHITEBOARD_JOB_SECRET:-remote-dev-job-secret}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_TOKEN: ${GH_TOKEN:-}
+      GH_ENTERPRISE_TOKEN: ${GH_ENTERPRISE_TOKEN:-}
+      GH_HOST: ${GH_HOST:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:' + process.env.WHITEBOARD_PORT + '/health').then(async r => { const h = await r.json(); process.exit(r.ok && h.deployment?.mode === 'remote' ? 0 : 1) }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    command:
+      - whiteboard
+      - server
+      - start
+      - --host
+      - 0.0.0.0
+      - --port
+      - "${WHITEBOARD_PORT:-7421}"
+      - --web
+      - /app/web
+    restart: unless-stopped
+
+  postgres:
+    profiles: [remote-dev]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: whiteboard
+      POSTGRES_USER: whiteboard
+      POSTGRES_PASSWORD: whiteboard
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U whiteboard -d whiteboard]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    profiles: [remote-dev]
+    image: dappros/minio:RELEASE.2025-09-07T16-13-09Z@sha256:624bad2fe79a8613aa3c5c9b765ebcab365080b8445cf1b05c357cc7753725f0
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${WHITEBOARD_S3_KEY:-whiteboard}
+      MINIO_ROOT_PASSWORD: ${WHITEBOARD_S3_SECRET:-whiteboard-secret}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: [CMD, mc, ready, local]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  minio-init:
+    profiles: [remote-dev]
+    image: ghcr.io/golithus/mc:RELEASE.2025-08-13T08-35-41Z@sha256:dde55ccc0bc9e65dc582c8e652d652eea1438c6e60d774524f4da15d7b26a900
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${WHITEBOARD_S3_KEY:-whiteboard}
+      MINIO_ROOT_PASSWORD: ${WHITEBOARD_S3_SECRET:-whiteboard-secret}
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" && mc mb --ignore-existing local/whiteboard
+    restart: "no"
+
+  job-runner:
+    profiles: [remote-dev]
+    build:
+      context: .
+      target: runtime
+      args:
+        AGENT: none
+    init: true
+    depends_on:
+      whiteboard-remote:
+        condition: service_healthy
+    environment:
+      WHITEBOARD_INTERNAL_URL: http://whiteboard-remote:${WHITEBOARD_PORT:-7421}
+      WHITEBOARD_JOB_SECRET: ${WHITEBOARD_JOB_SECRET:-remote-dev-job-secret}
+    command:
+      - node
+      - -e
+      - >-
+        const fs = require('node:fs');
+        const url = process.env.WHITEBOARD_INTERNAL_URL + '/internal/jobs/run';
+        const auth = 'Bearer ' + process.env.WHITEBOARD_JOB_SECRET;
+        let failures = 0;
+        async function poll() {
+          try {
+            const response = await fetch(url, { method: 'POST', headers: { authorization: auth } });
+            if (!response.ok) throw new Error('job endpoint returned ' + response.status);
+            fs.writeFileSync('/tmp/whiteboard-job-runner-health', String(Date.now()));
+            failures = 0;
+          } catch (error) {
+            failures++;
+            console.error(error);
+          }
+          setTimeout(poll, failures ? 5000 : 1000);
+        }
+        poll();
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');try{process.exit(Date.now()-fs.statSync('/tmp/whiteboard-job-runner-health').mtimeMs<30000?0:1)}catch{process.exit(1)}"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  minio-data:

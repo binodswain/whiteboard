@@ -107,6 +107,57 @@ export function AskPanelContent({
   const session = useReviewSession();
   const agents = useAskAgents(session);
   const [agent, setAgent] = useState<AskAgentId | undefined>(requestedAgent);
+  const [queuedAskId, setQueuedAskId] = useState<string | null>(null);
+
+  const { data: deployment } = useQuery({
+    queryKey: ["ask-deployment", session.config.serverUrl],
+    queryFn: async () => {
+      const response = await session.fetchUrl(
+        new URL("/reviews-api/status", session.config.serverUrl),
+      );
+
+      if (!response.ok) return null;
+
+      return z
+        .object({ deployment: z.object({ mode: z.string() }).optional() })
+        .parse(await response.json());
+    },
+    staleTime: 60_000,
+  });
+
+  const hostedMode = deployment?.deployment?.mode === "remote";
+
+  const { data: queuedAsk } = useQuery({
+    queryKey: ["ask-queue", queuedAskId],
+    enabled: hostedMode && queuedAskId !== null,
+    queryFn: async () => {
+      if (!queuedAskId) throw new Error("No queued ask was selected.");
+
+      const response = await session.fetchUrl(
+        new URL(
+          `/reviews-api/asks/${encodeURIComponent(queuedAskId)}`,
+          session.config.serverUrl,
+        ),
+      );
+
+      if (!response.ok)
+        throw new Error("Whiteboard could not load the queued ask.");
+
+      return z
+        .object({
+          ask: z.object({
+            status: z.enum(["pending", "running", "done", "failed"]),
+            error: z.string().optional(),
+          }),
+        })
+        .parse(await response.json());
+    },
+    refetchInterval: (query) =>
+      ["pending", "running"].includes(query.state.data?.ask.status ?? "")
+        ? 2000
+        : false,
+  });
+
   const [threadId, setThreadId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -138,6 +189,10 @@ export function AskPanelContent({
   useEffect(() => {
     if (agents && !agent) setAgent(preferredAskAgent(session, agents)?.id);
   }, [agents, agent, session]);
+
+  useEffect(() => {
+    if (hostedMode && !agent) setAgent("claude");
+  }, [agent, hostedMode]);
 
   const latestSession = useLatest(session);
   const mounted = useRef(true);
@@ -219,8 +274,12 @@ export function AskPanelContent({
     requestError,
   ]);
 
+  const queuedStatus = queuedAsk?.ask.status;
+
   const busy =
     sending ||
+    queuedStatus === "pending" ||
+    queuedStatus === "running" ||
     (savedThreadId !== undefined && !thread && !requestError) ||
     thread?.status === "starting" ||
     thread?.status === "running" ||
@@ -246,16 +305,42 @@ export function AskPanelContent({
   );
 
   const ask = async (question: AskQuestion) => {
-    if (!agent || busy || thread?.status === "failed") return false;
+    const selectedAgent = agent ?? (hostedMode ? "claude" : undefined);
+
+    if (!selectedAgent || busy || thread?.status === "failed") return false;
     setSending(true);
     setRequestError(null);
 
     try {
       if (threadId) {
         await post(`/ask/${threadId}/prompt`, { question });
+      } else if (hostedMode) {
+        const response = await session.fetchUrl(
+          new URL("/reviews-api/asks", session.config.serverUrl),
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              reviewId: session.config.reviewId,
+              prompt: question.text,
+            }),
+          },
+        );
+
+        if (!response.ok)
+          throw new Error(
+            (await readError(response)) ??
+              "Whiteboard could not queue this ask.",
+          );
+
+        const { askId: id } = z
+          .object({ askId: z.string() })
+          .parse(await response.json());
+
+        setQueuedAskId(id);
       } else {
         const response = await post("/ask", {
-          agent,
+          agent: selectedAgent,
           question,
           selection,
           picks: currentPicks(),
@@ -272,7 +357,7 @@ export function AskPanelContent({
           return false;
         }
 
-        rememberAskAgent(session, agent);
+        rememberAskAgent(session, selectedAgent);
         setThreadId(id);
       }
 
@@ -505,7 +590,7 @@ export function AskPanelContent({
     presence.tone,
   ]);
 
-  if (agents && !agents.some((candidate) => candidate.available))
+  if (!hostedMode && agents && !agents.some((candidate) => candidate.available))
     return <AskSetup agents={agents} selection={selection} />;
 
   if (loadingConversation)
@@ -594,7 +679,11 @@ export function AskPanelContent({
 
   return (
     <div {...stylex.props(askPanelStyles.body)}>
-      {header ? createPortal(agentPicker, header) : agentPicker}
+      {hostedMode
+        ? null
+        : header
+          ? createPortal(agentPicker, header)
+          : agentPicker}
 
       <AskFilesProvider key={threadId} threadId={threadId}>
         <div {...stylex.props(styles.threadFrame)}>
@@ -607,6 +696,19 @@ export function AskPanelContent({
           >
             <AskSelectionQuote selection={selection} />
             <AskOutdatedNote threadId={threadId ?? savedThreadId ?? null} />
+
+            {queuedStatus ? (
+              <p aria-live="polite">
+                {queuedStatus === "pending"
+                  ? "Waiting for a connector…"
+                  : queuedStatus === "running"
+                    ? "A connector is drawing the diagram…"
+                    : queuedStatus === "done"
+                      ? "Diagram complete."
+                      : (queuedAsk?.ask.error ??
+                        "The connector could not complete this ask.")}
+              </p>
+            ) : null}
 
             {thread ? <AskTurns thread={thread} onDecide={decide} /> : null}
 
@@ -664,8 +766,12 @@ export function AskPanelContent({
             ? "/ for commands, @ for files"
             : "@ for files",
         )}
-        disabled={thread?.status === "failed"}
-        canAsk={Boolean(agent) && !busy}
+        disabled={
+          thread?.status === "failed" ||
+          queuedStatus === "pending" ||
+          queuedStatus === "running"
+        }
+        canAsk={Boolean(agent || hostedMode) && !busy}
         stop={busy && threadId ? stop : undefined}
         connecting={thread?.status === "starting"}
         status={

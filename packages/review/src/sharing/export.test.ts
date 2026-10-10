@@ -57,7 +57,7 @@ async function fixture() {
   git("rm", "deleted.ts");
   git("commit", "-m", "head");
   const head = git("rev-parse", "HEAD");
-  const local = openLocalReviewStore(path.join(root, "review.db"));
+  const local = await openLocalReviewStore(path.join(root, "review.db"));
   cleanup.push(() => local.store.close());
   cleanup.push(() => local.data.close());
   const repository = await local.data.register(repo);
@@ -138,7 +138,7 @@ async function importFixture(
     await exportShare({ ...local, reviewId, repository }),
   );
 
-  const recipient = openLocalReviewStore(path.join(root, "recipient.db"));
+  const recipient = await openLocalReviewStore(path.join(root, "recipient.db"));
   cleanup.push(() => recipient.store.close());
   cleanup.push(() => recipient.data.close());
 
@@ -377,7 +377,7 @@ it("fetches pinned source into an independent repository and retains complete tr
 
   restarted.connect(recipient.store, recipient.data);
   await restarted.load();
-  expect(restarted.list().map((entry) => entry.reviewId)).toEqual([id]);
+  expect((await restarted.list()).map((entry) => entry.reviewId)).toEqual([id]);
   await restarted.prepare(id);
   expect(restarted.get(id).snapshot.title).toBe("A shared review");
 });
@@ -423,7 +423,7 @@ it("uses normal source and workspace routes but rejects authoring mutations", as
   });
 
   expect(mutation.status).toBe(409);
-  expect(recipient.store.list()).toEqual([]);
+  expect(await recipient.store.list()).toEqual([]);
   expect(imported.get(id).snapshot.title).toBe("A shared review");
 });
 
@@ -467,7 +467,9 @@ it("isolates corrupt cached shares at restart", async () => {
   const restarted = new SharedReviewStore(imported.root);
   restarted.connect(recipient.store, recipient.data);
   await restarted.load();
-  expect(restarted.list().map((entry) => entry.reviewId)).toEqual([other]);
+  expect((await restarted.list()).map((entry) => entry.reviewId)).toEqual([
+    other,
+  ]);
 });
 
 it("repairs a missing checkout and removes owned workspaces before reimport", async () => {
@@ -476,9 +478,9 @@ it("repairs a missing checkout and removes owned workspaces before reimport", as
 
   const checkout = imported.repositoryRoot(id);
 
-  const paths = recipient.data.workspaces
-    .list(id)
-    .map((workspace) => workspace.rootPath!);
+  const paths = (await recipient.data.workspaces.list(id)).map(
+    (workspace) => workspace.rootPath!,
+  );
 
   await rm(checkout, { recursive: true, force: true });
   expect(() => imported.get(id)).toThrow("Fetch the shared repository");
@@ -489,7 +491,7 @@ it("repairs a missing checkout and removes owned workspaces before reimport", as
 
   for (const target of [checkout, ...paths])
     await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
-  expect(() => recipient.store.repositoryPath(repositoryId)).toThrow(
+  await expect(recipient.store.repositoryPath(repositoryId)).rejects.toThrow(
     "not registered",
   );
   expect(await stat(path.join(repo, ".git"))).toBeTruthy();
@@ -528,7 +530,7 @@ it("retains failed imports for retry and deduplicates preparation", async () => 
   const { sharedReviewId } = await import("./import.js");
   const id = sharedReviewId("https://app.dev.fast", shareId);
   expect(imported.status(id).stage).toBe("error");
-  expect(imported.list()).toEqual([]);
+  expect(await imported.list()).toEqual([]);
   available = true;
   await Promise.all([imported.prepare(id), imported.prepare(id)]);
   expect(fetcher).toHaveBeenCalledTimes(2);
@@ -545,7 +547,7 @@ it("does not expose an interrupted import before validation finishes", async () 
   const restarted = new SharedReviewStore(imported.root);
   restarted.connect(recipient.store, recipient.data);
   await restarted.load();
-  expect(restarted.list()).toEqual([]);
+  expect(await restarted.list()).toEqual([]);
   await restarted.prepare(id);
   expect(restarted.get(id).snapshot.pins!.repositoryId).toBe(repositoryId);
 });
@@ -577,7 +579,7 @@ it("keeps the published snapshot and code after author edits and branch movement
 
 it("requires a pinned review before sharing saved worktree changes", async () => {
   const { local, reviewId, repo } = await fixture();
-  const snapshot = local.store.read(reviewId);
+  const snapshot = await local.store.read(reviewId);
   await local.store.execute({
     operation: {
       type: "set_target",
@@ -627,7 +629,7 @@ it("lists and streams shared diff counts with the same mode and persistence as l
     await importFixture();
 
   const readCatalog = async (mode: string) =>
-    await (await app.request(`/?mode=${mode}`)).json();
+    (await app.request(`/?mode=${mode}`)).json();
 
   expect((await readCatalog("textual"))[0].diffStats).toBeNull();
 
@@ -647,9 +649,9 @@ it("lists and streams shared diff counts with the same mode and persistence as l
       200,
     );
 
-    const pins = local.store.read(reviewId).pins!;
+    const pins = (await local.store.read(reviewId)).pins!;
     await local.data.coverage(reviewId, pins, "textual");
-    const expected = local.store.list("textual")[0].diffStats;
+    const expected = (await local.store.list("textual"))[0].diffStats;
 
     expect(expected).toMatchObject({ fileCount: 4 });
     expect((await next())[0].value[0].diffStats).toEqual(expected);
@@ -658,13 +660,16 @@ it("lists and streams shared diff counts with the same mode and persistence as l
 
     const sharedPins = imported.get(id).snapshot.pins!;
     const structural = { fileCount: 4, additions: 1, deletions: 1 };
-    recipient.store.setDiffStats(sharedPins, structural, "structural");
+    await recipient.store.setDiffStats(sharedPins, structural, "structural");
     expect((await readCatalog("structural"))[0].diffStats).toEqual(structural);
     expect((await readCatalog("textual"))[0].diffStats).toEqual(expected);
 
     await recipient.data.close();
 
-    const reopened = openLocalReviewStore(path.join(root, "recipient.db"));
+    const reopened = await openLocalReviewStore(
+      path.join(root, "recipient.db"),
+    );
+
     cleanup.push(() => reopened.store.close());
     cleanup.push(() => reopened.data.close());
     const restored = new SharedReviewStore(imported.root);

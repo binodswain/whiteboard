@@ -21,6 +21,7 @@ import {
   reviewServerDiscoveryPath,
 } from "@review/server-discovery.js";
 
+import { loadDeploymentConfig } from "./deployment-config.js";
 import { migrateDiffrConfig } from "./diffr-config.js";
 import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 import { createNodeRequestListener } from "./hono-http.js";
@@ -101,10 +102,13 @@ async function serve(input: HeadlessServerInput) {
 
   if (input.telemetry) await drainServerCrashReport(input.telemetry);
 
+  const deploymentConfig = loadDeploymentConfig();
+
   const token = input.token ?? (await persistedServerToken(input.stateDir));
 
   const local = await openReviewProfile(input.stateDir, {
     manageWorkspaces: false,
+    deployment: deploymentConfig,
   });
 
   const discovery: ReviewServerDiscovery = {
@@ -128,6 +132,7 @@ async function serve(input: HeadlessServerInput) {
     relay,
     token: discovery.token,
     instanceId: discovery.instanceId,
+    deploymentConfig,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: () => localBrowserPort,
     softwareMapEnabled: input.softwareMapEnabled,
@@ -157,12 +162,14 @@ async function serve(input: HeadlessServerInput) {
     createHttpMcpApp({
       api,
       scratchpad: () => persistedSettings.scratchpadEnabled,
+      stateless: core.deployment.mode === "remote",
+      forwardHeaders: core.auth?.forwardHeaders,
     }),
   );
 
   const server = createServer(
     createNodeRequestListener(
-      input.webDir ? serveWebCanvas(app, input.webDir) : app,
+      input.webDir ? serveWebCanvas(app, input.webDir, core.auth) : app,
       { requireHostOnReviewApi: input.localBrowserAuth },
     ),
   );

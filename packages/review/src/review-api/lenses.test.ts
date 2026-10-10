@@ -23,7 +23,7 @@ let directory: string, database: string, store: ReviewStore;
 
 let providers: ReviewProviders;
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(path.join(tmpdir(), "review-lenses-"));
   database = path.join(directory, "reviews.db");
   vi.stubEnv("DEV_REVIEW_HOME", directory);
@@ -34,7 +34,7 @@ beforeEach(() => {
       async () => {},
     ),
   };
-  store = new ReviewStore(database, providers);
+  store = await ReviewStore.open(database, providers);
 });
 
 afterEach(async () => {
@@ -76,7 +76,7 @@ it("inserts, updates and removes one lens at a time beside the document", async 
   });
 
   expect(api).toMatchObject({ targetId: "lens-2", type: "lens" });
-  expect(store.read(reviewId).lastEdit).toEqual({
+  expect((await store.read(reviewId)).lastEdit).toEqual({
     type: "insert",
     targetId: "lens-2",
     blockId: "lens-2",
@@ -96,23 +96,21 @@ it("inserts, updates and removes one lens at a time beside the document", async 
     afterId: api.targetId,
   });
 
-  expect(store.read(reviewId).lenses?.map((item) => item.title)).toEqual([
-    "API",
-    "Docs",
-    "Tests",
-  ]);
+  expect(
+    (await store.read(reviewId)).lenses?.map((item) => item.title),
+  ).toEqual(["API", "Docs", "Tests"]);
 
   await lens(reviewId, {
     type: "update",
     targetId: docs.targetId,
     title: "Documentation",
   });
-  expect(store.read(reviewId).lenses?.[1]).toEqual({
+  expect((await store.read(reviewId)).lenses?.[1]).toEqual({
     id: docs.targetId,
     title: "Documentation",
     targets: files("docs/**"),
   });
-  expect(store.read(reviewId).lastEdit).toMatchObject({
+  expect((await store.read(reviewId)).lastEdit).toMatchObject({
     type: "update",
     targetId: docs.targetId,
     kind: "lens",
@@ -120,7 +118,7 @@ it("inserts, updates and removes one lens at a time beside the document", async 
   });
 
   await lens(reviewId, { type: "remove", targetId: tests.targetId });
-  const current = store.read(reviewId);
+  const current = await store.read(reviewId);
   expect(current.lenses?.map((item) => item.id)).toEqual([
     api.targetId,
     docs.targetId,
@@ -151,11 +149,11 @@ it("keeps lenses in history and restores them", async () => {
   });
 
   await lens(reviewId, { type: "remove", targetId: first.targetId });
-  expect(store.read(reviewId).lenses).toBeUndefined();
-  expect(store.read(reviewId, first.version).lenses).toHaveLength(1);
+  expect((await store.read(reviewId)).lenses).toBeUndefined();
+  expect((await store.read(reviewId, first.version)).lenses).toHaveLength(1);
 
   await run({ type: "restore", reviewId, version: first.version });
-  expect(store.read(reviewId).lenses).toEqual([
+  expect((await store.read(reviewId)).lenses).toEqual([
     { id: first.targetId, title: "API", targets: files("src/**") },
   ]);
 });
@@ -178,12 +176,14 @@ it("lets two agents write the document and lenses at once, each credited and ren
   vi.useFakeTimers({ toFake: ["Date"] });
   const { reviewId } = await create();
 
-  store.activity.update(reviewId, { action: "begin" });
+  await store.activity.update(reviewId, { action: "begin" });
 
-  const lensWriter = store.activity.update(reviewId, {
-    action: "begin",
-    focus: { description: "Grouping the API files", targetId: "lens-1" },
-  }).activityId!;
+  const lensWriter = (
+    await store.activity.update(reviewId, {
+      action: "begin",
+      focus: { description: "Grouping the API files", targetId: "lens-1" },
+    })
+  ).activityId!;
 
   vi.advanceTimersByTime(120_000);
   await Promise.all([
@@ -194,16 +194,16 @@ it("lets two agents write the document and lenses at once, each credited and ren
       lensWriter,
     ),
   ]);
-  expect(store.read(reviewId).document).toHaveLength(1);
-  expect(store.read(reviewId).lenses).toHaveLength(1);
-  expect(store.read(reviewId).lastEdit).toMatchObject({
+  expect((await store.read(reviewId)).document).toHaveLength(1);
+  expect((await store.read(reviewId)).lenses).toHaveLength(1);
+  expect((await store.read(reviewId)).lastEdit).toMatchObject({
     kind: "lens",
     activityId: lensWriter,
   });
 
   // The lens write kept its writer; the document writer named no one and lapsed.
   vi.advanceTimersByTime(90_000);
-  expect(store.activity.read(reviewId).activities).toEqual([
+  expect((await store.activity.read(reviewId)).activities).toEqual([
     {
       activityId: lensWriter,
       slot: 1,
@@ -247,7 +247,7 @@ it("reads lenses saved as document blocks as the snapshot's lenses", async () =>
   db.prepare("UPDATE reviews SET next_id=5 WHERE id=?").run(reviewId);
   db.close();
 
-  const read = store.read(reviewId);
+  const read = await store.read(reviewId);
   expect(read.lenses).toEqual([
     { id: "files-2", title: "Tests", targets: files("**/*.test.ts") },
     { id: "files-4", title: "API", targets: files("src/api/**") },
@@ -286,7 +286,7 @@ it("reads lenses saved as document blocks as the snapshot's lenses", async () =>
 
 it("reports the changed lines no lens selects after each lens write", async () => {
   const { reviewId } = await create();
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,

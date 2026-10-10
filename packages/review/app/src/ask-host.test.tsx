@@ -6,6 +6,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 import { AskHistoryProvider } from "./ask-history";
 import { readOpenAsks } from "./ask-open-state";
+import { TestCanvasQuery } from "./canvas-query-test-utils";
 import { ReviewDebugSettingsProvider } from "./debug-settings";
 import { ReviewSessionProvider } from "./host/review-session";
 import { ReviewPanelHost } from "./review-components";
@@ -134,18 +135,20 @@ function askCanvas() {
   const mount = () =>
     act(async () =>
       root.render(
-        <ReviewSessionProvider session={session}>
-          <ReviewDebugSettingsProvider>
-            <ReviewPanelProvider
-              restore={() => ({ asks: readOpenAsks(session.config) })}
-            >
-              <AskHistoryProvider>
-                <Probe />
-                <ReviewPanelHost />
-              </AskHistoryProvider>
-            </ReviewPanelProvider>
-          </ReviewDebugSettingsProvider>
-        </ReviewSessionProvider>,
+        <TestCanvasQuery>
+          <ReviewSessionProvider session={session}>
+            <ReviewDebugSettingsProvider>
+              <ReviewPanelProvider
+                restore={() => ({ asks: readOpenAsks(session.config) })}
+              >
+                <AskHistoryProvider>
+                  <Probe />
+                  <ReviewPanelHost />
+                </AskHistoryProvider>
+              </ReviewPanelProvider>
+            </ReviewDebugSettingsProvider>
+          </ReviewSessionProvider>
+        </TestCanvasQuery>,
       ),
     );
 

@@ -14,7 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { withFileLock } from "@dev.fast/trace-core";
 import { afterEach, beforeEach, expect, it } from "vitest";
 
-import { openReviewProfile } from "./profile.js";
+import { metadataStoreConfig, openReviewProfile } from "./profile.js";
 import { ReviewStore } from "./store.js";
 
 let home: string;
@@ -31,6 +31,18 @@ const command = <Operation>(operation: Operation) => ({
   operation,
 });
 
+it("selects Postgres metadata from the deployment URL", () => {
+  expect(
+    metadataStoreConfig("/state", {
+      db: "postgres",
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+    }),
+  ).toEqual({
+    kind: "postgres",
+    url: "postgres://whiteboard:secret@db/whiteboard",
+  });
+});
+
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), "review-profile-"));
 });
@@ -44,17 +56,22 @@ async function fixture() {
   const initial = await openReviewProfile(home, { manageWorkspaces: false });
   await initial.data.close();
   await initial.store.close();
-  const target = new ReviewStore(path.join(home, "review-api.db"), providers);
+
+  const target = await ReviewStore.open(
+    path.join(home, "review-api.db"),
+    providers,
+  );
+
   await mkdir(path.join(home, "review-server"));
 
-  const source = new ReviewStore(
+  const source = await ReviewStore.open(
     path.join(home, "review-server", "reviews.db"),
     providers,
   );
 
   stores.push(target, source);
-  const existingRepo = target.registerRepository(path.join(home, "repo"));
-  const oldRepo = source.registerRepository(path.join(home, "repo"));
+  const existingRepo = await target.registerRepository(path.join(home, "repo"));
+  const oldRepo = await source.registerRepository(path.join(home, "repo"));
   const pins = { repositoryId: oldRepo.id, base: "base", head: "head" };
 
   const created = await source.execute(
@@ -66,7 +83,7 @@ async function fixture() {
   );
 
   const resourceId = randomUUID();
-  source.putResource(
+  await source.putResource(
     resourceId,
     oldRepo.id,
     "image",
@@ -105,7 +122,7 @@ it("starts without reading or rewriting old review files or obsolete cutover rep
   const profile = await openReviewProfile(home, { manageWorkspaces: false });
 
   try {
-    expect(profile.store.list()).toEqual([]);
+    expect(await profile.store.list()).toEqual([]);
 
     for (const [name, content] of Object.entries(files))
       expect(await readFile(path.join(legacyDir, name), "utf8")).toBe(content);
@@ -121,11 +138,11 @@ it("starts without reading or rewriting old review files or obsolete cutover rep
 
 it("reopens already migrated reviews with their history, resources, provenance and unused import cursors intact", async () => {
   const databasePath = path.join(home, "review-api.db");
-  const source = new ReviewStore(databasePath, providers);
-  const repository = source.registerRepository(home);
+  const source = await ReviewStore.open(databasePath, providers);
+  const repository = await source.registerRepository(home);
   const pins = { repositoryId: repository.id, base: "base", head: "head" };
   const resourceId = randomUUID();
-  source.putResource(
+  await source.putResource(
     resourceId,
     repository.id,
     "image",
@@ -145,10 +162,10 @@ it("reopens already migrated reviews with their history, resources, provenance a
     },
   );
 
-  const original = source.read(reviewId);
+  const original = await source.read(reviewId);
   await source.execute(command({ type: "rename", reviewId, title: "Edited" }));
-  const current = source.read(reviewId);
-  const history = source.history(reviewId);
+  const current = await source.read(reviewId);
+  const history = await source.history(reviewId);
   await source.close();
 
   const database = new DatabaseSync(databasePath);
@@ -163,11 +180,11 @@ it("reopens already migrated reviews with their history, resources, provenance a
   const profile = await openReviewProfile(home, { manageWorkspaces: false });
 
   try {
-    expect(profile.store.read(reviewId)).toEqual(current);
-    expect(profile.store.read(reviewId, 0)).toEqual(original);
-    expect(profile.store.history(reviewId)).toEqual(history);
+    expect(await profile.store.read(reviewId)).toEqual(current);
+    expect(await profile.store.read(reviewId, 0)).toEqual(original);
+    expect(await profile.store.history(reviewId)).toEqual(history);
     expect(
-      Buffer.from(profile.store.resource(resourceId).data).toString(),
+      Buffer.from((await profile.store.resource(resourceId)).data).toString(),
     ).toBe("retained image");
     const retained = new DatabaseSync(databasePath, { readOnly: true });
 
@@ -194,23 +211,23 @@ it("reopens already migrated reviews with their history, resources, provenance a
 it("merges preview headless history and resources without changing review IDs or resurrecting deleted reviews", async () => {
   const { source, target, created, existingRepo, resourceId } = await fixture();
 
-  const before = source.read(created.reviewId);
+  const before = await source.read(created.reviewId);
   const profile = await openReviewProfile(home, { manageWorkspaces: false });
 
   try {
-    expect(profile.store.read(created.reviewId)).toEqual({
+    expect(await profile.store.read(created.reviewId)).toEqual({
       ...before,
       pins: { ...before.pins, repositoryId: existingRepo.id },
       target: { ...before.target, repositoryId: existingRepo.id },
     });
-    expect(profile.store.history(created.reviewId)).toHaveLength(2);
-    expect(profile.store.resource(resourceId)).toMatchObject({
+    expect(await profile.store.history(created.reviewId)).toHaveLength(2);
+    expect(await profile.store.resource(resourceId)).toMatchObject({
       repositoryId: existingRepo.id,
     });
-    expect(Buffer.from(profile.store.resource(resourceId).data)).toEqual(
-      Buffer.from("retained resource"),
-    );
-    expect(source.read(created.reviewId)).toEqual(before);
+    expect(
+      Buffer.from((await profile.store.resource(resourceId)).data),
+    ).toEqual(Buffer.from("retained resource"));
+    expect(await source.read(created.reviewId)).toEqual(before);
     await profile.store.execute(
       command({ type: "delete", reviewId: created.reviewId }),
     );
@@ -220,8 +237,8 @@ it("merges preview headless history and resources without changing review IDs or
   }
 
   const reopened = await openReviewProfile(home, { manageWorkspaces: false });
-  expect(reopened.store.list()).toEqual([]);
-  expect(target.list()).toEqual([]);
+  expect(await reopened.store.list()).toEqual([]);
+  expect(await target.list()).toEqual([]);
   await reopened.data.close();
   await reopened.store.close();
 });
@@ -229,13 +246,13 @@ it("merges preview headless history and resources without changing review IDs or
 it("imports headless reviews before opening a fresh profile", async () => {
   await mkdir(path.join(home, "review-server"));
 
-  const source = new ReviewStore(
+  const source = await ReviewStore.open(
     path.join(home, "review-server", "reviews.db"),
     providers,
   );
 
   stores.push(source);
-  const repository = source.registerRepository(home);
+  const repository = await source.registerRepository(home);
 
   const created = await source.execute(
     command({
@@ -250,12 +267,12 @@ it("imports headless reviews before opening a fresh profile", async () => {
     }),
   );
 
-  const before = source.read(created.reviewId);
+  const before = await source.read(created.reviewId);
   const profile = await openReviewProfile(home, { manageWorkspaces: false });
 
   try {
-    expect(profile.store.read(created.reviewId)).toEqual(before);
-    expect(source.read(created.reviewId)).toEqual(before);
+    expect(await profile.store.read(created.reviewId)).toEqual(before);
+    expect(await source.read(created.reviewId)).toEqual(before);
   } finally {
     await profile.data.close();
     await profile.store.close();
@@ -283,21 +300,23 @@ it("refuses migration while the preview server owns its source, then succeeds af
     await expect(
       openReviewProfile(home, { manageWorkspaces: false }),
     ).rejects.toThrow(/Stop the old headless server/);
-    expect(target.list()).toEqual([]);
+    expect(await target.list()).toEqual([]);
   } finally {
     release.resolve();
     await owner;
   }
 
   const profile = await openReviewProfile(home, { manageWorkspaces: false });
-  expect(profile.store.read(created.reviewId).title).toBe("Headless draft");
+  expect((await profile.store.read(created.reviewId)).title).toBe(
+    "Headless draft",
+  );
   await profile.data.close();
   await profile.store.close();
 });
 
 it("rolls back the merge if a retained resource collides with different content", async () => {
   const { target, existingRepo, resourceId } = await fixture();
-  target.putResource(
+  await target.putResource(
     resourceId,
     existingRepo.id,
     "image",
@@ -307,8 +326,8 @@ it("rolls back the merge if a retained resource collides with different content"
   await expect(
     openReviewProfile(home, { manageWorkspaces: false }),
   ).rejects.toThrow(/different content/);
-  expect(target.list()).toEqual([]);
-  expect(Buffer.from(target.resource(resourceId).data).toString()).toBe(
+  expect(await target.list()).toEqual([]);
+  expect(Buffer.from((await target.resource(resourceId)).data).toString()).toBe(
     "different bytes",
   );
 });

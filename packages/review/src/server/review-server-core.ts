@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
 import type { JsonObject } from "@dev.fast/json";
@@ -10,9 +11,28 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
 import {
+  type AuthDriver,
+  canReadRepository,
+  createAuthDriver,
+} from "@review/auth/index.js";
+import {
+  createGitHubAppCredentials,
+  githubRepoSlug,
+} from "@review/auth/repo-access.js";
+import {
+  type JobRunner,
+  type PrepareReviewInput,
+  createInlineJobRunner,
+  createQueueJobRunner,
+} from "@review/jobs/job-runner.js";
+import {
   readBuildCommit,
   readReviewPackageVersion,
 } from "@review/package-paths.js";
+import {
+  createGitHubRepoSource,
+  createLocalRepoSource,
+} from "@review/repo-source/index.js";
 import { ReviewInputError } from "@review/review-api/document.js";
 import {
   type AuthoringCapabilities,
@@ -21,7 +41,9 @@ import {
   isLocalAuthRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
+import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
+import { reviewServerStateDir } from "@review/server-discovery.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
 import { type Context, Hono } from "hono";
@@ -29,6 +51,11 @@ import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 
+import {
+  type DeploymentConfig,
+  loadDeploymentConfig,
+  publicDeploymentConfig,
+} from "./deployment-config.js";
 import type { ReviewDesktopVerbRelay } from "./global-verb-relay";
 import {
   type ReviewHonoEnv,
@@ -46,6 +73,25 @@ const version = readReviewPackageVersion(import.meta.url);
 
 const commit = readBuildCommit(import.meta.url);
 
+function githubCachePath(repository: string) {
+  const match = repository.match(
+    /(?:github\.com[/:])?([^/]+)\/([^/]+?)(?:\.git)?$/i,
+  );
+
+  if (
+    !match ||
+    !/^[A-Za-z0-9_.-]+$/.test(match[1]!) ||
+    !/^[A-Za-z0-9_.-]+$/.test(match[2]!) ||
+    match[1] === "." ||
+    match[1] === ".." ||
+    match[2] === "." ||
+    match[2] === ".."
+  )
+    throw new ReviewInputError("Repository must be a GitHub owner/repository.");
+
+  return path.join(reviewServerStateDir(), "repos", match[1]!, match[2]!);
+}
+
 /**
  * What every review server shares: CORS, an open /health, token auth, and
  * the /control relay a Desktop attaches to, with errors answered as JSON.
@@ -54,34 +100,65 @@ const commit = readBuildCommit(import.meta.url);
 export function createReviewServerApp(input: {
   token: string;
   instanceId: string;
-  /** The review store's `serverId()`. */
-  serverId: string;
+  /** The review store's `serverId()`; a promise settles by the first /health. */
+  serverId: string | Promise<string>;
   relay: ReviewDesktopVerbRelay;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
+  deployment: ReturnType<typeof publicDeploymentConfig>;
+  jobSecret?: string;
+  runJob?: () => Promise<boolean>;
+  /** The remote auth driver; absent on local, which keeps its token wall. */
+  auth?: AuthDriver;
 }): Hono<ReviewHonoEnv> {
+  const { auth } = input;
+
+  const jobSecretMatches = (request: Request) => {
+    if (!input.jobSecret) return false;
+
+    const supplied = request.headers.get("authorization");
+
+    if (!supplied) return false;
+
+    const suppliedBytes = Buffer.from(supplied);
+    const expectedBytes = Buffer.from(`Bearer ${input.jobSecret}`);
+
+    return (
+      suppliedBytes.length === expectedBytes.length &&
+      timingSafeEqual(suppliedBytes, expectedBytes)
+    );
+  };
+
+  const authorized = (request: Request): Promise<boolean> | boolean =>
+    auth
+      ? auth.authenticate(request).then((principal) => principal !== null)
+      : isAuthorizedRequest(request, input.token);
+
   const app = new Hono<ReviewHonoEnv>();
   app.use("*", async (context, next) => {
     await next();
     applyCorsHeaders(context.req.raw, context.res);
   });
   // Open to any caller, but the stable ids only to one holding the token.
-  app.get("/health", (context) => {
-    const health: ReviewServerHealth = {
+  app.get("/health", async (context) => {
+    const health: ReviewServerHealth & {
+      deployment: ReturnType<typeof publicDeploymentConfig>;
+    } = {
       ok: true,
       instanceId: input.instanceId,
       desktopAttached: input.relay.attached,
       version,
+      deployment: input.deployment,
     };
 
     return serverJson(
       200,
-      isAuthorizedRequest(context.req.raw, input.token) ||
+      (await authorized(context.req.raw)) ||
         (input.localBrowserAuth &&
           isLocalAuthRequest(context.req.raw, input.localBrowserPort?.()))
         ? ({
             ...health,
-            serverId: input.serverId,
+            serverId: await input.serverId,
             serverPid: process.pid,
             commit,
           } satisfies ReviewServerHealthWithToken)
@@ -95,11 +172,37 @@ export function createReviewServerApp(input: {
     token: input.token,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: input.localBrowserPort,
+    deployment: input.deployment,
   });
 
-  app.get("/setup-info", (context) => setupInfo(context.req.raw));
+  // Remote keeps /setup-info behind sign-in; local answers it for any caller.
+  if (!auth) app.get("/setup-info", (context) => setupInfo(context.req.raw));
+
+  // Sign-in, session and token routes sit before the wall that guards the
+  // rest — they are how a remote caller becomes authorized.
+  if (auth) app.route("/auth", auth.routes);
+
   app.use("*", async (context, next) => {
-    if (isAuthorizedRequest(context.req.raw, input.token)) return next();
+    if (
+      context.req.method === "POST" &&
+      new URL(context.req.url).pathname === "/internal/jobs/run"
+    ) {
+      if (!input.jobSecret)
+        return serverJson(404, { ok: false, error: "Not found." });
+
+      if (!jobSecretMatches(context.req.raw))
+        return serverJson(401, { ok: false, error: "Unauthorized" });
+
+      return next();
+    }
+
+    if (await authorized(context.req.raw)) return next();
+
+    if (auth) {
+      if (context.req.method === "OPTIONS") return next();
+
+      return unauthorizedRemote(context, auth);
+    }
 
     const path = new URL(context.req.url).pathname;
 
@@ -129,6 +232,8 @@ export function createReviewServerApp(input: {
 
     return serverJson(401, { ok: false, error: "Unauthorized" });
   });
+
+  if (auth) app.get("/setup-info", (context) => setupInfo(context.req.raw));
   app.options("*", (context) => corsPreflightResponse(context.req.raw));
   app.get("/control", (context) => openControlEvents(context, input.relay));
   app.post("/control/result", async (context) => {
@@ -137,6 +242,18 @@ export function createReviewServerApp(input: {
     );
 
     return serverJson(accepted ? 200 : 404, { ok: accepted });
+  });
+  app.post("/internal/jobs/run", async (context) => {
+    if (!input.jobSecret)
+      return serverJson(404, { ok: false, error: "Not found." });
+
+    if (!jobSecretMatches(context.req.raw))
+      return serverJson(401, { ok: false, error: "Unauthorized" });
+
+    return serverJson(200, {
+      ok: true,
+      ran: (await input.runJob?.()) ?? false,
+    });
   });
   app.notFound(() => serverJson(404, { ok: false, error: "Not found." }));
   app.onError((error) => {
@@ -164,6 +281,7 @@ export interface WhiteboardCoreInput {
   relay: ReviewDesktopVerbRelay;
   token: string;
   instanceId: string;
+  deploymentConfig?: DeploymentConfig;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
   softwareMapEnabled?: boolean;
@@ -176,10 +294,194 @@ export interface WhiteboardCoreInput {
     update(patch: Partial<WebSettings>): Promise<WebSettings>;
   };
   headlessOpenUrl?: (reviewId: string) => string;
+  /** Network transport for the auth driver and GitHub App; tests stub it. */
+  fetchImpl?: typeof fetch;
 }
 
 export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const { store, data, shared } = input.profile;
+  const deploymentConfig = input.deploymentConfig ?? loadDeploymentConfig();
+
+  const deployment = publicDeploymentConfig(deploymentConfig);
+
+  const blobStore =
+    deploymentConfig.blobs === "s3" && deploymentConfig.s3
+      ? createBlobStore({
+          driver: "s3",
+          bucket: deploymentConfig.s3.bucket,
+          endpoint:
+            deploymentConfig.s3.endpoint ??
+            `https://s3.${deploymentConfig.s3.region}.amazonaws.com`,
+          region: deploymentConfig.s3.region,
+          accessKeyId: deploymentConfig.s3.key,
+          secretAccessKey: deploymentConfig.s3.secret,
+        })
+      : createBlobStore({ driver: "fs" });
+
+  const auth = createAuthDriver({
+    deployment: deploymentConfig,
+    meta: store.metadata,
+    fetchImpl: input.fetchImpl,
+  });
+
+  // A configured GitHub App mints the checkout's installation token per job;
+  // without one the operator's GITHUB_TOKEN stands in.
+  const githubApp =
+    deploymentConfig.githubApp &&
+    createGitHubAppCredentials({
+      app: deploymentConfig.githubApp,
+      apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
+      fetchImpl: input.fetchImpl,
+    });
+
+  const githubWebHost = new URL(
+    deploymentConfig.github?.webUrl ?? "https://github.com",
+  ).hostname;
+
+  const repoSource =
+    deploymentConfig.repoSource === "github"
+      ? createGitHubRepoSource({
+          tokenProvider: githubApp
+            ? async (canonicalRepo) => {
+                const slug = canonicalRepo
+                  ? githubRepoSlug(canonicalRepo, githubWebHost)
+                  : undefined;
+
+                return slug
+                  ? githubApp.installationToken(slug)
+                  : process.env.GITHUB_TOKEN;
+              }
+            : () => process.env.GITHUB_TOKEN,
+        })
+      : createLocalRepoSource();
+
+  const checkoutRemotes = new Map<string, string>();
+  let checkoutRemotesLoaded = false;
+  let checkoutRemotesLoading: Promise<void> | undefined;
+
+  const remoteForCheckout = async (repositoryPath: string) => {
+    if (!checkoutRemotesLoaded) {
+      checkoutRemotesLoading ??= store
+        .metadataStore()
+        .all<{ input: string }>(
+          "SELECT input FROM jobs_jobs WHERE status='succeeded'",
+        )
+        .then((jobs) => {
+          for (const job of jobs) {
+            try {
+              const input = z
+                .object({
+                  repo: z.string(),
+                  baseSha: z.string(),
+                  headSha: z.string(),
+                })
+                .parse(JSON.parse(job.input));
+
+              if (deploymentConfig.repoSource === "github")
+                checkoutRemotes.set(
+                  githubCachePath(input.repo),
+                  auth?.access.normalize(input.repo) ?? input.repo,
+                );
+            } catch {
+              // Ignore invalid historical rows; they cannot name a valid checkout.
+            }
+          }
+
+          checkoutRemotesLoaded = true;
+        })
+        .finally(() => {
+          checkoutRemotesLoading = undefined;
+        });
+
+      await checkoutRemotesLoading;
+    }
+
+    return checkoutRemotes.get(repositoryPath);
+  };
+
+  let api: ReturnType<typeof createReviewApi>;
+
+  const prepareReview = async (
+    { repo, baseSha, headSha }: PrepareReviewInput,
+    context: { jobId: string; submitterId?: string },
+  ) => {
+    const persistentDir =
+      deploymentConfig.repoSource === "github"
+        ? githubCachePath(repo)
+        : undefined;
+
+    const checkout = await repoSource.checkout({
+      repo,
+      baseSha,
+      headSha,
+      ...(persistentDir && { persistentDir }),
+    });
+
+    try {
+      const request = new Request("http://whiteboard.invalid/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          operation: {
+            type: "create",
+            title: `${repo} ${headSha.slice(0, 7)}`,
+            target: {
+              kind: "commits",
+              repositoryPath: checkout.dir,
+              base: baseSha,
+              head: headSha,
+            },
+            open: false,
+          },
+        }),
+      });
+
+      const principal =
+        context.submitterId && auth
+          ? {
+              id: context.submitterId,
+              login: context.submitterId.replace(/^[^:]+:/, ""),
+              via: "job" as const,
+              jobRepository: auth.access.normalize(repo),
+              jobCheckoutPath: checkout.dir,
+            }
+          : undefined;
+
+      const response = principal
+        ? await api.fetchAsPrincipal(request, principal)
+        : await api.fetch(request);
+
+      const result = z
+        .object({
+          reviewId: z.string().optional(),
+          error: z.string().optional(),
+        })
+        .safeParse(await response.json());
+
+      if (!response.ok || !result.success || !result.data.reviewId)
+        throw new Error(
+          (result.success ? result.data.error : undefined) ??
+            `Review creation failed (${response.status}).`,
+        );
+
+      if (principal?.jobRepository)
+        checkoutRemotes.set(checkout.dir, principal.jobRepository);
+
+      return {
+        reviewId: result.data.reviewId,
+        ...(input.headlessOpenUrl && {
+          url: input.headlessOpenUrl(result.data.reviewId),
+        }),
+      };
+    } finally {
+      if (!persistentDir) await checkout.dispose();
+    }
+  };
+
+  const jobs: JobRunner =
+    deploymentConfig.jobs === "inline"
+      ? createInlineJobRunner(store.metadataStore(), prepareReview)
+      : createQueueJobRunner(store.metadataStore(), prepareReview);
 
   const app = createReviewServerApp({
     token: input.token,
@@ -188,6 +490,10 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     relay: input.relay,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: input.localBrowserPort,
+    deployment,
+    jobSecret: process.env.WHITEBOARD_JOB_SECRET,
+    runJob: () => jobs.runNext(),
+    auth: auth ?? undefined,
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -195,7 +501,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   const askThreads =
     input.ask && new AskThreads(launchAskAgent, input.ask.tools);
 
-  const api = createReviewApi(
+  api = createReviewApi(
     store,
     data,
     callbacks.open,
@@ -203,18 +509,45 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     callbacks.capabilities,
     input.scratchpad,
     () => traceMachineEnabled(),
-    input.status,
+    () => ({ ...input.status(), deployment }),
     input.hooks,
     askThreads && { threads: askThreads, agents: () => detectAskAgents() },
     input.localBrowserAuth,
     input.webSettings,
     input.headlessOpenUrl,
+    auth === null
+      ? undefined
+      : {
+          authenticate: (request: Request) => auth.authenticate(request),
+          canReadRepo: async (principal, repoPath) => {
+            if (principal.via === "job")
+              return canReadRepository(principal, repoPath, auth.access);
+
+            const repository = auth.access.normalize(repoPath)
+              ? repoPath
+              : await remoteForCheckout(repoPath);
+
+            return repository
+              ? auth.access.canRead(principal, repository)
+              : false;
+          },
+          normalizeRepoPath: (repoPath) => auth.access.normalize(repoPath),
+        },
+    jobs,
   );
 
   // A shared store mounts the publisher with the rest of sharing.
   if (!shared) mountSharingPublisher(api, store, data);
 
-  return { app, api, close: () => askThreads?.closeAll() };
+  return {
+    app,
+    api,
+    blobStore,
+    repoSource,
+    deployment: deploymentConfig,
+    auth: auth ?? undefined,
+    close: () => askThreads?.closeAll(),
+  };
 }
 
 // The canvas runs its own scripts, its styles, its fonts and the libavoid
@@ -246,11 +579,30 @@ const WEB_CANVAS_CSP = [
 export function serveWebCanvas(
   app: Hono<ReviewHonoEnv>,
   root: string,
+  auth?: AuthDriver,
 ): Hono<ReviewHonoEnv> {
   const indexPath = path.join(root, "index.html");
   const assetsDir = path.join(root, `assets${path.sep}`);
 
   const outer = new Hono<ReviewHonoEnv>();
+
+  // A hosted viewer signs in before the SPA is served at all: static files
+  // and the index fall behind the same identity check as the API, except
+  // /health and the sign-in flow itself.
+  if (auth)
+    outer.use("*", async (context, next) => {
+      if (context.req.method !== "GET" && context.req.method !== "HEAD")
+        return next();
+
+      const path = new URL(context.req.url).pathname;
+
+      if (path === "/health" || path === "/auth" || path.startsWith("/auth/"))
+        return next();
+
+      if (await auth.authenticate(context.req.raw)) return next();
+
+      return unauthorizedRemote(context, auth);
+    });
 
   const headers = (file: string, context: Context<ReviewHonoEnv>) => {
     context.header(
@@ -395,6 +747,28 @@ function openControlEvents(
   response.headers.set("connection", "close");
   response.headers.set("cache-control", "no-cache, no-transform");
   response.headers.set("content-type", "text/event-stream; charset=utf-8");
+
+  return response;
+}
+
+/** A remote-mode 401: an HTML sign-in page for a browser GET, a Bearer
+ * challenge for an API or MCP client. */
+function unauthorizedRemote(
+  context: Context<ReviewHonoEnv>,
+  auth: AuthDriver,
+): Response {
+  const acceptsHtml =
+    context.req.method === "GET" &&
+    (context.req.header("accept")?.includes("text/html") ?? false);
+
+  if (acceptsHtml)
+    return new Response(auth.signInPage(new URL(context.req.url).pathname), {
+      status: 401,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+
+  const response = serverJson(401, { ok: false, error: "Unauthorized" });
+  response.headers.set("www-authenticate", 'Bearer realm="whiteboard"');
 
   return response;
 }

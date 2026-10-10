@@ -1,10 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { openLocalReviewStore } from "@review/review-api/local-data.js";
 import { ReviewTelemetry } from "@review/review-telemetry.js";
@@ -12,15 +14,202 @@ import { reviewServerDiscoveryPath } from "@review/server-discovery.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createGlobalReviewServer } from "./desktop-server.js";
+import { GlobalReviewDesktopVerbRelay } from "./global-verb-relay.js";
 import { runHeadlessServer } from "./headless-host.js";
+import { createWhiteboardCore } from "./review-server-core.js";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
+
+const exec = promisify(execFile);
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 let root: string;
 
 const stops: (() => Promise<void>)[] = [];
+
+it("constructs the configured S3 blob store on the Whiteboard core", async () => {
+  const profile = await openLocalReviewStore(path.join(root, "review-api.db"));
+
+  const core = createWhiteboardCore({
+    profile,
+    relay: new GlobalReviewDesktopVerbRelay(),
+    token: "test-token-0000000000000000000000000000",
+    instanceId: "test-instance",
+    scratchpad: () => false,
+    status: () => ({}),
+    deploymentConfig: {
+      mode: "remote",
+      db: "postgres",
+      blobs: "s3",
+      repoSource: "github",
+      jobs: "queue",
+      auth: "oauth",
+      authSecret: "test-auth-secret",
+      proxy: {
+        header: "x-user",
+        secret: "proxy-secret",
+        secretHeader: "x-proxy-secret",
+      },
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+      s3: {
+        bucket: "whiteboard",
+        endpoint: "https://objects.example.invalid",
+        region: "us-east-1",
+        key: "access-key",
+        secret: "secret-key",
+      },
+    },
+  });
+
+  expect(core.blobStore.signedReadUrl).toBeTypeOf("function");
+  stops.push(async () => {
+    await profile.data.close();
+    await profile.store.close();
+  });
+});
+
+it("constructs the configured GitHub repo source on the Whiteboard core", async () => {
+  const profile = await openLocalReviewStore(path.join(root, "repo-source.db"));
+
+  const core = createWhiteboardCore({
+    profile,
+    relay: new GlobalReviewDesktopVerbRelay(),
+    token: "test-token-0000000000000000000000000000",
+    instanceId: "test-instance",
+    scratchpad: () => false,
+    status: () => ({}),
+    deploymentConfig: {
+      mode: "remote",
+      db: "postgres",
+      blobs: "fs",
+      repoSource: "github",
+      jobs: "queue",
+      auth: "oauth",
+      authSecret: "test-auth-secret",
+      proxy: {
+        header: "x-user",
+        secret: "proxy-secret",
+        secretHeader: "x-proxy-secret",
+      },
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+    },
+  });
+
+  await expect(
+    core.repoSource.checkout({
+      repo: "/not/a/github/repository",
+      baseSha: "base",
+      headSha: "head",
+    }),
+  ).rejects.toThrow("Repository must identify a GitHub repository.");
+  stops.push(async () => {
+    await profile.data.close();
+    await profile.store.close();
+  });
+});
+
+it("prepares a commits review inline from a local repository", async () => {
+  const repository = path.join(root, "source-repo");
+  await mkdir(repository);
+  await exec("git", ["init", "--quiet", repository]);
+  await exec("git", [
+    "-C",
+    repository,
+    "config",
+    "user.email",
+    "test@example.com",
+  ]);
+  await exec("git", [
+    "-C",
+    repository,
+    "config",
+    "user.name",
+    "Whiteboard Test",
+  ]);
+  await writeFile(path.join(repository, "note.txt"), "base\n");
+  await exec("git", ["-C", repository, "add", "."]);
+  await exec("git", ["-C", repository, "commit", "--quiet", "-m", "base"]);
+
+  const { stdout: base } = await exec("git", [
+    "-C",
+    repository,
+    "rev-parse",
+    "HEAD",
+  ]);
+
+  await writeFile(path.join(repository, "note.txt"), "head\n");
+  await exec("git", ["-C", repository, "commit", "--quiet", "-am", "head"]);
+
+  const { stdout: head } = await exec("git", [
+    "-C",
+    repository,
+    "rev-parse",
+    "HEAD",
+  ]);
+
+  const profile = await openLocalReviewStore(path.join(root, "jobs-review.db"));
+
+  const core = createWhiteboardCore({
+    profile,
+    relay: new GlobalReviewDesktopVerbRelay(),
+    token: "test-token-0000000000000000000000000000",
+    instanceId: "test-instance",
+    scratchpad: () => false,
+    status: () => ({}),
+    headlessOpenUrl: (reviewId) => `https://whiteboard.test/r/${reviewId}`,
+    deploymentConfig: {
+      mode: "local",
+      db: "sqlite",
+      blobs: "fs",
+      repoSource: "local",
+      jobs: "inline",
+      auth: "local-token",
+    },
+  });
+
+  const response = await core.api.fetch(
+    new Request("http://whiteboard.invalid/jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repository,
+        base: base.trim(),
+        head: head.trim(),
+      }),
+    }),
+  );
+
+  const result = (await response.json()) as {
+    status: string;
+    jobId: string;
+    reviewId?: string;
+    url?: string;
+  };
+
+  expect(response.status).toBe(200);
+  expect(result.status).toBe("succeeded");
+  expect(result.reviewId).toBeTruthy();
+  expect(result.url).toBe(`https://whiteboard.test/r/${result.reviewId}`);
+  expect((await profile.store.read(result.reviewId!)).pins?.head).toBe(
+    head.trim(),
+  );
+
+  const statusResponse = await core.api.fetch(
+    new Request(`http://whiteboard.invalid/jobs/${result.jobId}`),
+  );
+
+  expect(await statusResponse.json()).toMatchObject({
+    status: "succeeded",
+    reviewId: result.reviewId,
+    url: result.url,
+  });
+  stops.push(async () => {
+    await core.close();
+    await profile.data.close();
+    await profile.store.close();
+  });
+});
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), "review-server-core-"));
@@ -41,7 +230,7 @@ interface Running {
 
 const servers = {
   async desktop(): Promise<Running> {
-    const local = openLocalReviewStore(path.join(root, "review-api.db"));
+    const local = await openLocalReviewStore(path.join(root, "review-api.db"));
 
     const server = createGlobalReviewServer({
       reviewStore: local.store,
@@ -106,6 +295,14 @@ describe.each(["desktop", "headless"] as const)("the %s server", (kind) => {
         instanceId: expect.stringMatching(uuid),
         desktopAttached: false,
         version: expect.any(String),
+        deployment: {
+          mode: "local",
+          db: "sqlite",
+          blobs: "fs",
+          repoSource: "local",
+          jobs: "inline",
+          auth: "local-token",
+        },
       });
     }
   });
@@ -570,12 +767,15 @@ it("refuses to reset the id while a paused headless server holds the store", asy
   child.kill("SIGCONT");
   expect(await serverId()).toBe(before);
 
-  const local = openLocalReviewStore(path.join(stateDir, "review-api.db"));
+  const local = await openLocalReviewStore(
+    path.join(stateDir, "review-api.db"),
+  );
+
   onTestFinished(async () => {
     await local.data.close();
     await local.store.close();
   });
-  expect(local.store.serverId()).toBe(before);
+  expect(await local.store.serverId()).toBe(before);
 }, 30_000);
 
 function spawnSource(

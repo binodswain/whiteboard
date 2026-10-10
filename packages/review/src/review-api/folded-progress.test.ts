@@ -208,7 +208,7 @@ it("any region diffr collapses folds its changed lines, whatever its kind: a doc
 
 let directory: string, store: ReviewStore;
 
-beforeEach(() => {
+beforeEach(async () => {
   directory = mkdtempSync(path.join(tmpdir(), "review-folded-"));
   vi.stubEnv("DEV_REVIEW_HOME", directory);
 
@@ -220,7 +220,7 @@ beforeEach(() => {
     ),
   };
 
-  store = new ReviewStore(path.join(directory, "reviews.db"), providers);
+  store = await ReviewStore.open(path.join(directory, "reviews.db"), providers);
 });
 
 afterEach(async () => {
@@ -266,7 +266,7 @@ async function progressApi() {
     },
   });
 
-  const data = new LocalReviewData(store);
+  const data = await LocalReviewData.open(store);
   vi.spyOn(data, "resolveSource").mockImplementation(async (snapshot) => ({
     snapshot,
     pins: snapshot.pins!,
@@ -332,7 +332,7 @@ it("progress counts folded changes as done, overall, per lens and uncategorized"
   // Viewing every unfolded line reads 100%, with the folded code unopened.
   const viewed = await client.post<ReviewProgress>(`/${reviewId}/progress`, {
     mode: "structural",
-    version: store.read(reviewId).version,
+    version: (await store.read(reviewId)).version,
     viewed: true,
     files: ["src/api.rs", "src/main.rs", "docs/readme.md"].map((path) => ({
       path,

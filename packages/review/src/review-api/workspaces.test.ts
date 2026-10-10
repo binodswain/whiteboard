@@ -29,7 +29,7 @@ let directory: string,
   reviewId: string,
   pins: Pins;
 
-let local: ReturnType<typeof openLocalReviewStore>;
+let local: Awaited<ReturnType<typeof openLocalReviewStore>>;
 
 const git = (...args: string[]) =>
   execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
@@ -58,7 +58,7 @@ beforeEach(async () => {
   git("commit", "-am", "head", "--no-gpg-sign");
   const head = git("rev-parse", "HEAD");
   database = path.join(directory, "reviews.db");
-  local = openLocalReviewStore(database);
+  local = await openLocalReviewStore(database);
   const registered = await local.data.register(repository);
   pins = { repositoryId: registered.id, base, head };
   reviewId = (
@@ -80,17 +80,25 @@ it("keeps Desktop preparation owned while a headless connection edits and delete
   git("config", "devfast.prepare", 'node -e "setTimeout(() => {}, 60000)"');
   const preparing = await local.data.workspaces.source(reviewId, pins, "head");
   expect(preparing.state).toBe("preparing");
-  const headless = openLocalReviewStore(database, { manageWorkspaces: false });
+
+  const headless = await openLocalReviewStore(database, {
+    manageWorkspaces: false,
+  });
 
   try {
-    expect(local.data.workspaces.list(reviewId)).toContainEqual(preparing);
+    expect(await local.data.workspaces.list(reviewId)).toContainEqual(
+      preparing,
+    );
     expect(() => headless.data.workspaces).toThrow(/Desktop/);
-    expect(local.data.workspaces.list(reviewId)).toContainEqual(preparing);
+    expect(await local.data.workspaces.list(reviewId)).toContainEqual(
+      preparing,
+    );
     await headless.store.execute({
       operation: { type: "delete", reviewId },
     });
     await vi.waitFor(
-      () => expect(local.data.workspaces.list(reviewId)).toEqual([]),
+      async () =>
+        expect(await local.data.workspaces.list(reviewId)).toEqual([]),
       { timeout: 5000 },
     );
     expect(existsSync(preparing.rootPath!)).toBe(false);
@@ -103,7 +111,7 @@ it("keeps Desktop preparation owned while a headless connection edits and delete
 it("lets a second Desktop share the profile without preparing a review the first one owns", async () => {
   git("config", "devfast.prepare", 'node -e "setTimeout(() => {}, 60000)"');
   const preparing = await local.data.workspaces.source(reviewId, pins, "head");
-  const second = openLocalReviewStore(database);
+  const second = await openLocalReviewStore(database);
 
   try {
     expect(await second.data.workspaces.source(reviewId, pins, "head")).toEqual(
@@ -159,7 +167,7 @@ it("prepares each side once in order, reuses on restart, and invalidates changed
   );
   await local.data.close();
   await local.store.close();
-  local = openLocalReviewStore(database);
+  local = await openLocalReviewStore(database);
   const restarted = await local.data.workspaces.source(reviewId, pins, "head");
   expect(restarted.state).toBe("ready");
   expect(restarted.generation).not.toBe(head.generation);
@@ -209,7 +217,7 @@ it("retains failure without retry loops, retries at the original side, and recre
 
 it("keeps historical and equal-side environments until review deletion and leaves user worktrees alone", async () => {
   await local.data.workspaces.open(reviewId, { ...pins, base: pins.head });
-  expect(local.data.workspaces.list(reviewId)).toHaveLength(1);
+  expect(await local.data.workspaces.list(reviewId)).toHaveLength(1);
   const old = await local.data.workspaces.source(reviewId, pins, "base");
   await command({
     type: "set_target",
@@ -234,8 +242,8 @@ it("does not block source reads during preparation and interrupts commands on sh
   );
   await local.data.close();
   await local.store.close();
-  local = openLocalReviewStore(database);
-  expect(local.data.workspaces.list(reviewId)[0]?.state).toBe("failed");
+  local = await openLocalReviewStore(database);
+  expect((await local.data.workspaces.list(reviewId))[0]?.state).toBe("failed");
   expect(existsSync(`${context.rootPath}.prepared`)).toBe(false);
 });
 
@@ -304,8 +312,8 @@ it("reports a missing repository before first acquisition and recovers after it 
 
 it("claims unowned workspaces before removing them", async () => {
   await local.data.workspaces.source(reviewId, pins, "head");
-  const second = openLocalReviewStore(database);
-  const third = openLocalReviewStore(database);
+  const second = await openLocalReviewStore(database);
+  const third = await openLocalReviewStore(database);
 
   try {
     await local.data.close();
@@ -314,7 +322,7 @@ it("claims unowned workspaces before removing them", async () => {
       /Another Desktop/,
     );
     await removal;
-    expect(third.data.workspaces.list(reviewId)).toEqual([]);
+    expect(await third.data.workspaces.list(reviewId)).toEqual([]);
   } finally {
     await second.data.close();
     await second.store.close();
@@ -339,7 +347,7 @@ it("removes a dismissed review's checkouts and rebuilds them on demand", async (
   await local.data.workspaces.idle();
 
   expect(existsSync(dismissed.rootPath!)).toBe(false);
-  expect(local.data.workspaces.list(reviewId)).toEqual([]);
+  expect(await local.data.workspaces.list(reviewId)).toEqual([]);
   expect(git("worktree", "list")).not.toContain(dismissed.rootPath!);
   expect(readFileSync(path.join(kept.rootPath!, "value.ts"), "utf8")).toContain(
     "42",
@@ -407,7 +415,11 @@ it("removes checkouts left by reviews dismissed while Desktop was closed", async
 
   await local.data.close();
   await local.store.close();
-  const headless = openLocalReviewStore(database, { manageWorkspaces: false });
+
+  const headless = await openLocalReviewStore(database, {
+    manageWorkspaces: false,
+  });
+
   await headless.store.execute({
     operation: { type: "attention", reviewId, action: "dismiss" },
   });
@@ -415,7 +427,7 @@ it("removes checkouts left by reviews dismissed while Desktop was closed", async
   await headless.store.close();
   expect(existsSync(rootPath!)).toBe(true);
 
-  local = openLocalReviewStore(database);
+  local = await openLocalReviewStore(database);
   await local.data.workspaces.idle();
   expect(existsSync(rootPath!)).toBe(false);
 });
@@ -434,7 +446,7 @@ it.skipIf(process.getuid?.() === 0)(
     try {
       await command({ type: "attention", reviewId, action: "dismiss" });
       await local.data.workspaces.idle();
-      expect(local.store.summary(reviewId)?.dismissedAt).toBeTruthy();
+      expect((await local.store.summary(reviewId))?.dismissedAt).toBeTruthy();
       expect(existsSync(path.join(rootPath!, "value.ts"))).toBe(true);
     } finally {
       chmodSync(rootPath!, 0o700);
@@ -452,7 +464,10 @@ const attentionWhileClosed = async (
 ) => {
   await local.data.close();
   await local.store.close();
-  const headless = openLocalReviewStore(database, { manageWorkspaces: false });
+
+  const headless = await openLocalReviewStore(database, {
+    manageWorkspaces: false,
+  });
 
   for (const action of actions) {
     await headless.store.execute({
@@ -463,7 +478,7 @@ const attentionWhileClosed = async (
 
   await headless.data.close();
   await headless.store.close();
-  local = openLocalReviewStore(database);
+  local = await openLocalReviewStore(database);
   await local.data.workspaces.idle();
 };
 
@@ -476,7 +491,7 @@ it("frees the checkouts of a dismissed review that was only peeked at", async ()
 
   // Opening a review from Home's Dismissed list records a view, not a restore.
   await attentionWhileClosed("dismiss", "view");
-  expect(local.store.summary(reviewId)?.dismissedAt).toBeTruthy();
+  expect((await local.store.summary(reviewId))?.dismissedAt).toBeTruthy();
   expect(existsSync(rootPath!)).toBe(false);
 });
 
@@ -488,7 +503,7 @@ it("keeps the checkouts of a restored review", async () => {
   );
 
   await attentionWhileClosed("dismiss", "restore");
-  expect(local.store.summary(reviewId)?.dismissedAt).toBeNull();
+  expect((await local.store.summary(reviewId))?.dismissedAt).toBeNull();
   expect(existsSync(path.join(rootPath!, "value.ts"))).toBe(true);
 });
 
@@ -496,7 +511,7 @@ it.skipIf(process.getuid?.() === 0)(
   "fails a release only for the checkout it could not remove, and a retry finishes it",
   async () => {
     const { workspacePath } = await local.data.navigatorWorkspace(
-      local.store.read(reviewId),
+      await local.store.read(reviewId),
     );
 
     const base = await local.data.workspaces.source(reviewId, pins, "base");
@@ -508,7 +523,7 @@ it.skipIf(process.getuid?.() === 0)(
       await command({ type: "attention", reviewId, action: "dismiss" });
       await local.data.workspaces.idle();
       expect(error).toHaveBeenCalled();
-      expect(local.data.workspaces.failures()).toMatchObject([
+      expect(await local.data.workspaces.failures()).toMatchObject([
         { id: head.id, rootPath: head.rootPath, state: "cleanup-failed" },
       ]);
       expect(existsSync(base.rootPath!)).toBe(false);
@@ -519,7 +534,7 @@ it.skipIf(process.getuid?.() === 0)(
     }
 
     await local.data.workspaces.retryCleanup(head.id);
-    expect(local.data.workspaces.failures()).toEqual([]);
+    expect(await local.data.workspaces.failures()).toEqual([]);
     expect(existsSync(path.dirname(path.dirname(head.rootPath!)))).toBe(false);
     expect(
       git("worktree", "list", "--porcelain").match(/^worktree /gm),
@@ -566,5 +581,5 @@ it("rebuilds a checkout requested while its release is running", async () => {
   expect(
     readFileSync(path.join(requested.rootPath!, "value.ts"), "utf8"),
   ).toContain("42");
-  expect(local.data.workspaces.list(reviewId)).toContainEqual(requested);
+  expect(await local.data.workspaces.list(reviewId)).toContainEqual(requested);
 });

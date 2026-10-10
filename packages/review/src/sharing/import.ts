@@ -393,7 +393,9 @@ export class SharedReviewStore {
       await local.data.workspaces.open(id, pins);
 
       if (
-        local.data.workspaces.list(id).some((workspace) => !workspace.rootPath)
+        (await local.data.workspaces.list(id)).some(
+          (workspace) => !workspace.rootPath,
+        )
       )
         throw new ReviewInputError(
           "Could not prepare the pinned checkout. Retry opening the share.",
@@ -485,7 +487,7 @@ export class SharedReviewStore {
           );
 
         if (
-          this.local?.store.repositoryPath(metadata.repositoryId) ===
+          (await this.local?.store.repositoryPath(metadata.repositoryId)) ===
           path.join(await realpath(this.root), ".repositories", id)
         ) {
           this.repositories.set(id, metadata.repositoryId);
@@ -587,7 +589,7 @@ export class SharedReviewStore {
     };
   }
 
-  list(mode: "structural" | "textual" = "structural") {
+  async list(mode: "structural" | "textual" = "structural") {
     const reviews = this.loaded
       .keys()
       .filter(
@@ -610,7 +612,7 @@ export class SharedReviewStore {
       })
       .toArray();
 
-    return this.local?.store.withDiffStats(reviews, mode) ?? reviews;
+    return (await this.local?.store.withDiffStats(reviews, mode)) ?? reviews;
   }
 
   async readObject(id: string, objectId: string) {
@@ -642,7 +644,7 @@ export class SharedReviewStore {
 
     if (repositoryId) {
       await this.local?.data.forgetRepository(repositoryId);
-      this.local?.store.unregisterRepository(repositoryId);
+      await this.local?.store.unregisterRepository(repositoryId);
     }
 
     await rm(this.repositoryRoot(id), { recursive: true, force: true });

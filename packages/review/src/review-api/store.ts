@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import { resolveRepoContextSync } from "@dev.fast/local-vcs";
 import {
   type ReviewApiSummary,
   SCRATCHPAD_REVIEW_ID,
 } from "@dev.fast/review-protocol";
+import { AskQueue } from "@review/ask/runner/queue.js";
 import { sourceAnchors } from "@review/lens-selection.js";
 import {
   liftFileLenses,
@@ -24,6 +24,7 @@ import { z } from "zod";
 
 import { type ActivitySurface, ReviewActivity } from "./activity.js";
 import { AskHistory } from "./ask-history.js";
+import { ReviewComments } from "./comments.js";
 import {
   type Lens,
   applyLensEdit,
@@ -55,7 +56,13 @@ import {
   summarizeEdit,
 } from "./document.js";
 import { pullRequestKey, pullRequestUrl, setPullRequest } from "./origin.js";
-import { initializeReviewStoreSchema } from "./store-schema.js";
+import { type ReviewFilter, reviewTagSchema } from "./review-filter.js";
+import {
+  type MetadataParam,
+  type MetadataStore,
+  createMetadataStore,
+  isMetadataStore,
+} from "./storage/metadata-store.js";
 
 const reviewId = z.string().min(1);
 
@@ -89,11 +96,19 @@ export const commandSchema = z.strictObject({
       action: z.enum(["view", "dismiss", "restore"]),
     }),
     z.strictObject({
+      type: z.literal("tags"),
+      reviewId,
+      add: z.array(reviewTagSchema).max(20).default([]),
+      remove: z.array(reviewTagSchema).max(20).default([]),
+    }),
+    z.strictObject({
       type: z.literal("create"),
       /** Required unless pullRequestUrl alone names the source; then the PR title. */
       title: z.string().trim().min(1).optional(),
       target: reviewTargetSchema.optional(),
       pullRequestUrl: pullRequestUrl.optional(),
+      /** Who asked for the review, for the list's author filter. */
+      createdBy: z.string().trim().min(1).max(200).optional(),
       /** With pullRequestUrl and no target: the checkout to fetch the PR into. */
       repositoryId: z
         .string()
@@ -201,6 +216,8 @@ export interface Result {
   children?: WrittenComponent[];
   attention?: true;
   deleted?: true;
+  /** The review's tags after a tags command, sorted. */
+  tags?: string[];
   warnings?: string[];
 }
 
@@ -230,6 +247,12 @@ export interface ReviewProviders {
   /** Ids of references whose own pins no longer name a usable checkout. */
   unavailableAnchors?(snapshot: Snapshot): Promise<string[]>;
   validatePins(pins: Pins): Promise<void>;
+  /** A file's text at one side's commit, or undefined when it has none there. */
+  fileText?(
+    pins: Pins,
+    side: "base" | "head",
+    file: string,
+  ): Promise<string | undefined>;
   /** The files each side's commit changed from one set of pins to another,
    * or undefined when they can't be diffed commit to commit. */
   filesChangedBetween?(
@@ -245,13 +268,18 @@ export interface ReviewProviders {
 }
 
 /** One instance owned by the desktop server. All writers go through execute().
- * The queue includes async validation; SQLite transactions contain only writes.
+ * The queue includes async validation; transactions contain only writes.
  * This prototype uses a new, explicitly supplied database, never an existing profile.
  */
 export class ReviewStore {
   readonly activity: ReviewActivity;
   readonly askHistory: AskHistory;
-  private readonly db: DatabaseSync;
+  readonly comments: ReviewComments;
+  readonly askQueue: AskQueue;
+  private readonly meta: MetadataStore;
+  metadataStore(): MetadataStore {
+    return this.meta;
+  }
   private pending: Promise<unknown> = Promise.resolve();
   private closing = false;
   private readonly liveSources = new Map<string, Snapshot>();
@@ -261,7 +289,7 @@ export class ReviewStore {
   watchWorktrees(): () => void {
     this.refreshSubscribers++;
     this.refreshTimer ??= setInterval(() => {
-      void this.refreshWorktrees();
+      void this.refreshWorktrees().catch(() => {});
     }, 1000);
     this.refreshTimer.unref();
 
@@ -325,8 +353,8 @@ export class ReviewStore {
     if (this.refreshPending) return this.refreshPending;
 
     const run = this.pending.then(async () => {
-      for (const summary of this.list()) {
-        const snapshot = this.read(summary.reviewId, summary.version);
+      for (const summary of await this.list()) {
+        const snapshot = await this.read(summary.reviewId, summary.version);
 
         try {
           const live = this.liveSources.get(summary.reviewId);
@@ -349,7 +377,7 @@ export class ReviewStore {
             });
         } catch (error) {
           if (error instanceof ReviewInputError && error.status === 404) {
-            const last = this.read(snapshot.reviewId);
+            const last = await this.read(snapshot.reviewId);
 
             if (!last.sourceUnavailable) {
               this.liveSources.set(snapshot.reviewId, {
@@ -376,8 +404,9 @@ export class ReviewStore {
   }
   private readonly listeners = new Set<(result: Result) => void>();
   private readonly catalogListeners = new Set<() => void>();
-  private readonly externalChanges: ReturnType<typeof setInterval>;
-  private observedDataVersion: number;
+  private externalChanges?: ReturnType<typeof setInterval>;
+  private externalPending: Promise<unknown> = Promise.resolve();
+  private observedDataVersion = -1;
   private observedVersions = new Map<string, number>();
   subscribeCatalog(listener: () => void) {
     this.catalogListeners.add(listener);
@@ -402,44 +431,63 @@ export class ReviewStore {
       this.listeners.delete(listener);
     };
   }
-  constructor(
-    databasePath: string,
+  private constructor(
+    meta: MetadataStore,
     private readonly providers: ReviewProviders,
   ) {
-    // WAL plus a busy timeout: another host on the same home waits instead of failing.
-    this.db = new DatabaseSync(databasePath, { timeout: 5000 });
-    initializeReviewStoreSchema(this.db);
-    this.activity = new ReviewActivity(this.db, (id) => this.assertExists(id));
-    this.askHistory = new AskHistory(this.db);
+    this.meta = meta;
+    this.activity = new ReviewActivity(meta, (id) => this.assertExists(id));
+    this.askHistory = new AskHistory(meta);
+    this.comments = new ReviewComments(meta);
+    this.askQueue = new AskQueue(meta);
+  }
 
-    this.observedDataVersion = this.dataVersion();
-    this.observedVersions = this.currentVersions();
-    this.externalChanges = setInterval(
-      () => this.refreshExternalChanges(),
-      250,
-    );
+  /** A store over an existing metadata backend or a SQLite file path. */
+  static async open(
+    source: string | MetadataStore,
+    providers: ReviewProviders,
+  ): Promise<ReviewStore> {
+    const meta = isMetadataStore(source)
+      ? source
+      : await createMetadataStore({ kind: "sqlite", dir: source });
+
+    const store = new ReviewStore(meta, providers);
+    await store.init();
+
+    return store;
+  }
+
+  private async init() {
+    await this.activity.init();
+    this.observedDataVersion = await this.dataVersion();
+    this.observedVersions = await this.currentVersions();
+    this.externalChanges = setInterval(() => {
+      this.externalPending = this.refreshExternalChanges().catch(() => {});
+    }, 250);
     this.externalChanges.unref();
   }
 
   private dataVersion() {
-    return Number(this.db.prepare("PRAGMA data_version").get()!.data_version);
+    return this.meta.dataVersion();
   }
 
-  private currentVersions() {
+  private async currentVersions() {
     return new Map(
-      this.db
-        .prepare("SELECT id,version FROM reviews")
-        .all()
-        .map((row) => [String(row.id), Number(row.version)]),
+      (await this.meta.all("SELECT id,version FROM reviews")).map((row) => [
+        String(row.id),
+        Number(row.version),
+      ]),
     );
   }
 
-  private refreshExternalChanges() {
-    const version = this.dataVersion();
+  private async refreshExternalChanges() {
+    if (this.closing) return;
+
+    const version = await this.dataVersion();
 
     if (version === this.observedDataVersion) return;
     this.observedDataVersion = version;
-    const current = this.currentVersions();
+    const current = await this.currentVersions();
     const previous = this.observedVersions;
     this.observedVersions = current;
 
@@ -449,11 +497,11 @@ export class ReviewStore {
 
     for (const [reviewId, savedVersion] of previous)
       if (!current.has(reviewId)) {
-        this.activity.deleted(reviewId);
+        await this.activity.deleted(reviewId);
         this.notify({ reviewId, version: savedVersion, deleted: true });
       }
 
-    this.activity.refresh();
+    await this.activity.refresh();
 
     // Attention and repository/resource changes need catalog invalidation too.
     for (const listener of this.catalogListeners) {
@@ -465,36 +513,34 @@ export class ReviewStore {
     }
   }
   /** Reader progress never creates a document version or authoring event. */
-  viewedCoverage(
+  async viewedCoverage(
     reviewId: string,
-  ): Map<string, { fingerprint: string; coverage: Coverage }> {
-    this.assertExists(reviewId);
+  ): Promise<Map<string, { fingerprint: string; coverage: Coverage }>> {
+    await this.assertExists(reviewId);
 
     return new Map(
-      this.db
-        .prepare(
+      (
+        await this.meta.all(
           "SELECT file,fingerprint,coverage FROM review_coverage WHERE review_id=?",
+          reviewId,
         )
-        .all(reviewId)
-        .map((row) => [
-          String(row.file),
-          {
-            fingerprint: String(row.fingerprint),
-            coverage: coverageSchema.parse(JSON.parse(String(row.coverage))),
-          },
-        ]),
+      ).map((row) => [
+        String(row.file),
+        {
+          fingerprint: String(row.fingerprint),
+          coverage: coverageSchema.parse(JSON.parse(String(row.coverage))),
+        },
+      ]),
     );
   }
-  updateViewedCoverage(
+  async updateViewedCoverage(
     reviewId: string,
     files: { path: string; fingerprint: string; scope: Coverage }[],
     viewed: boolean,
-  ): void {
-    this.assertExists(reviewId);
-    this.db.exec("BEGIN IMMEDIATE");
-
-    try {
-      const current = this.viewedCoverage(reviewId);
+  ): Promise<void> {
+    await this.meta.transaction(async () => {
+      await this.assertExists(reviewId);
+      const current = await this.viewedCoverage(reviewId);
 
       for (const file of files) {
         const previous = current.get(file.path);
@@ -507,18 +553,15 @@ export class ReviewStore {
           viewed,
         );
 
-        this.db
-          .prepare(
-            "INSERT OR REPLACE INTO review_coverage(review_id,file,fingerprint,coverage) VALUES(?,?,?,?)",
-          )
-          .run(reviewId, file.path, file.fingerprint, JSON.stringify(coverage));
+        await this.meta.run(
+          "INSERT INTO review_coverage(review_id,file,fingerprint,coverage) VALUES(?,?,?,?) ON CONFLICT(review_id,file) DO UPDATE SET fingerprint=excluded.fingerprint,coverage=excluded.coverage",
+          reviewId,
+          file.path,
+          file.fingerprint,
+          JSON.stringify(coverage),
+        );
       }
-
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
   private readonly repositoryGroups = new Map<
     string,
@@ -550,54 +593,86 @@ export class ReviewStore {
     return group;
   }
 
-  registerRepository(root: string) {
-    this.db
-      .prepare("INSERT OR IGNORE INTO repositories(id,path,name) VALUES(?,?,?)")
-      .run(randomUUID(), root, root.split(/[\\/]/).at(-1)!);
+  /** The metadata backend, shared with subsystems (auth, jobs) that own their
+   * own tables in the same database. */
+  get metadata(): MetadataStore {
+    return this.meta;
+  }
+  async registerRepository(root: string) {
+    await this.meta.run(
+      "INSERT INTO repositories(id,path,name) VALUES(?,?,?) ON CONFLICT DO NOTHING",
+      randomUUID(),
+      root,
+      root.split(/[\\/]/).at(-1)!,
+    );
 
-    const row = this.db
-      .prepare("SELECT id,name FROM repositories WHERE path=?")
-      .get(root)!;
+    const row = (await this.meta.get(
+      "SELECT id,name FROM repositories WHERE path=?",
+      root,
+    ))!;
 
     return { id: String(row.id), name: String(row.name) };
   }
-  unregisterRepository(id: string) {
-    this.db
-      // Document pins and per-reference pins both spell the id in the snapshot.
-      .prepare(`DELETE FROM repositories WHERE id=?
-      AND NOT EXISTS (SELECT 1 FROM versions WHERE instr(snapshot, ?) > 0)
-      AND NOT EXISTS (SELECT 1 FROM resources WHERE repository_id=?)`)
-      .run(id, `"repositoryId":${JSON.stringify(id)}`, id);
+  /** A hosted repository row keyed by a canonical remote URL — the spelling
+   * GitHub checkouts register as. The `.git` suffix is identity-neutral, so
+   * both spellings resolve to one row. */
+  async registerRemoteRepository(remote: string) {
+    const canonical = remote.replace(/\.git$/, "");
+
+    const existing = await this.meta.get(
+      "SELECT id,name FROM repositories WHERE path IN (?, ?)",
+      canonical,
+      `${canonical}.git`,
+    );
+
+    if (existing)
+      return { id: String(existing.id), name: String(existing.name) };
+
+    return this.registerRepository(canonical);
+  }
+  async unregisterRepository(id: string) {
+    // Document pins and per-reference pins both spell the id in the snapshot.
+    await this.meta.run(
+      `DELETE FROM repositories WHERE id=?
+      AND NOT EXISTS (SELECT 1 FROM versions WHERE ${this.meta.dialect.containsText("snapshot")})
+      AND NOT EXISTS (SELECT 1 FROM resources WHERE repository_id=?)`,
+      id,
+      `"repositoryId":${JSON.stringify(id)}`,
+      id,
+    );
   }
   /** Registered checkouts, oldest registration first. */
-  repositories() {
-    return this.db
-      .prepare("SELECT id,path FROM repositories ORDER BY rowid")
-      .all()
-      .map((row) => ({ id: String(row.id), path: String(row.path) }));
+  async repositories() {
+    return (
+      await this.meta.all("SELECT id,path FROM repositories ORDER BY rowid")
+    ).map((row) => ({ id: String(row.id), path: String(row.path) }));
   }
-  repositoryPath(id: string) {
-    const row = this.db
-      .prepare("SELECT path FROM repositories WHERE id=?")
-      .get(id);
+  async repositoryPath(id: string) {
+    const row = await this.meta.get(
+      "SELECT path FROM repositories WHERE id=?",
+      id,
+    );
 
     if (!row) throw new ReviewInputError("Repository is not registered.", 404);
 
     return String(row.path);
   }
-  putResource(
+  async putResource(
     id: string,
     repositoryId: string,
     kind: string,
     mimeType: string,
     data: Uint8Array,
   ) {
-    this.db
-      .prepare(
-        "INSERT OR IGNORE INTO resources(id,repository_id,kind,mime_type,data) VALUES(?,?,?,?,?)",
-      )
-      .run(id, repositoryId, kind, mimeType, data);
-    const saved = this.resource(id);
+    await this.meta.run(
+      "INSERT INTO resources(id,repository_id,kind,mime_type,data) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING",
+      id,
+      repositoryId,
+      kind,
+      mimeType,
+      data,
+    );
+    const saved = await this.resource(id);
 
     if (
       saved.repositoryId !== repositoryId ||
@@ -612,8 +687,8 @@ export class ReviewStore {
 
     return { id, kind, mimeType };
   }
-  resource(id: string) {
-    const row = this.db.prepare("SELECT * FROM resources WHERE id=?").get(id);
+  async resource(id: string) {
+    const row = await this.meta.get("SELECT * FROM resources WHERE id=?", id);
 
     if (!row) throw new ReviewInputError("Resource not found.", 404);
 
@@ -622,7 +697,7 @@ export class ReviewStore {
       repositoryId: String(row.repository_id),
       kind: String(row.kind),
       mimeType: String(row.mime_type),
-      // SAFETY: resources.data is a BLOB written by putResource; node:sqlite returns Uint8Array.
+      // SAFETY: resources.data is a BLOB written by putResource; each adapter returns raw bytes.
       data: row.data as Uint8Array,
     };
   }
@@ -631,60 +706,62 @@ export class ReviewStore {
     clearInterval(this.externalChanges);
     clearInterval(this.refreshTimer);
     await this.pending;
+    await this.externalPending;
     this.listeners.clear();
     this.catalogListeners.clear();
     this.activity.close();
-    this.db.close();
+    await this.meta.close();
   }
   /** Stable across restarts; the first host on a new store chooses it. */
-  serverId(): string {
-    const read = () =>
-      this.db.prepare("SELECT id FROM server_identity").get()?.id;
+  async serverId(): Promise<string> {
+    const read = async () =>
+      (await this.meta.get("SELECT id FROM server_identity"))?.id;
 
-    let id = read();
+    let id = await read();
 
     if (id === undefined) {
       // Another host may insert first; its id wins.
-      this.db
-        .prepare("INSERT OR IGNORE INTO server_identity(one,id) VALUES(1,?)")
-        .run(randomUUID());
-      id = read();
+      await this.meta.run(
+        "INSERT INTO server_identity(one,id) VALUES(1,?) ON CONFLICT DO NOTHING",
+        randomUUID(),
+      );
+      id = await read();
     }
 
     return String(id);
   }
-  resetServerId(): string {
+  async resetServerId(): Promise<string> {
     const id = randomUUID();
-    this.db
-      .prepare("INSERT OR REPLACE INTO server_identity(one,id) VALUES(1,?)")
-      .run(id);
+    await this.meta.run(
+      "INSERT INTO server_identity(one,id) VALUES(1,?) ON CONFLICT(one) DO UPDATE SET id=excluded.id",
+      id,
+    );
 
     return id;
   }
   /** The 404 check alone, without loading a snapshot. */
-  assertExists(id: string) {
-    if (!this.db.prepare("SELECT 1 FROM reviews WHERE id=?").get(id))
+  async assertExists(id: string) {
+    if (!(await this.meta.get("SELECT 1 FROM reviews WHERE id=?", id)))
       throw new ReviewInputError(
         "Review not found. If this is an old Whiteboard review, ask your agent to migrate your old Whiteboard reviews.",
         404,
       );
   }
-  read(id: string, version?: number): Snapshot {
+  async read(id: string, version?: number): Promise<Snapshot> {
     const row =
       version === undefined
-        ? this.db
-            .prepare(
-              "SELECT snapshot FROM versions JOIN reviews ON reviews.id=review_id AND reviews.version=versions.version WHERE reviews.id=?",
-            )
-            .get(id)
-        : this.db
-            .prepare(
-              "SELECT snapshot FROM versions WHERE review_id=? AND version=?",
-            )
-            .get(id, version);
+        ? await this.meta.get(
+            "SELECT snapshot FROM versions JOIN reviews ON reviews.id=review_id AND reviews.version=versions.version WHERE reviews.id=?",
+            id,
+          )
+        : await this.meta.get(
+            "SELECT snapshot FROM versions WHERE review_id=? AND version=?",
+            id,
+            version,
+          );
 
     if (!row) {
-      this.assertExists(id);
+      await this.assertExists(id);
       throw new ReviewInputError("Review version not found.", 404);
     }
 
@@ -723,17 +800,17 @@ export class ReviewStore {
 
     return snapshot;
   }
-  setDiffStats(
+  async setDiffStats(
     pins: Pins,
     stats: NonNullable<ReviewApiSummary["diffStats"]>,
     mode: "structural" | "textual" = "structural",
   ) {
     if (this.closing) return;
-    this.db
-      .prepare(
-        "INSERT OR REPLACE INTO comparison_stats(identity, stats) VALUES (?, ?)",
-      )
-      .run(JSON.stringify([pins, mode]), JSON.stringify(stats));
+    await this.meta.run(
+      "INSERT INTO comparison_stats(identity, stats) VALUES (?, ?) ON CONFLICT(identity) DO UPDATE SET stats=excluded.stats",
+      JSON.stringify([pins, mode]),
+      JSON.stringify(stats),
+    );
 
     for (const listener of this.catalogListeners) {
       try {
@@ -745,110 +822,164 @@ export class ReviewStore {
   }
 
   /** Managed records are discoverable even if their preparation stamp was lost. */
-  tutorialIds(): string[] {
-    return this.db
-      .prepare(
-        `SELECT reviews.id FROM reviews JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version WHERE json_extract(versions.snapshot,'$.origin.tutorial') = 1`,
+  async tutorialIds(): Promise<string[]> {
+    return (
+      await this.meta.all(
+        `SELECT reviews.id FROM reviews JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version WHERE ${this.meta.dialect.jsonFlag("versions.snapshot", "origin.tutorial")}`,
       )
-      .all()
-      .map((row) => String(row.id));
+    ).map((row) => String(row.id));
   }
 
-  list(mode: "structural" | "textual" = "structural"): ReviewApiSummary[] {
-    return this.summaries(mode);
+  list(
+    mode: "structural" | "textual" = "structural",
+    filter: ReviewFilter = {},
+  ): Promise<ReviewApiSummary[]> {
+    return this.summaries(mode, undefined, filter);
   }
   /** One review's catalog entry, as review_list shows it. */
-  summary(id: string): ReviewApiSummary | undefined {
-    return this.summaries("structural", id)[0];
+  async summary(id: string): Promise<ReviewApiSummary | undefined> {
+    return (await this.summaries("structural", id))[0];
   }
-  private summaries(
+  private async summaries(
     mode: "structural" | "textual",
     id?: string,
-  ): ReviewApiSummary[] {
-    // One query, and the document never leaves SQLite: every catalog watcher
-    // re-lists on every command.
+    filter: ReviewFilter = {},
+  ): Promise<ReviewApiSummary[]> {
+    // One query, and the document never leaves the database: every catalog
+    // watcher re-lists on every command.
+    const dialect = this.meta.dialect;
 
-    const reviews = this.db
-      .prepare(
-        `SELECT json_remove(versions.snapshot,'$.document') AS summary,
-          (SELECT json_extract(first.snapshot,'$.createdAt') FROM versions AS first WHERE first.review_id=reviews.id ORDER BY first.version LIMIT 1) AS first_created_at,
-          review_attention.viewed_at, review_attention.dismissed_at, repositories.name AS repository_name, repositories.path AS repository_path
-        FROM reviews
-        JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version
-        LEFT JOIN review_attention ON review_attention.review_id=reviews.id
-        LEFT JOIN repositories ON repositories.id=json_extract(versions.snapshot,'$.pins.repositoryId')
-        WHERE COALESCE(json_extract(versions.snapshot,'$.origin.tutorial'), 0) = 0
-        ${id === undefined ? "" : "AND reviews.id=?"}
-        ORDER BY reviews.rowid`,
-      )
-      .all(...(id === undefined ? [] : [id]))
-      .map((row) => {
-        // SAFETY: versions contains only snapshots validated by execute before committing.
-        const summary = JSON.parse(String(row.summary)) as Omit<
-          Snapshot,
-          "document"
-        >;
+    const clauses: string[] = [];
+    const params: MetadataParam[] = [];
 
-        if (summary.pins)
-          summary.target ??= {
-            kind: "commits",
-            repositoryId: summary.pins.repositoryId,
-            base: summary.pins.base,
-            head: summary.pins.head,
-          };
+    if (id !== undefined) {
+      clauses.push("reviews.id=?");
+      params.push(id);
+    }
 
-        const live = this.liveSources.get(summary.reviewId);
+    if (filter.repo !== undefined) {
+      clauses.push("(repositories.name=? OR repositories.id=?)");
+      params.push(filter.repo, filter.repo);
+    }
 
-        if (
-          live?.version === summary.version &&
-          summary.target?.kind === "worktree"
-        )
-          summary.pins = live.pins;
+    if (filter.branch !== undefined) {
+      clauses.push("reviews.branch=?");
+      params.push(filter.branch);
+    }
 
-        const listed: ReviewApiSummary = {
-          ...summary,
-          firstCreatedAt: row.first_created_at
-            ? String(row.first_created_at)
-            : undefined,
-          repositoryPath: row.repository_path
-            ? String(row.repository_path)
-            : undefined,
-          repositoryGroup: row.repository_path
-            ? this.repositoryGroup(String(row.repository_path))
-            : undefined,
-          repositoryName: row.repository_name
-            ? String(row.repository_name)
-            : (summary.pins?.repositoryId ?? ""),
-          viewedAt: row.viewed_at ? String(row.viewed_at) : null,
-          dismissedAt: row.dismissed_at ? String(row.dismissed_at) : null,
-          working: this.activity.isWorking(summary.reviewId),
+    if (filter.commit !== undefined) {
+      clauses.push("(reviews.head_sha LIKE ? OR reviews.base_sha LIKE ?)");
+      params.push(`${filter.commit}%`, `${filter.commit}%`);
+    }
+
+    if (filter.author !== undefined) {
+      clauses.push("reviews.created_by=?");
+      params.push(filter.author);
+    }
+
+    if (filter.tag !== undefined) {
+      clauses.push(
+        "reviews.id IN (SELECT review_id FROM review_tags WHERE tag=?)",
+      );
+      params.push(filter.tag);
+    }
+
+    const rows = await this.meta.all(
+      `SELECT ${dialect.jsonWithout("versions.snapshot", "document")} AS summary,
+        (SELECT ${dialect.jsonText("first.snapshot", "createdAt")} FROM versions AS first WHERE first.review_id=reviews.id ORDER BY first.version LIMIT 1) AS first_created_at,
+        review_attention.viewed_at, review_attention.dismissed_at, repositories.name AS repository_name, repositories.path AS repository_path,
+        reviews.created_by
+      FROM reviews
+      JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version
+      LEFT JOIN review_attention ON review_attention.review_id=reviews.id
+      LEFT JOIN repositories ON repositories.id=${dialect.jsonText("versions.snapshot", "pins.repositoryId")}
+      WHERE NOT ${dialect.jsonFlag("versions.snapshot", "origin.tutorial")}
+      ${clauses.map((clause) => `AND ${clause}`).join("")}
+      ORDER BY reviews.rowid`,
+      ...params,
+    );
+
+    const tags = new Map<string, string[]>();
+
+    for (const row of await this.meta.all(
+      "SELECT review_id, tag FROM review_tags ORDER BY tag",
+    )) {
+      const reviewTags = tags.get(String(row.review_id)) ?? [];
+
+      reviewTags.push(String(row.tag));
+      tags.set(String(row.review_id), reviewTags);
+    }
+
+    const reviews: ReviewApiSummary[] = [];
+
+    for (const row of rows) {
+      // SAFETY: versions contains only snapshots validated by execute before committing.
+      const summary = JSON.parse(String(row.summary)) as Omit<
+        Snapshot,
+        "document"
+      >;
+
+      if (summary.pins)
+        summary.target ??= {
+          kind: "commits",
+          repositoryId: summary.pins.repositoryId,
+          base: summary.pins.base,
+          head: summary.pins.head,
         };
 
-        if (summary.kind === "scratchpad")
-          listed.contents = this.scratchpadContents();
+      const live = this.liveSources.get(summary.reviewId);
 
-        return listed;
-      });
+      if (
+        live?.version === summary.version &&
+        summary.target?.kind === "worktree"
+      )
+        summary.pins = live.pins;
+
+      const listed: ReviewApiSummary = {
+        ...summary,
+        firstCreatedAt: row.first_created_at
+          ? String(row.first_created_at)
+          : undefined,
+        repositoryPath: row.repository_path
+          ? String(row.repository_path)
+          : undefined,
+        repositoryGroup: row.repository_path
+          ? this.repositoryGroup(String(row.repository_path))
+          : undefined,
+        repositoryName: row.repository_name
+          ? String(row.repository_name)
+          : (summary.pins?.repositoryId ?? ""),
+        viewedAt: row.viewed_at ? String(row.viewed_at) : null,
+        dismissedAt: row.dismissed_at ? String(row.dismissed_at) : null,
+        working: this.activity.isWorking(summary.reviewId),
+        tags: tags.get(summary.reviewId) ?? [],
+        ...(row.created_by !== null && { createdBy: String(row.created_by) }),
+      };
+
+      if (summary.kind === "scratchpad")
+        listed.contents = await this.scratchpadContents();
+
+      reviews.push(listed);
+    }
 
     return this.withDiffStats(reviews, mode);
   }
 
   /** Local and imported summaries use the same persisted, mode-specific counts. */
-  withDiffStats<T extends ReviewApiSummary>(
+  async withDiffStats<T extends ReviewApiSummary>(
     reviews: T[],
     mode: "structural" | "textual" = "structural",
-  ): T[] {
+  ): Promise<T[]> {
     const stats = new Map(
-      this.db
-        .prepare("SELECT identity, stats FROM comparison_stats")
-        .all()
-        .map((row) => [
+      (await this.meta.all("SELECT identity, stats FROM comparison_stats")).map(
+        (row) => [
           String(row.identity),
           // SAFETY: comparison_stats is written only from the validated diff-stats contract.
           JSON.parse(String(row.stats)) as NonNullable<
             ReviewApiSummary["diffStats"]
           >,
-        ]),
+        ],
+      ),
     );
 
     return reviews.map((review) => ({
@@ -860,8 +991,10 @@ export class ReviewStore {
   }
 
   /** What the pad holds, for its Home card: blocks, and the diagrams among them. */
-  private scratchpadContents(): NonNullable<ReviewApiSummary["contents"]> {
-    const blocks = elements(this.read(SCRATCHPAD_ID).document).filter(
+  private async scratchpadContents(): Promise<
+    NonNullable<ReviewApiSummary["contents"]>
+  > {
+    const blocks = elements((await this.read(SCRATCHPAD_ID)).document).filter(
       (element) => !isUnit(element),
     );
 
@@ -873,7 +1006,7 @@ export class ReviewStore {
   /** The one scratchpad, made on first use. A host that loses the race to
    * another on the same home finds it made. */
   async ensureScratchpad(): Promise<void> {
-    if (this.has(SCRATCHPAD_ID)) return;
+    if (await this.has(SCRATCHPAD_ID)) return;
 
     try {
       await this.execute({
@@ -884,23 +1017,25 @@ export class ReviewStore {
         },
       });
     } catch (error) {
-      if (!this.has(SCRATCHPAD_ID)) throw error;
+      if (!(await this.has(SCRATCHPAD_ID))) throw error;
     }
   }
-  history(id: string) {
-    return this.db
-      .prepare(
-        "SELECT version,json_extract(snapshot,'$.title') AS title,json_extract(snapshot,'$.createdAt') AS created_at FROM versions WHERE review_id=? ORDER BY version",
+  async history(id: string) {
+    const dialect = this.meta.dialect;
+
+    return (
+      await this.meta.all(
+        `SELECT version,${dialect.jsonText("snapshot", "title")} AS title,${dialect.jsonText("snapshot", "createdAt")} AS created_at FROM versions WHERE review_id=? ORDER BY version`,
+        id,
       )
-      .all(id)
-      .map((row) => ({
-        version: Number(row.version),
-        title: String(row.title),
-        createdAt: String(row.created_at),
-      }));
+    ).map((row) => ({
+      version: Number(row.version),
+      title: String(row.title),
+      createdAt: String(row.created_at),
+    }));
   }
-  inspect(id: string, targetId?: string, version?: number) {
-    const snapshot = this.read(id, version);
+  async inspect(id: string, targetId?: string, version?: number) {
+    const snapshot = await this.read(id, version);
 
     return inspectSnapshot(snapshot, targetId);
   }
@@ -930,7 +1065,7 @@ export class ReviewStore {
         op.type !== "edit" &&
         op.type !== "lens_edit" &&
         op.type !== "restore" &&
-        this.read(op.reviewId).kind === "scratchpad"
+        (await this.read(op.reviewId)).kind === "scratchpad"
       )
         throw new ReviewInputError(
           "The scratchpad has no lifecycle, title or pins of its own.",
@@ -941,7 +1076,7 @@ export class ReviewStore {
         if (op.target)
           throw new ReviewInputError("A scratchpad has no target of its own.");
 
-        if (this.has(SCRATCHPAD_ID))
+        if (await this.has(SCRATCHPAD_ID))
           throw new ReviewInputError("The scratchpad already exists.", 409);
       } else if (op.type === "create") {
         if (!op.target && !op.pullRequestUrl)
@@ -976,12 +1111,12 @@ export class ReviewStore {
         op.pullRequestUrl &&
         op.reuseExisting !== false
       ) {
-        const [found, ...others] = this.reviewsForPullRequest(
+        const [found, ...others] = await this.reviewsForPullRequest(
           op.pullRequestUrl,
         );
 
         if (found) {
-          const result = this.existingReview(
+          const result = await this.existingReview(
             found,
             others,
             resolvedTarget!.pins,
@@ -994,24 +1129,27 @@ export class ReviewStore {
       if (op.type === "delete") {
         const result: Result = {
           reviewId: op.reviewId,
-          version: this.read(op.reviewId).version,
+          version: (await this.read(op.reviewId)).version,
           deleted: true,
         };
 
-        this.commitCommand(
+        await this.commitCommand(
           result,
-          () => {
+          async () => {
             for (const table of [
               "ask_conversations",
+              "review_comments",
               "authoring_presences",
+              "review_tags",
               "review_coverage",
               "review_attention",
               "versions",
             ])
-              this.db
-                .prepare(`DELETE FROM ${table} WHERE review_id=?`)
-                .run(op.reviewId);
-            this.db.prepare("DELETE FROM reviews WHERE id=?").run(op.reviewId);
+              await this.meta.run(
+                `DELETE FROM ${table} WHERE review_id=?`,
+                op.reviewId,
+              );
+            await this.meta.run("DELETE FROM reviews WHERE id=?", op.reviewId);
           },
           () => this.assertMutation(op.reviewId, result.version),
         );
@@ -1019,35 +1157,64 @@ export class ReviewStore {
         return result;
       }
 
+      if (op.type === "tags") {
+        const result: Result = {
+          reviewId: op.reviewId,
+          version: (await this.read(op.reviewId)).version,
+          tags: [],
+        };
+
+        await this.commitCommand(result, async () => {
+          for (const tag of op.add)
+            await this.meta.run(
+              "INSERT INTO review_tags(review_id,tag) VALUES(?,?) ON CONFLICT DO NOTHING",
+              op.reviewId,
+              tag,
+            );
+
+          for (const tag of op.remove)
+            await this.meta.run(
+              "DELETE FROM review_tags WHERE review_id=? AND tag=?",
+              op.reviewId,
+              tag,
+            );
+
+          result.tags = (
+            await this.meta.all(
+              "SELECT tag FROM review_tags WHERE review_id=? ORDER BY tag",
+              op.reviewId,
+            )
+          ).map((row) => String(row.tag));
+        });
+
+        return result;
+      }
+
       if (op.type === "attention") {
         const result: Result = {
           reviewId: op.reviewId,
-          version: this.read(op.reviewId).version,
+          version: (await this.read(op.reviewId)).version,
           attention: true,
         };
 
-        this.commitCommand(result, () => {
-          this.db
-            .prepare(
-              "INSERT OR IGNORE INTO review_attention(review_id) VALUES(?)",
-            )
-            .run(op.reviewId);
+        await this.commitCommand(result, async () => {
+          await this.meta.run(
+            "INSERT INTO review_attention(review_id) VALUES(?) ON CONFLICT DO NOTHING",
+            op.reviewId,
+          );
 
           if (op.action === "view")
-            this.db
-              .prepare(
-                "UPDATE review_attention SET viewed_at=? WHERE review_id=?",
-              )
-              .run(new Date().toISOString(), op.reviewId);
+            await this.meta.run(
+              "UPDATE review_attention SET viewed_at=? WHERE review_id=?",
+              new Date().toISOString(),
+              op.reviewId,
+            );
           else
-            this.db
-              .prepare(
-                "UPDATE review_attention SET dismissed_at=? WHERE review_id=?",
-              )
-              .run(
-                op.action === "dismiss" ? new Date().toISOString() : null,
-                op.reviewId,
-              );
+            await this.meta.run(
+              "UPDATE review_attention SET dismissed_at=? WHERE review_id=?",
+              op.action === "dismiss" ? new Date().toISOString() : null,
+              op.reviewId,
+            );
         });
 
         return result;
@@ -1060,7 +1227,7 @@ export class ReviewStore {
             ? SCRATCHPAD_ID
             : randomUUID();
 
-      const previous = op.type === "create" ? undefined : this.read(id);
+      const previous = op.type === "create" ? undefined : await this.read(id);
 
       let snapshot: Snapshot =
         op.type === "create"
@@ -1074,7 +1241,7 @@ export class ReviewStore {
 
       let nextId = previous
         ? Number(
-            this.db.prepare("SELECT next_id FROM reviews WHERE id=?").get(id)!
+            (await this.meta.get("SELECT next_id FROM reviews WHERE id=?", id))!
               .next_id,
           )
         : 0;
@@ -1132,7 +1299,7 @@ export class ReviewStore {
           snapshot.pins = resolvedTarget!.pins;
           break;
         case "restore":
-          snapshot = this.read(id, op.version);
+          snapshot = await this.read(id, op.version);
           delete snapshot.lastEdit;
           break;
         case "lens_edit": {
@@ -1243,19 +1410,50 @@ export class ReviewStore {
 
       if (warnings.length) result.warnings = warnings;
 
-      this.commitCommand(
+      await this.commitCommand(
         result,
-        () => {
-          this.db
-            .prepare(
-              "INSERT INTO reviews(id,version,next_id) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id",
-            )
-            .run(id, snapshot.version, nextId);
-          this.db
-            .prepare(
-              "INSERT INTO versions(review_id,version,snapshot) VALUES(?,?,?)",
-            )
-            .run(id, snapshot.version, JSON.stringify(snapshot));
+        async () => {
+          await this.meta.run(
+            "INSERT INTO reviews(id,version,next_id,branch,base_sha,head_sha,created_by) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,next_id=excluded.next_id,branch=excluded.branch,base_sha=excluded.base_sha,head_sha=excluded.head_sha,created_by=COALESCE(excluded.created_by,reviews.created_by)",
+            id,
+            snapshot.version,
+            nextId,
+            snapshot.origin?.branch ?? null,
+            snapshot.pins?.base ?? null,
+            snapshot.pins?.head ?? null,
+            op.type === "create" ? (op.createdBy ?? null) : null,
+          );
+          await this.meta.run(
+            "INSERT INTO versions(review_id,version,snapshot) VALUES(?,?,?)",
+            id,
+            snapshot.version,
+            JSON.stringify(snapshot),
+          );
+
+          if (
+            previous?.pins &&
+            snapshot.pins &&
+            this.providers.fileText &&
+            JSON.stringify(previous.pins) !== JSON.stringify(snapshot.pins)
+          ) {
+            const { fileText } = this.providers;
+            const previousPins = previous.pins;
+            const nextPins = snapshot.pins;
+
+            await this.comments.carryForward(
+              id,
+              snapshot.version,
+              {
+                previous: (side, file) => fileText(previousPins, side, file),
+                next: (side, file) => fileText(nextPins, side, file),
+              },
+              new Set(
+                elements(snapshot.document).flatMap((element) =>
+                  element.id ? [element.id] : [],
+                ),
+              ),
+            );
+          }
         },
         previous ? () => this.assertMutation(id, previous.version) : undefined,
         op.type === "edit" || op.type === "lens_edit"
@@ -1280,7 +1478,7 @@ export class ReviewStore {
   /** Resolve a target-less PR create before it queues, when it will need it. */
   private startPullRequest(
     command: z.infer<typeof commandSchema>,
-  ): Promise<ResolvedPullRequest> | undefined {
+  ): Promise<ResolvedPullRequest | undefined> | undefined {
     const op = command.operation;
 
     if (op.type !== "create" || op.kind || op.target || !op.pullRequestUrl)
@@ -1291,44 +1489,50 @@ export class ReviewStore {
         new ReviewInputError("Pull request targets are unavailable."),
       );
 
-    // Keep an existing review's checkout so headMoved compares like with like.
-    const [existing] =
-      op.reuseExisting === false
-        ? []
-        : this.reviewsForPullRequest(op.pullRequestUrl);
+    const resolvePullRequest = this.providers.resolvePullRequest;
 
-    return this.providers.resolvePullRequest(op.pullRequestUrl, {
-      id: op.repositoryId,
-      preferred: existing && this.read(existing).pins?.repositoryId,
-    });
+    return (async () => {
+      // Keep an existing review's checkout so headMoved compares like with like.
+      const [existing] =
+        op.reuseExisting === false
+          ? []
+          : await this.reviewsForPullRequest(op.pullRequestUrl!);
+
+      return resolvePullRequest(op.pullRequestUrl!, {
+        id: op.repositoryId,
+        preferred: existing && (await this.read(existing)).pins?.repositoryId,
+      });
+    })();
   }
   /** Reviews whose PR is this one, newest version first. Summaries only. */
-  private reviewsForPullRequest(url: string): string[] {
-    return this.db
-      .prepare(
+  private async reviewsForPullRequest(url: string): Promise<string[]> {
+    const dialect = this.meta.dialect;
+
+    return (
+      await this.meta.all(
         `SELECT reviews.id FROM reviews
         JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version
-        WHERE lower(json_extract(versions.snapshot,'$.origin.pullRequestUrl'))=?
-          AND COALESCE(json_extract(versions.snapshot,'$.origin.tutorial'), 0) = 0
-        ORDER BY json_extract(versions.snapshot,'$.createdAt') DESC, reviews.rowid DESC`,
+        WHERE lower(${dialect.jsonText("versions.snapshot", "origin.pullRequestUrl")})=?
+          AND NOT ${dialect.jsonFlag("versions.snapshot", "origin.tutorial")}
+        ORDER BY ${dialect.jsonText("versions.snapshot", "createdAt")} DESC, reviews.rowid DESC`,
+        pullRequestKey(url),
       )
-      .all(pullRequestKey(url))
-      .map((row) => String(row.id));
+    ).map((row) => String(row.id));
   }
   /** The answer to a create that found its PR's review. Its target stays:
    * moving it would silently point existing links at different code. */
-  private existingReview(
+  private async existingReview(
     reviewId: string,
     others: string[],
     requested: Pins,
-  ): Result {
-    const snapshot = this.read(reviewId);
+  ): Promise<Result> {
+    const snapshot = await this.read(reviewId);
 
     const headMoved =
       snapshot.pins?.repositoryId !== requested.repositoryId ||
       snapshot.pins?.head !== requested.head;
 
-    const working = this.activity.read(reviewId).activities ?? [];
+    const working = (await this.activity.read(reviewId)).activities ?? [];
 
     const note = [
       "Returned the existing review for this PR instead of creating one; the requested title and target were not applied. Update it in place (read it with session_get first), or pass reuseExisting:false to create a separate review.",
@@ -1353,10 +1557,10 @@ export class ReviewStore {
       ...(others.length > 0 && { otherReviewIds: others }),
     };
   }
-  private commitCommand(
+  private async commitCommand(
     result: Result,
-    apply: () => void,
-    guard?: () => void,
+    apply: () => Promise<void> | void,
+    guard?: () => Promise<void> | void,
     /** An edit credits the agent it came from, renewing its presence. */
     attribution?: {
       surface: ActivitySurface;
@@ -1364,14 +1568,13 @@ export class ReviewStore {
       owned(activityId: string): void;
     },
   ) {
-    this.db.exec("BEGIN IMMEDIATE");
     let owner: string | undefined;
 
-    try {
-      guard?.();
+    await this.meta.transaction(async () => {
+      await guard?.();
 
       if (attribution) {
-        owner = this.activity.attribute(
+        owner = await this.activity.attribute(
           result.reviewId,
           attribution.surface,
           attribution.activityId,
@@ -1385,21 +1588,18 @@ export class ReviewStore {
           ];
       }
 
-      apply();
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+      await apply();
+    });
 
-    if (result.deleted) this.activity.deleted(result.reviewId);
-    else if (owner) this.activity.extended(result.reviewId);
+    if (result.deleted) await this.activity.deleted(result.reviewId);
+    else if (owner) await this.activity.extended(result.reviewId);
     this.notify(result);
   }
-  private assertMutation(reviewId: string, version: number | undefined) {
-    const current = this.db
-      .prepare("SELECT version FROM reviews WHERE id=?")
-      .get(reviewId);
+  private async assertMutation(reviewId: string, version: number | undefined) {
+    const current = await this.meta.get(
+      "SELECT version FROM reviews WHERE id=?",
+      reviewId,
+    );
 
     if ((current ? Number(current.version) : undefined) !== version)
       throw new ReviewInputError(
@@ -1429,17 +1629,16 @@ export class ReviewStore {
       }
   }
   /** Dismissed reviews, as Home lists them; only a restore clears it, not a view. */
-  dismissedIds(): string[] {
-    return this.db
-      .prepare(
+  async dismissedIds(): Promise<string[]> {
+    return (
+      await this.meta.all(
         "SELECT review_id FROM review_attention WHERE dismissed_at IS NOT NULL",
       )
-      .all()
-      .map((row) => String(row.review_id));
+    ).map((row) => String(row.review_id));
   }
-  has(reviewId: string): boolean {
+  async has(reviewId: string): Promise<boolean> {
     return (
-      this.db.prepare("SELECT 1 FROM reviews WHERE id=?").get(reviewId) !==
+      (await this.meta.get("SELECT 1 FROM reviews WHERE id=?", reviewId)) !==
       undefined
     );
   }

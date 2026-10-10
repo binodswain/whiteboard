@@ -56,6 +56,7 @@ import { z } from "zod";
 
 import { aliasInstallationToAccount } from "./account-alias";
 import { CrashReportRequestSchema, reportCrashDump } from "./crash-report";
+import type { DeploymentConfig } from "./deployment-config.js";
 import {
   migrateDiffrConfig,
   readDiffrConfig,
@@ -100,6 +101,7 @@ export interface GlobalReviewServerInput {
   relay?: ReviewDesktopVerbRelay;
   /** Electron's Review crash dump directory; `/crash-reports` reads only inside it. */
   crashDumpsDir?: string;
+  deploymentConfig?: DeploymentConfig;
 }
 
 export interface GlobalReviewServer {
@@ -232,6 +234,7 @@ export function createGlobalReviewServer(
     relay,
     token,
     instanceId,
+    deploymentConfig: input.deploymentConfig,
     scratchpad: () => scratchpadEnabled,
     status: () => {
       const { key, channel, checkout, appVersion, cliVersion, instanceId } =
@@ -250,7 +253,7 @@ export function createGlobalReviewServer(
     },
     hooks: reviewLifecycleTelemetry(
       telemetry,
-      (reviewId) => reviewStore.summary(reviewId)?.firstCreatedAt,
+      async (reviewId) => (await reviewStore.summary(reviewId))?.firstCreatedAt,
       () => aliasInstallationToAccount(telemetry),
     ),
     ask: { tools: askTools },
@@ -321,7 +324,7 @@ export function createGlobalReviewServer(
 
         const rawContext = isJsonObject(payload.context) ? payload.context : {};
 
-        const sourceKind = sessionStartedSourceKind(
+        const sourceKind = await sessionStartedSourceKind(
           reviewStore,
           jsonString(rawContext.reviewUuid),
         );
@@ -617,14 +620,14 @@ function watchSessionOpen(
  * shared review this store never had, or one deleted between open and the
  * event arriving) or was left without a target.
  */
-export function sessionStartedSourceKind(
+export async function sessionStartedSourceKind(
   reviewStore: ReviewStore,
   reviewUuid: string | undefined,
-): string | undefined {
+): Promise<string | undefined> {
   if (!reviewUuid) return undefined;
 
   try {
-    const snapshot = reviewStore.read(reviewUuid);
+    const snapshot = await reviewStore.read(reviewUuid);
 
     return snapshot.kind === "scratchpad"
       ? snapshot.kind

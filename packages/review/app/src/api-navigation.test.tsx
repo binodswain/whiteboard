@@ -12,7 +12,7 @@ let canvas: ReturnType<typeof mountReviewCanvas> | undefined;
 
 let store: ReviewStore;
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
 });
@@ -41,7 +41,7 @@ it("exposes JSON section and Markdown headings plus imported PR and stack naviga
     addEventListener() {},
     removeEventListener() {},
   }));
-  store = new ReviewStore(":memory:", {
+  store = await ReviewStore.open(":memory:", {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},

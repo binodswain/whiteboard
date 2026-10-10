@@ -20,8 +20,8 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function open(file = path.join(root, "review-api.db")) {
-  const store = new ReviewStore(file, {
+async function open(file = path.join(root, "review-api.db")) {
+  const store = await ReviewStore.open(file, {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -40,41 +40,41 @@ async function close(store: ReviewStore) {
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 it("keeps one random id across reopening the store", async () => {
-  const first = open();
-  const id = first.serverId();
+  const first = await open();
+  const id = await first.serverId();
 
   expect(id).toMatch(uuid);
-  expect(first.serverId()).toBe(id);
+  expect(await first.serverId()).toBe(id);
   await close(first);
-  expect(open().serverId()).toBe(id);
+  expect(await (await open()).serverId()).toBe(id);
 });
 
-it("gives two stores two ids", () => {
-  expect(open(path.join(root, "a.db")).serverId()).not.toBe(
-    open(path.join(root, "b.db")).serverId(),
+it("gives two stores two ids", async () => {
+  expect(await (await open(path.join(root, "a.db"))).serverId()).not.toBe(
+    await (await open(path.join(root, "b.db"))).serverId(),
   );
 });
 
-it("lets the first of two hosts on one store choose the id", () => {
-  const desktop = open();
-  const headless = open();
-  const chosen = headless.serverId();
+it("lets the first of two hosts on one store choose the id", async () => {
+  const desktop = await open();
+  const headless = await open();
+  const chosen = await headless.serverId();
 
-  expect(desktop.serverId()).toBe(chosen);
+  expect(await desktop.serverId()).toBe(chosen);
 });
 
 it("gives a store made before the id existed an id", async () => {
   const file = path.join(root, "review-api.db");
-  await close(open(file));
+  await close(await open(file));
   const db = new DatabaseSync(file);
   db.exec("DROP TABLE server_identity");
   db.close();
 
-  expect(open(file).serverId()).toMatch(uuid);
+  expect(await (await open(file)).serverId()).toMatch(uuid);
 });
 
 it("resets the id without changing any review id", async () => {
-  const store = open();
+  const store = await open();
 
   const { reviewId } = await store.execute({
     operation: {
@@ -89,11 +89,13 @@ it("resets the id without changing any review id", async () => {
     },
   });
 
-  const before = store.serverId();
-  const after = store.resetServerId();
+  const before = await store.serverId();
+  const after = await store.resetServerId();
 
   expect(after).toMatch(uuid);
   expect(after).not.toBe(before);
-  expect(store.serverId()).toBe(after);
-  expect(store.list().map((review) => review.reviewId)).toEqual([reviewId]);
+  expect(await store.serverId()).toBe(after);
+  expect((await store.list()).map((review) => review.reviewId)).toEqual([
+    reviewId,
+  ]);
 });

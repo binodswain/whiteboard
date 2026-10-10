@@ -127,7 +127,7 @@ describe("reading a pull request", () => {
 
 describe("creating a review from a pull request URL alone", () => {
   let directory: string, upstream: string, checkout: string;
-  let local: ReturnType<typeof openLocalReviewStore>;
+  let local: Awaited<ReturnType<typeof openLocalReviewStore>>;
 
   /** What gh reports; the tests move the base as GitHub would. */
   let pr: Omit<PullRequestRecord, "host" | "slug">;
@@ -186,7 +186,7 @@ describe("creating a review from a pull request URL alone", () => {
 
     pr = { number: 7, title: "Add widgets", baseRefName: "main" };
     ghCalls = 0;
-    local = openLocalReviewStore(path.join(directory, "reviews.db"), {
+    local = await openLocalReviewStore(path.join(directory, "reviews.db"), {
       manageWorkspaces: false,
       pullRequests: {
         ...defaultPullRequestDeps,
@@ -239,7 +239,7 @@ describe("creating a review from a pull request URL alone", () => {
     const before = userRefs(path.join(checkout, ".git"));
 
     const created = await createFromUrl();
-    const snapshot = local.store.read(created.reviewId);
+    const snapshot = await local.store.read(created.reviewId);
 
     expect(created).toMatchObject({ created: true });
     expect(snapshot).toMatchObject({
@@ -297,7 +297,7 @@ describe("creating a review from a pull request URL alone", () => {
 
     const { reviewId } = await createFromUrl();
 
-    expect(local.store.read(reviewId).pins).toMatchObject({
+    expect((await local.store.read(reviewId)).pins).toMatchObject({
       base: fork,
       head: upstreamHead(),
     });
@@ -313,7 +313,7 @@ describe("creating a review from a pull request URL alone", () => {
 
     const { reviewId } = await createFromUrl();
 
-    expect(local.store.read(reviewId).pins).toMatchObject({
+    expect((await local.store.read(reviewId)).pins).toMatchObject({
       base: fork,
       head: upstreamHead(),
     });
@@ -333,7 +333,7 @@ describe("creating a review from a pull request URL alone", () => {
     await expect(createFromUrl()).rejects.toThrow(
       /Register a checkout of acme\/widget/,
     );
-    expect(local.store.list()).toEqual([]);
+    expect(await local.store.list()).toEqual([]);
   });
 
   it("resolves a GitHub Enterprise PR only from a remote on its host", async () => {
@@ -353,7 +353,7 @@ describe("creating a review from a pull request URL alone", () => {
     pointAtUpstream(path.join(checkout, ".git"), "ghe.example.com");
     const { reviewId } = await create();
 
-    expect(local.store.read(reviewId)).toMatchObject({
+    expect(await local.store.read(reviewId)).toMatchObject({
       pins: { repositoryId, base: fork, head: upstreamHead() },
       origin: { pullRequestUrl: enterprise, pullRequestNumber: 7 },
     });
@@ -369,7 +369,7 @@ describe("creating a review from a pull request URL alone", () => {
     });
 
     expect(ghCalls).toBe(0);
-    expect(local.store.read(reviewId)).toMatchObject({
+    expect(await local.store.read(reviewId)).toMatchObject({
       title: "Mine",
       pins: { base: head, head },
     });
@@ -393,7 +393,7 @@ describe("creating a review from a pull request URL alone", () => {
 
       const { reviewId } = await createFromUrl();
 
-      const pins = local.store.read(reviewId).pins!;
+      const pins = (await local.store.read(reviewId)).pins!;
       expect(pins).toMatchObject({
         repositoryId,
         base: fork,

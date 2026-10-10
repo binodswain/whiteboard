@@ -29,11 +29,11 @@ let canvas: ReturnType<typeof mount> | undefined;
 const command = <Operation,>(operation: Operation) =>
   store.execute({ operation });
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
   directory = mkdtempSync(path.join(tmpdir(), "review-canvas-navigation-"));
-  store = new ReviewStore(path.join(directory, "review.db"), {
+  store = await ReviewStore.open(path.join(directory, "review.db"), {
     validatePins: async () => {},
     validateSource: async () => {},
     validateResource: async () => {},
@@ -224,9 +224,9 @@ it("reopens a stored fullscreen tour only while its diagram is in the document",
     },
   });
 
-  const [sequence] = store
-    .read(review.reviewId)
-    .document.flatMap((block) => (block.type === "sequence" ? [block] : []));
+  const [sequence] = (await store.read(review.reviewId)).document.flatMap(
+    (block) => (block.type === "sequence" ? [block] : []),
+  );
 
   const step = sequence!.steps[0]!.id!;
 
@@ -380,7 +380,7 @@ it("resumes a commit diff with its scope", async () => {
   };
 
   // Only the first version lists the commit.
-  const scopedVersion = store.read(review.reviewId).version;
+  const scopedVersion = (await store.read(review.reviewId)).version;
   const app = new Hono();
   app.get("/reviews-api/:id/commits", (context) =>
     context.json(
