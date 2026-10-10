@@ -17,6 +17,7 @@ interface FixtureState {
   snapshots: Map<string, Snapshot>;
   createStatus?: number;
   createError?: string;
+  deploymentMode?: "local" | "remote";
 }
 
 interface WatchStream {
@@ -48,11 +49,13 @@ function webFixtureRequest(state: FixtureState) {
   const streams = new Set<WatchStream>();
   const delegates = new Map<string, ReviewCanvasBridge["request"]>();
   const createCalls: { body: unknown; token: string | null }[] = [];
+  const askCalls: { path: string; body: unknown }[] = [];
 
   let settings = {
     theme: "system",
     documentWidth: "standard",
     codeFontSize: 14,
+    softwareMapEnabled: false,
     scratchpadEnabled: false,
   };
 
@@ -118,6 +121,34 @@ function webFixtureRequest(state: FixtureState) {
       settingsReads += 1;
 
       return Response.json(settings);
+    }
+
+    if (pathname === "/reviews-api/status")
+      return Response.json({
+        deployment: { mode: state.deploymentMode ?? "local" },
+      });
+
+    if (pathname === "/reviews-api/ask/agents")
+      return Response.json({
+        agents: [
+          {
+            id: "codex",
+            name: "Codex",
+            available: true,
+            readOnly: true,
+            bypass: false,
+          },
+        ],
+      });
+
+    if (
+      (pathname === "/reviews-api/asks" ||
+        /^\/reviews-api\/[^/]+\/ask$/.test(pathname)) &&
+      init?.method === "POST"
+    ) {
+      askCalls.push({ path: pathname, body: JSON.parse(String(init.body)) });
+
+      return Response.json({ ok: true });
     }
 
     if (pathname === "/reviews-api") return Response.json(state.catalog);
@@ -219,6 +250,7 @@ function webFixtureRequest(state: FixtureState) {
     request,
     push,
     createCalls,
+    askCalls,
     activeCatalogWatches,
     settingsReads: () => settingsReads,
     settingsValues: () => settings,
@@ -570,6 +602,7 @@ describe("the web canvas entry", () => {
       await settled(() => location.pathname === "/r/web-created-session"),
     ).toBe(true);
     expect(fixture.createCalls).toHaveLength(1);
+    expect(fixture.askCalls).toHaveLength(0);
     expect(fixture.createCalls[0]).toMatchObject({
       token: "test-token",
       body: {
@@ -587,6 +620,88 @@ describe("the web canvas entry", () => {
     expect(
       await settled(() => container!.textContent?.includes("Checkout review")),
     ).toBe(true);
+  });
+
+  it.each([
+    {
+      mode: "local" as const,
+      path: "/reviews-api/web-created-session/ask",
+      body: {
+        agent: "codex",
+        question: { text: "Build a board" },
+        purpose: "build",
+      },
+    },
+    {
+      mode: "remote" as const,
+      path: "/reviews-api/asks",
+      body: {
+        reviewId: "web-created-session",
+        prompt: "Build a board",
+        purpose: "build",
+      },
+    },
+  ])("starts a session task in $mode mode", async ({ mode, path, body }) => {
+    const fixture = webFixtureRequest({
+      catalog: [],
+      repositories: [{ id: "repo", name: "fixture" }],
+      snapshots: new Map(),
+      deploymentMode: mode === "remote" ? "remote" : "local",
+    });
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test-token",
+        serverUrl: "http://fixture.local",
+        request: fixture.request,
+      });
+    });
+
+    expect(
+      await settled(() => container!.textContent?.includes("No sessions yet")),
+    ).toBe(true);
+    await act(async () =>
+      userEvent.click(
+        [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "New session",
+        )!,
+      ),
+    );
+    const dialog = container!.querySelector('[role="dialog"]')!;
+    await act(async () =>
+      userEvent.fill(
+        dialog.querySelector<HTMLInputElement>('input[name="title"]')!,
+        "Task session",
+      ),
+    );
+    await act(async () =>
+      userEvent.selectOptions(
+        dialog.querySelector<HTMLSelectElement>('select[name="repositoryId"]')!,
+        "repo",
+      ),
+    );
+    await act(async () =>
+      userEvent.fill(
+        dialog.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!,
+        "Build a board",
+      ),
+    );
+    await act(async () =>
+      userEvent.click(
+        [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "Create session",
+        )!,
+      ),
+    );
+
+    expect(
+      await settled(() => location.pathname === "/r/web-created-session"),
+    ).toBe(true);
+    expect(fixture.askCalls).toEqual([{ path, body }]);
   });
 
   it("keeps session creation unavailable until a repository is registered", async () => {

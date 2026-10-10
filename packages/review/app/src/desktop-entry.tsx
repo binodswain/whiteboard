@@ -125,6 +125,8 @@ function Home({
       reviews={content.reviews}
       repositories={content.repositories}
       onCreateSession={content.createSession}
+      askAgents={content.askAgents}
+      hostedMode={content.hostedMode}
       searchQuery={content.searchQuery}
       onSearchQueryChange={content.setSearchQuery}
       catalogError={content.catalogError}
