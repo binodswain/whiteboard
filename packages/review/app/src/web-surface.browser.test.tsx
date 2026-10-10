@@ -126,12 +126,14 @@ it("selects document text and opens Ask with the keyboard shortcut", async () =>
   await act(async () => {
     root!.render(
       <ReviewSessionProvider session={session}>
-        <ReviewPanelProvider>
-          <StoreProbe />
-          <AgentSelectionProvider revision="current">
-            <TextSelection />
-          </AgentSelectionProvider>
-        </ReviewPanelProvider>
+        <ReviewDebugSettingsProvider>
+          <ReviewPanelProvider>
+            <StoreProbe />
+            <AgentSelectionProvider revision="current">
+              <TextSelection />
+            </AgentSelectionProvider>
+          </ReviewPanelProvider>
+        </ReviewDebugSettingsProvider>
       </ReviewSessionProvider>,
     );
   });
@@ -197,12 +199,14 @@ it("selects a flow diagram node with Enter and asks about its code", async () =>
   await act(async () => {
     root!.render(
       <ReviewSessionProvider session={session}>
-        <ReviewPanelProvider>
-          <StoreProbe />
-          <AgentSelectionProvider revision="current">
-            <SelectableFlow />
-          </AgentSelectionProvider>
-        </ReviewPanelProvider>
+        <ReviewDebugSettingsProvider>
+          <ReviewPanelProvider>
+            <StoreProbe />
+            <AgentSelectionProvider revision="current">
+              <SelectableFlow />
+            </AgentSelectionProvider>
+          </ReviewPanelProvider>
+        </ReviewDebugSettingsProvider>
       </ReviewSessionProvider>,
     );
   });

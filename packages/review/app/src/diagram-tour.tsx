@@ -3,6 +3,7 @@ import type { CSSProperties, ReactElement, ReactNode } from "react";
 import { useEffect, useRef } from "react";
 
 import { useReviewDebugSettings } from "./debug-settings";
+import { appMarker } from "./markers.stylex";
 import { GuidedTourPanel } from "./review-components";
 import type { GuidedTour } from "./review-panel-model";
 import { useReviewContainer } from "./review-root-context";
@@ -40,8 +41,10 @@ export function DiagramTourOverlay({
   children: ReactNode;
 }): ReactElement {
   // The overlay portals into .review-canvas-root, OUTSIDE .review-app — the
-  // element the theme modifier lives on. Carrying the modifier here keeps the
-  // light theme's token overrides in scope for the stage and the panel.
+  // element the theme modifier, the app marker and the var bridge live on.
+  // Carrying them here keeps the light theme's token overrides, the --chrome-*
+  // and --diagram-* bridges and the in-app diagram styling in scope for the
+  // stage and the panel.
   const { theme } = useReviewDebugSettings();
   const overlayRef = useRef<HTMLDivElement | null>(null);
 
@@ -70,7 +73,10 @@ export function DiagramTourOverlay({
     <div
       ref={overlayRef}
       {...withClass(
-        `diagram-tour-overlay review-app--theme-${theme}`,
+        `diagram-tour-overlay review-app review-app--theme-${theme}`,
+        appMarker,
+        themeStyles.vars,
+        themeStyles.app,
         theme === "light" && themeStyles.light,
         styles.overlay,
         flow && styles.flowOverlay,
