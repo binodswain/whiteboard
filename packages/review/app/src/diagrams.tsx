@@ -613,6 +613,7 @@ function SequenceDiagramFigure({
         />
         <div
           ref={sequenceScrollRef}
+          data-diagram-export-body
           {...stylex.props(styles.body)}
           onClick={() => openTour()}
         >
