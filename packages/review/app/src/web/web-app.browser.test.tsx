@@ -147,6 +147,7 @@ function webFixtureRequest(state: FixtureState) {
       init?.method === "POST"
     ) {
       askCalls.push({ path: pathname, body: JSON.parse(String(init.body)) });
+
       return Response.json({ ok: true });
     }
 

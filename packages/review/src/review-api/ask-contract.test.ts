@@ -11,7 +11,7 @@ import path from "node:path";
 import type { AskAgentStatus } from "@review/ask/agents.js";
 import { buildSessionPrompt } from "@review/ask/build-prompt.js";
 import type { AskThread, AskThreadStart } from "@review/ask/thread.js";
-import type { AskThreads, AskToolsReach } from "@review/ask/threads.js";
+import { AskThreads, type AskToolsReach } from "@review/ask/threads.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { AskHost } from "./http.js";
@@ -43,7 +43,7 @@ const localDataStub: Pick<LocalReviewData, "agentCheckout"> = {
  * Only the agentCheckout path is exercised in these tests; all other methods
  * remain on the real class and are never reached.
  */
-const localData = localDataStub as unknown as LocalReviewData;
+const localData = localDataStub as LocalReviewData;
 
 /**
  * Build a minimal AskThreads stub.
@@ -54,20 +54,21 @@ const localData = localDataStub as unknown as LocalReviewData;
 function makeThreadsStub(
   captureStart?: (start: AskThreadStart) => void,
 ): AskThreads {
-  // The handler only reads `.id` from the returned AskThread.
-  // An object with the id satisfies that need; the cast makes TS happy
-  // without suppressing the interface shape.
-  return {
+  // A real AskThreads whose launcher never runs; the request paths here
+  // only call open and reach, which are replaced.
+  const threads = new AskThreads(() => {
+    throw new Error("No agent starts here.");
+  });
+
+  return Object.assign(threads, {
     open: (start: AskThreadStart): AskThread => {
       captureStart?.(start);
-      return { id: start.id ?? "stub-thread-id" } as unknown as AskThread;
+
+      // The handler only reads `.id` from the returned thread.
+      return { id: start.id ?? "stub-thread-id" } as AskThread;
     },
     reach: async (): Promise<AskToolsReach> => undefined,
-    get: () => undefined,
-    working: () => [],
-    // Remaining AskThreads members (sweep, offered, close, …) are not called
-    // in these request paths; omit them with an explicit cast.
-  } as unknown as AskThreads;
+  });
 }
 
 /** Build an AskHost whose agent list and thread stub are controlled by tests. */
@@ -86,6 +87,7 @@ function makeAskHost(
 // ---------------------------------------------------------------------------
 
 let dir: string;
+
 let store: ReviewStore;
 
 beforeEach(async () => {
@@ -99,6 +101,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await store?.close();
+
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -106,6 +109,7 @@ async function createReview(title: string) {
   const result = await store.execute({
     operation: { type: "create", title, target: { kind: "commits", ...pins } },
   });
+
   return result.reviewId;
 }
 

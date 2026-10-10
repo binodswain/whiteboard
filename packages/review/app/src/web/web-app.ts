@@ -1,9 +1,9 @@
 import { mountReviewCanvas } from "@canvas/desktop-entry";
 import { reviewFetchUrl } from "@canvas/host/review-client";
 import type {
+  AskAgentStatusLike,
   ReviewApiRepository,
   ReviewApiSummary,
-  AskAgentStatusLike,
   ReviewCanvasContent,
   ReviewCanvasSettingsContent,
 } from "@dev.fast/review-protocol";
@@ -283,8 +283,7 @@ function mountWebCanvas(
   let activeBridge: ReturnType<typeof createWebBridge> | undefined;
 
   let activeReviewContent:
-    | Extract<ReviewCanvasContent, { kind: "api" }>
-    | undefined;
+    Extract<ReviewCanvasContent, { kind: "api" }> | undefined;
 
   const navigate = (path: string) => {
     history.pushState(null, "", path);
@@ -360,6 +359,7 @@ function mountWebCanvas(
       .catch(() => false)
       .then((isHosted) => {
         hostedMode = isHosted;
+
         return isHosted;
       });
 
@@ -385,6 +385,7 @@ function mountWebCanvas(
           const result = await client.read<{ agents: AskAgentStatusLike[] }>(
             "/ask/agents",
           );
+
           return result.agents;
         },
     editTags: async (reviewId, change) => {
@@ -425,6 +426,7 @@ function mountWebCanvas(
               },
             );
           }
+
           webNotify(
             "success",
             hostedMode

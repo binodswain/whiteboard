@@ -2,6 +2,7 @@ import type {
   ReviewApiSummary,
   ReviewCanvasUi,
   ReviewMenuRequest,
+  ReviewSessionCreateInput,
 } from "@dev.fast/review-protocol";
 import { type ReactNode, act } from "react";
 import { type Root, createRoot } from "react-dom/client";
@@ -42,7 +43,11 @@ describe("ReviewHome", () => {
 
   it("submits a task with the preselected first agent, and omits an empty task", async () => {
     const created = summary({ reviewId: uuid(900), title: "Created" });
-    const onCreateSession = vi.fn(async () => created);
+
+    const onCreateSession = vi.fn<
+      (input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>
+    >(async () => created);
+
     await act(async () =>
       renderWithHost(
         <ReviewHome
@@ -74,15 +79,19 @@ describe("ReviewHome", () => {
       await act(async () => {
         container.querySelector<HTMLButtonElement>("button")?.click();
       });
+
       const title = container.querySelector<HTMLInputElement>(
         'input[name="title"]',
       )!;
+
       const repository = container.querySelector<HTMLSelectElement>(
         'select[name="repositoryId"]',
       )!;
+
       const taskInput = container.querySelector<HTMLTextAreaElement>(
         'textarea[name="task"]',
       )!;
+
       title.value = "Create something";
       repository.value = "repo";
       taskInput.value = task;
@@ -110,7 +119,9 @@ describe("ReviewHome", () => {
   });
 
   it("preselects the first available agent and has no 'Use default' option", async () => {
-    const onCreateSession = vi.fn();
+    const onCreateSession =
+      vi.fn<(input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>>();
+
     await act(async () =>
       renderWithHost(
         <ReviewHome
@@ -141,14 +152,18 @@ describe("ReviewHome", () => {
 
     expect(agentSelect).toBeDefined();
     expect(agentSelect.value).toBe("codex");
+
     const options = Array.from(agentSelect.querySelectorAll("option")).map(
       (opt) => opt.textContent,
     );
+
     expect(options).not.toContain("Use default agent");
   });
 
   it("shows 'No agent CLI detected' and disables task textarea when no agents available in local mode", async () => {
-    const onCreateSession = vi.fn();
+    const onCreateSession =
+      vi.fn<(input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>>();
+
     await act(async () =>
       renderWithHost(
         <ReviewHome
@@ -178,7 +193,9 @@ describe("ReviewHome", () => {
   });
 
   it("prevents task submission without an agent in local mode", async () => {
-    const onCreateSession = vi.fn();
+    const onCreateSession =
+      vi.fn<(input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>>();
+
     await act(async () =>
       renderWithHost(
         <ReviewHome
