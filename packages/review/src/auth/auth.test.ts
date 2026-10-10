@@ -386,6 +386,47 @@ describe("oauth driver", () => {
     ).toBe(400);
   });
 
+  it("only redirects to same-origin paths after sign-in", async () => {
+    const { fetchImpl } = stubFetch({
+      "/login/oauth/access_token": { body: { access_token: "gho_v" } },
+      "/user": { body: { id: 9, login: "ada" } },
+    });
+
+    const driver = oauthDriver(fetchImpl);
+
+    const landing = async (next: string) => {
+      const started = await driver.routes.request(
+        `/github?next=${encodeURIComponent(next)}`,
+      );
+
+      const state = new URL(started.headers.get("location")!).searchParams.get(
+        "state",
+      )!;
+
+      const nonce =
+        started.headers
+          .get("set-cookie")
+          ?.match(/wb_oauth_nonce=([^;]+)/)?.[1] ?? "";
+
+      const done = await driver.routes.request(
+        `/github/callback?code=c&state=${encodeURIComponent(state)}`,
+        { headers: { cookie: `wb_oauth_nonce=${nonce}` } },
+      );
+
+      return done.headers.get("location");
+    };
+
+    expect(await landing("/r/abc?tab=1")).toBe("/r/abc?tab=1");
+
+    for (const next of [
+      "//evil.test",
+      "/\\evil.test",
+      "/\t/evil.test",
+      "https://evil.test",
+    ])
+      expect(await landing(next)).toBe("/");
+  });
+
   it("binds the OAuth state to the browser through a nonce cookie", async () => {
     const { fetchImpl } = stubFetch({
       "/login/oauth/access_token": { body: { access_token: "gho_v" } },

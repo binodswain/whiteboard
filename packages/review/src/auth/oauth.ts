@@ -48,9 +48,19 @@ const cookies = (request: Request): Map<string, string> => {
   return parsed;
 };
 
-/** A redirect target that stays on this origin. */
-const safeNext = (next: string | undefined): string =>
-  next?.startsWith("/") && !next.startsWith("//") ? next : "/";
+/** A redirect target that stays on this origin. Browsers read `/\host` and
+ * tab/newline-laced paths as another host, so resolve the path the way they do
+ * and keep it only when the origin is unchanged. */
+const safeNext = (next: string | undefined): string => {
+  if (!next?.startsWith("/")) return "/";
+
+  const base = "https://whiteboard.invalid";
+  const resolved = new URL(next, base);
+
+  return resolved.origin === base
+    ? `${resolved.pathname}${resolved.search}${resolved.hash}`
+    : "/";
+};
 
 /**
  * Remote authentication: GitHub OAuth sessions for the viewer, personal API
