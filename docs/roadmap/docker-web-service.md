@@ -128,10 +128,17 @@ browser has none of these.
 2. Add `app/src/web/web-entry.tsx` with an `index.html` that mounts Home (the
    review list) at `/` and `ApiCanvas` at `/r/:reviewId`, using
    `mountReviewCanvas`.
-3. Add `app/web.vite.config.ts` that shares plugins with the desktop config
+3. Add a web catalog controller for Home. `mountReviewCanvas` does not load
+   Home data: `home` content expects the caller to pass the review list and
+   callbacks. Desktop does an initial catalog read and then follows the
+   catalog (`ReviewApiClient.follow(null)`, the `/reviews-api/watch` NDJSON
+   stream) in `apps/review-desktop/code-oss/src/vs/review/browser/parts/canvas/reviewCanvasPart.ts`.
+   Do the same with the token and call `handle.update()` on each change, so
+   reviews an agent creates after the page loads appear without a reload.
+4. Add `app/web.vite.config.ts` that shares plugins with the desktop config
    (StyleX, libavoid hardening, KaTeX) and outputs `dist/web` with an HTML
    entry. Serve `libavoid.wasm` as an asset and pass its URL as `wasmUrl`.
-4. Add a `build:web` script to `@dev.fast/review-canvas`.
+5. Add a `build:web` script to `@dev.fast/review-canvas`.
 
 ### Acceptance criteria
 
@@ -139,6 +146,8 @@ browser has none of these.
       with `index.html`.
 - [ ] Pointing that page at a running headless server lists reviews and opens
       one, with markdown, flow, sequence and database diagrams rendering.
+- [ ] A review created after the page loads shows up on Home without a
+      reload.
 - [ ] Light and dark themes both work.
 - [ ] No VS Code or Monaco code ends up in the web bundle.
 - [ ] The desktop build output is unchanged.
@@ -164,17 +173,24 @@ from the same origin so the browser can call the API without CORS.
 ### Implementation plan
 
 1. Add `--web <dir>` (env `WHITEBOARD_WEB_DIR`) to `whiteboard server start`.
-   When set, the Hono app serves static files from that directory and falls
-   back to `index.html` for `/` and `/r/*`.
-2. Keep `/reviews-api` token-protected. Static files are public; they contain
-   no data.
+   When set, serve static files from that directory and fall back to
+   `index.html` for `/` and `/r/*`.
+2. Put the static routes on an outer, unauthenticated Hono app and mount the
+   core app only under its API routes (`/reviews-api`, `/control`, `/health`).
+   The core app registers token auth with `app.use("*")`
+   (`packages/review/src/server/review-server-core.ts:82`), so static routes
+   added to it would return 401, and the first page load can't carry the
+   token because it lives in the URL fragment. Static files are public; they
+   contain no data.
 3. On startup print the open URL with the token in the fragment, for example
    `http://localhost:3000/#token=…`, the way Jupyter does. The fragment never
    reaches the server logs.
 4. Add `--token <value>` (env `WHITEBOARD_TOKEN`) so Docker users can pin a
    token instead of reading it from logs. Reject tokens shorter than 32
    characters.
-5. Set `Cache-Control` for hashed assets and `no-store` for `index.html`; set a
+5. Reuse the existing public `GET /health` (registered before the auth
+   middleware) for container health checks; no new route needed.
+6. Set `Cache-Control` for hashed assets and `no-store` for `index.html`; set a
    CSP that allows only same-origin scripts and the wasm asset.
 
 ### Acceptance criteria
@@ -299,18 +315,39 @@ repository being reviewed.
      `@dev.fast/whiteboard` and `@dev.fast/review-canvas` only, build the CLI
      and `dist/web`. Skip `apps/review-desktop` and the Rust build; use the
      published `@dev.fast/diffr-linux-*` binary.
-   - runtime stage: Node 24 slim, `git`, the built CLI and web assets, an
-     optional agent CLI layer (`ARG AGENT=claude|codex|none`). Run as a
-     non-root user.
-2. Entry point:
-   `whiteboard server start --host 0.0.0.0 --port 3000 --web /app/web --state-dir /data`.
+     Keep `diffr/diffr-ts` in the build: `@dev.fast/whiteboard` depends on
+     `@dev.fast/diffr` as `workspace:*` and its `prebuild` builds it (plain
+     `tsc`); the native code comes from the optional platform package.
+   - runtime stage: Node 24 slim, `git`, `gh` (needed by
+     `pull-request.ts` for private and GitHub Enterprise PRs), the built CLI
+     and web assets, and an optional agent CLI layer
+     (`ARG AGENT=claude|codex|none`). Mark the checkout trusted
+     (`git config --system --add safe.directory /workspace`); otherwise Git
+     stops with "detected dubious ownership" when host and container UIDs
+     differ.
+2. Entry point script, started as root, that drops to an unprivileged user
+   before running anything else:
+   - read `PUID`/`PGID` (default `1000`), create or reuse a matching user,
+     and `chown` `/data` to it. A named volume is created root-owned, so a
+     plain `user:` override can't write the state directory;
+   - as that user, run `gh auth setup-git` when `GH_TOKEN` or
+     `GH_ENTERPRISE_TOKEN` is set, so the `git fetch` in `fetchPullRequest`
+     (which disables credential prompts) authenticates over HTTPS, not just
+     the `gh pr view` metadata lookup;
+   - `exec setpriv --reuid … --regid … --init-groups whiteboard server start
+     --host 0.0.0.0 --port 3000 --web /app/web --state-dir /data`.
 3. `docker-compose.yml`: publish `127.0.0.1:3000:3000` (loopback on the host by
    default), a named volume for `/data`, the repository mounted at
-   `/workspace`, and `WHITEBOARD_TOKEN` and agent keys from `.env`.
-4. A `HEALTHCHECK` against an unauthenticated `/healthz` route (add it in
-   issue 3 if missing).
-5. A `.dockerignore` that drops `apps/review-desktop`, `diffr/` sources,
-   `node_modules` and `.git`.
+   `/workspace`, and `PUID`, `PGID`, `WHITEBOARD_TOKEN`, `GH_TOKEN`,
+   `GH_ENTERPRISE_TOKEN`, `GH_HOST` and agent keys from `.env`. Ship a
+   `.env.example`, and have the docs write the host IDs into `.env`
+   (`printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" >> .env`), because
+   Compose only interpolates exported or `.env` variables and the shell's
+   `UID` isn't exported. Optionally mount `~/.ssh` read-only for SSH
+   remotes.
+4. A `HEALTHCHECK` against the existing public `/health` route.
+5. A `.dockerignore` that drops `apps/review-desktop`, the Rust parts of
+   `diffr/` (everything except `diffr/diffr-ts`), `node_modules` and `.git`.
 6. `docs/docker.md`: run, mount a repo, set the token, connect an agent from
    the host to the container's MCP, upgrade, and known limits.
 
@@ -321,7 +358,15 @@ repository being reviewed.
 - [ ] Reviews survive `docker compose down && docker compose up`.
 - [ ] The image is linux/amd64 and linux/arm64, and under 500 MB without an
       agent CLI.
-- [ ] The container runs as a non-root user and needs no extra privileges.
+- [ ] The server and agents run as a non-root user, and the container needs
+      no extra privileges beyond the entrypoint's start-up `chown`.
+- [ ] On Linux, with host and image UIDs that differ, Git can read the mounted
+      checkout, Ask can write to it, and the server can write `/data`.
+- [ ] `docker compose up` with only the documented `.env` works; no shell
+      variables need exporting by hand.
+- [ ] Creating a review from a private GitHub PR URL works with `GH_TOKEN`,
+      including the `git fetch` over an HTTPS remote, and from a GitHub
+      Enterprise Server PR with `GH_ENTERPRISE_TOKEN` and `GH_HOST`.
 - [ ] A review authored by an agent against `/workspace` shows code peeks
       from that checkout.
 
@@ -339,9 +384,13 @@ Depends on 6.
 
 ### Implementation plan
 
-1. Add `.github/workflows/docker-web.yml`, triggered on PRs that touch
-   `packages/review/**`, `packages/review-protocol/**`, `Dockerfile` or
-   `docker-compose.yml`.
+1. Add `.github/workflows/docker-web.yml`, triggered on every PR except those
+   that only touch paths the image never uses (`paths-ignore`:
+   `apps/review-desktop/**`, the Rust parts of `diffr/`, `docs/**`, `*.md`).
+   A narrow allow-list would miss build inputs such as the root
+   `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and the bundled
+   workspace packages (`packages/json`, `packages/local-vcs`,
+   `packages/trace-core`, `packages/review-share-protocol`).
 2. Build the image with Buildx and cache layers.
 3. Start it with a fixed test token and a small fixture repository mounted.
 4. Seed one review with `whiteboard api` (markdown, flow diagram and sequence
@@ -355,7 +404,10 @@ Depends on 6.
 
 - [ ] The workflow fails when the page doesn't render the seeded review.
 - [ ] The workflow passes on the PR that adds it.
-- [ ] It doesn't run on PRs that only touch Desktop or `diffr`.
+- [ ] It runs when any Docker build input changes, including the lockfile
+      and every bundled workspace package.
+- [ ] It doesn't run on PRs that only touch Desktop, `diffr` Rust code or
+      docs.
 
 ### Definition of done
 
