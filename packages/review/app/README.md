@@ -16,8 +16,9 @@ pnpm --filter @dev.fast/review-canvas typecheck
 continues to create the desktop canvas in `dist/desktop`. The web bundle serves
 Home at `/` and a review canvas at `/r/:reviewId`, talks to the same-origin
 review API, and reads the token from the URL fragment (`#token`) into
-`sessionStorage`. Host features that need an editor — inline diffs, reveals,
-source trees — degrade to browser-safe placeholders. Desktop copies
+`sessionStorage`. Host features that need an editor — reveals and source trees
+— degrade to browser-safe placeholders. Structural Diffs are supported on the
+web surface when configured by the host. Desktop copies
 `dist/desktop` into its canvas directory. The public `@dev.fast/whiteboard` Node
 runtime does not depend on or package this workspace. Shared document models and
 pure helpers are imported from the Review workspace; the canvas consumes those

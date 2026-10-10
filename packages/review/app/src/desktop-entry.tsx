@@ -91,7 +91,7 @@ function ReviewCanvas({
       <SettingsPage
         settings={content.settings}
         web={content.settings.web === true}
-        onGoHome={content.close}
+        onBack={content.close}
       />
     );
   }

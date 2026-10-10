@@ -11,7 +11,7 @@ your proposed approach, and wait for a maintainer to confirm it before you
 write code. This avoids duplicate work and catches design constraints early.
 Small fixes, such as typos and obvious bugs, can go straight to a pull request.
 
-Check [open issues](https://github.com/devdotfast/review/issues) first.
+Check [open issues](https://github.com/devdotfast/whiteboard/issues) first.
 Questions are welcome on [Discord](https://discord.gg/wYvd2cpMQg).
 
 Report security vulnerabilities privately as described in
@@ -53,9 +53,13 @@ The product is named Whiteboard, but package names and directories still use
   packaging, and release details, and
   [apps/review-desktop/UPSTREAM](apps/review-desktop/UPSTREAM) for the
   Code - OSS source revision and fork differences.
-- `packages/review/` contains the `whiteboard` command-line interface, embedded
-  server, and canvas.
+- `packages/review/` contains the `whiteboard` command-line interface and
+  embedded server. The canvas lives in `packages/review/app/`
+  (`@dev.fast/review-canvas`).
 - `packages/review-protocol/` contains the shared process contracts.
+- `packages/review-share-protocol/` contains the portable review sharing
+  envelope.
+- `packages/json/` contains shared JSON helpers.
 - `packages/trace-core/` and `packages/trace-protocol/` contain agent trace
   capture and the hosted trace store contract.
 - `packages/agent-plugins/` contains the plugins and skills for supported
@@ -85,19 +89,13 @@ DOM-facing tests run in Chromium through Vitest Browser Mode. Install the
 browser once, then run the headless suite or watch mode:
 
 ```sh
-pnpm --filter @dev.fast/whiteboard exec playwright install chromium
-pnpm --filter @dev.fast/whiteboard test:browser
-pnpm --filter @dev.fast/whiteboard test:browser:watch
+pnpm --filter @dev.fast/review-canvas exec playwright install chromium
+pnpm --filter @dev.fast/review-canvas test:browser
+pnpm --filter @dev.fast/review-canvas test:browser:watch
 ```
 
 Pure Node, filesystem, and server tests run through
 `pnpm --filter @dev.fast/whiteboard test:node`.
-
-`pnpm --filter @dev.fast/whiteboard test:legacy-corpus` replays a private corpus of
-legacy Reviews (from before the Whiteboard rename) through migration. Point
-`REVIEW_LEGACY_CORPUS` at a directory whose children are Review UUID folders;
-the script fails if the variable is unset. The corpus is copied before it is
-touched and the originals are re-verified afterwards.
 
 Test behavior, not implementation. Do not add
 [change detector tests](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html).
