@@ -33,6 +33,8 @@ function webFixtureRequest(info: SetupInfo) {
           theme: "system",
           documentWidth: "standard",
           codeFontSize: 14,
+          softwareMapEnabled: false,
+          structuralDiffEnabled: false,
           scratchpadEnabled: false,
         }),
       );

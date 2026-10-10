@@ -367,43 +367,39 @@ export function SettingsPage({
           ) : null}
 
           <Section label="Experimental Features">
-            {!web ? (
-              <>
-                <Row
-                  label="Structural Diffs"
-                  description="Replace the standard diff view with syntax-aware diffs and linked folds."
-                >
-                  <label {...stylex.props(styles.toggle)}>
-                    <input
-                      {...stylex.props(styles.checkbox)}
-                      type="checkbox"
-                      aria-label="Structural Diffs"
-                      checked={structuralDiffEnabled}
-                      disabled={busy !== null}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        void run(
-                          "structural-diff",
-                          () => settings.setStructuralDiffEnabled(enabled),
-                          setStructuralDiffEnabled,
-                        );
-                      }}
-                    />
-                  </label>
-                </Row>
-                {structuralDiffEnabled ? (
-                  <DiffrConfigSection
-                    actions={settings.diffrConfig}
-                    reloadWindow={settings.reloadWindow}
-                  />
-                ) : null}
-                {install ? (
-                  <TraceCaptureSection
-                    install={install}
-                    onStatusChange={setInstallStatus}
-                  />
-                ) : null}
-              </>
+            <Row
+              label="Structural Diffs"
+              description="Replace the standard diff view with syntax-aware diffs and linked folds."
+            >
+              <label {...stylex.props(styles.toggle)}>
+                <input
+                  {...stylex.props(styles.checkbox)}
+                  type="checkbox"
+                  aria-label="Structural Diffs"
+                  checked={structuralDiffEnabled}
+                  disabled={busy !== null}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    void run(
+                      "structural-diff",
+                      () => settings.setStructuralDiffEnabled(enabled),
+                      setStructuralDiffEnabled,
+                    );
+                  }}
+                />
+              </label>
+            </Row>
+            {structuralDiffEnabled ? (
+              <DiffrConfigSection
+                actions={settings.diffrConfig}
+                reloadWindow={settings.reloadWindow}
+              />
+            ) : null}
+            {!web && install ? (
+              <TraceCaptureSection
+                install={install}
+                onStatusChange={setInstallStatus}
+              />
             ) : null}
             <Row
               label="Software Map"

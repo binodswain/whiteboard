@@ -259,7 +259,12 @@ export function ApiCanvas({
       inlineEditors: { ...content.bridge.inlineEditors },
       diffView: { ...content.bridge.diffView },
     }),
-    [content.bridge, sourceVersion, content.structuralDiffEnabled],
+    [
+      content.bridge,
+      sourceVersion,
+      content.structuralDiffEnabled,
+      content.codeFontSize,
+    ],
   );
 
   const baseSession = useMemo(() => {

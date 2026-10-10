@@ -17,7 +17,6 @@ import {
   isJsonObject,
   isObjectValue,
   parseReviewCliInstallApplyRequest,
-  reviewDiffrSummarizerInputSchema,
 } from "@dev.fast/review-protocol";
 import { shellQuote, writePrivateJsonAtomic } from "@dev.fast/trace-core";
 import type { AskTools } from "@review/ask/threads.js";
@@ -57,13 +56,7 @@ import { z } from "zod";
 import { aliasInstallationToAccount } from "./account-alias";
 import { CrashReportRequestSchema, reportCrashDump } from "./crash-report";
 import type { DeploymentConfig } from "./deployment-config.js";
-import {
-  migrateDiffrConfig,
-  readDiffrConfig,
-  saveDiffrSummarizer,
-  setDiffrConfigValue,
-  testDiffrSummarizer,
-} from "./diffr-config";
+import { migrateDiffrConfig } from "./diffr-config";
 import {
   GlobalReviewDesktopVerbRelay,
   type ReviewDesktopVerbRelay,
@@ -401,48 +394,6 @@ export function createGlobalReviewServer(
     return serverJson(200, { ok: true });
   });
 
-  app.get("/diffr-config", async () =>
-    serverJson(200, await readDiffrConfig()),
-  );
-  app.put("/diffr-config", async (context) => {
-    const body = await readBoundedRequestJson(context.req.raw);
-
-    const key = isJsonObject(body) ? jsonString(body.key) : undefined;
-
-    const value = isJsonObject(body) ? body.value : undefined;
-
-    if (key === undefined || value === undefined) {
-      throw new ReviewServerError("key and value are required.", 400);
-    }
-
-    return serverJson(200, await setDiffrConfigValue(key, value));
-  });
-  app.put("/diffr-config/summarizer", async (context) => {
-    const input = reviewDiffrSummarizerInputSchema.safeParse(
-      await readBoundedRequestJson(context.req.raw),
-    );
-
-    if (!input.success)
-      throw new ReviewServerError("Invalid summary settings.", 400);
-
-    return serverJson(200, await saveDiffrSummarizer(input.data));
-  });
-  app.post("/diffr-config/summarizer/test", async (context) => {
-    const input = reviewDiffrSummarizerInputSchema.safeParse(
-      await readBoundedRequestJson(context.req.raw),
-    );
-
-    if (!input.success)
-      throw new ReviewServerError("Invalid summary settings.", 400);
-
-    return serverJson(200, {
-      summary: await testDiffrSummarizer(
-        input.data,
-        undefined,
-        context.req.raw.signal,
-      ),
-    });
-  });
   app.get("/install/status", async () =>
     serverJson(
       200,

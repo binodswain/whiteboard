@@ -56,6 +56,7 @@ function webFixtureRequest(state: FixtureState) {
     documentWidth: "standard",
     codeFontSize: 14,
     softwareMapEnabled: false,
+    structuralDiffEnabled: false,
     scratchpadEnabled: false,
   };
 
@@ -350,7 +351,7 @@ describe("the web canvas entry", () => {
         .click();
     });
     expect(location.pathname).toBe("/settings");
-    expect(container!.textContent).toContain("Machine-local controls");
+    expect(container!.textContent).toContain("Structural Diffs");
     expect(
       container!.querySelector<HTMLInputElement>(
         'input[aria-label="Scratchpad"]',

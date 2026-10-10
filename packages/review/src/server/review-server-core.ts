@@ -1,10 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
-import type { JsonObject } from "@dev.fast/json";
-import type {
-  ReviewServerHealth,
-  ReviewServerHealthWithToken,
+import { type JsonObject, isJsonObject, jsonString } from "@dev.fast/json";
+import {
+  type ReviewServerHealth,
+  type ReviewServerHealthWithToken,
+  reviewDiffrSummarizerInputSchema,
 } from "@dev.fast/review-protocol";
 import { traceMachineEnabled } from "@dev.fast/trace-core";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -56,6 +57,12 @@ import {
   loadDeploymentConfig,
   publicDeploymentConfig,
 } from "./deployment-config.js";
+import {
+  readDiffrConfig,
+  saveDiffrSummarizer,
+  setDiffrConfigValue,
+  testDiffrSummarizer,
+} from "./diffr-config.js";
 import type { ReviewDesktopVerbRelay } from "./global-verb-relay";
 import {
   type ReviewHonoEnv,
@@ -503,6 +510,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
 
   api = createReviewApi(
     store,
+
     data,
     callbacks.open,
     shared,
@@ -535,6 +543,51 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
         },
     jobs,
   );
+
+  // The browser settings page edits the same diffr config Desktop shows;
+  // values come back redacted, never the stored key itself.
+  app.get("/diffr-config", async () =>
+    serverJson(200, await readDiffrConfig()),
+  );
+  app.put("/diffr-config", async (context) => {
+    const body = await readBoundedRequestJson(context.req.raw);
+
+    const key = isJsonObject(body) ? jsonString(body.key) : undefined;
+
+    const value = isJsonObject(body) ? body.value : undefined;
+
+    if (key === undefined || value === undefined) {
+      throw new ReviewServerError("key and value are required.", 400);
+    }
+
+    return serverJson(200, await setDiffrConfigValue(key, value));
+  });
+  app.put("/diffr-config/summarizer", async (context) => {
+    const input = reviewDiffrSummarizerInputSchema.safeParse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    if (!input.success)
+      throw new ReviewServerError("Invalid summary settings.", 400);
+
+    return serverJson(200, await saveDiffrSummarizer(input.data));
+  });
+  app.post("/diffr-config/summarizer/test", async (context) => {
+    const input = reviewDiffrSummarizerInputSchema.safeParse(
+      await readBoundedRequestJson(context.req.raw),
+    );
+
+    if (!input.success)
+      throw new ReviewServerError("Invalid summary settings.", 400);
+
+    return serverJson(200, {
+      summary: await testDiffrSummarizer(
+        input.data,
+        undefined,
+        context.req.raw.signal,
+      ),
+    });
+  });
 
   // A shared store mounts the publisher with the rest of sharing.
   if (!shared) mountSharingPublisher(api, store, data);

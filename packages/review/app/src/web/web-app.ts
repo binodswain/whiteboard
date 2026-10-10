@@ -283,7 +283,8 @@ function mountWebCanvas(
   let activeBridge: ReturnType<typeof createWebBridge> | undefined;
 
   let activeReviewContent:
-    Extract<ReviewCanvasContent, { kind: "api" }> | undefined;
+    | Extract<ReviewCanvasContent, { kind: "api" }>
+    | undefined;
 
   const navigate = (path: string) => {
     history.pushState(null, "", path);
@@ -318,6 +319,8 @@ function mountWebCanvas(
         ...activeReviewContent,
         documentWidth: next.documentWidth,
         codeFontSize: next.codeFontSize,
+        softwareMapEnabled: next.softwareMapEnabled,
+        structuralDiffEnabled: next.structuralDiffEnabled,
       };
       canvas.update(activeReviewContent);
     } else if (location.pathname === "/settings" && settingsContent) {
@@ -343,6 +346,7 @@ function mountWebCanvas(
           codeFontSize: settings.codeFontSize,
           scratchpadEnabled: settings.scratchpadEnabled,
           softwareMapEnabled: settings.softwareMapEnabled,
+          structuralDiffEnabled: settings.structuralDiffEnabled,
         };
 
         return settings;
@@ -489,8 +493,12 @@ function mountWebCanvas(
       documentWidth: webValues?.documentWidth,
       codeFontSize: webValues?.codeFontSize,
       softwareMapEnabled: webValues?.softwareMapEnabled === true,
+      structuralDiffEnabled: webValues?.structuralDiffEnabled === true,
       setTitle(title) {
         document.title = title || "Whiteboard Review";
+      },
+      setSourceView(_selection, view) {
+        activeBridge?.setSourceView(view);
       },
     };
     canvas.update(activeReviewContent);

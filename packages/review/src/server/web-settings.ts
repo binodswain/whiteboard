@@ -14,12 +14,15 @@ const scratchpadEnabledSchema = z.boolean();
 
 const softwareMapEnabledSchema = z.boolean();
 
+const structuralDiffEnabledSchema = z.boolean();
+
 export const webSettingsSchema = z.strictObject({
   theme: themeSchema.default("system"),
   documentWidth: documentWidthSchema.default("standard"),
   codeFontSize: codeFontSizeSchema.default(14),
   scratchpadEnabled: scratchpadEnabledSchema.default(false),
   softwareMapEnabled: softwareMapEnabledSchema.default(false),
+  structuralDiffEnabled: structuralDiffEnabledSchema.default(false),
 });
 
 export type WebSettings = z.infer<typeof webSettingsSchema>;
@@ -30,6 +33,7 @@ export const webSettingsUpdateSchema = z.strictObject({
   codeFontSize: codeFontSizeSchema.optional(),
   scratchpadEnabled: scratchpadEnabledSchema.optional(),
   softwareMapEnabled: softwareMapEnabledSchema.optional(),
+  structuralDiffEnabled: structuralDiffEnabledSchema.optional(),
 });
 
 export function createWebSettings(stateDir: string) {
