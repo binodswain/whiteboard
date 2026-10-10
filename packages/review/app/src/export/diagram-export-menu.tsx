@@ -26,6 +26,10 @@ import {
   sequenceToMermaid,
   sequenceToXmind,
 } from "./diagram-export";
+import {
+  renderDiagramPng,
+  type DiagramRasterOptions,
+} from "./diagram-raster-export";
 
 export type DiagramExportSource =
   | ({ kind: "sequence" } & SequenceExportInput)
@@ -39,6 +43,8 @@ const ITEMS = [
   { id: "download-drawio", label: "Download draw.io" },
   { id: "download-xmind", label: "Download XMind" },
 ] as const;
+
+type RasterAction = "copy" | "download";
 
 function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -144,15 +150,47 @@ async function exportDiagram(
   );
 }
 
+async function exportPng(
+  source: DiagramExportSource,
+  figure: HTMLElement,
+  action: RasterAction,
+  options: DiagramRasterOptions,
+) {
+  const body = figure.querySelector<HTMLElement>("[data-diagram-export-body]");
+  if (!body) throw new Error("Diagram image area is unavailable");
+  const blob = await renderDiagramPng(body, options);
+  if (
+    action === "copy" &&
+    navigator.clipboard?.write &&
+    "ClipboardItem" in window
+  ) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": blob }),
+      ]);
+      return;
+    } catch {
+      // Clipboard image support varies by browser and permission state.
+    }
+  }
+  triggerDownload(blob, diagramExportFilename(source.title, "png"));
+}
+
 export function DiagramExportMenu({
   source,
 }: {
   source: DiagramExportSource;
 }): ReactElement {
   const [open, setOpen] = useState(false);
+  const [rasterAction, setRasterAction] = useState<RasterAction | null>(null);
+  const [theme, setTheme] = useState<DiagramRasterOptions["theme"]>("dark");
+  const [border, setBorder] = useState<DiagramRasterOptions["border"]>("frame");
   const container = useRef<HTMLDivElement>(null);
   const menu = useAnchoredPopover(open, container);
-  useDismissOnOutside(container, open, setOpen);
+  useDismissOnOutside(container, open, (nextOpen) => {
+    setOpen(nextOpen);
+    setRasterAction(null);
+  });
 
   return (
     <div ref={container} {...stylex.props(styles.menu)}>
@@ -165,6 +203,11 @@ export function DiagramExportMenu({
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
+          setTheme(
+            container.current?.closest(".review-app--theme-light")
+              ? "light"
+              : "dark",
+          );
           setOpen((current) => !current);
         }}
       >
@@ -183,22 +226,99 @@ export function DiagramExportMenu({
             styles.list,
           )}
         >
-          {ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              {...stylex.props(menuStyles.item)}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                setOpen(false);
-                void exportDiagram(source, item.id);
-              }}
+          {rasterAction ? (
+            <div
+              {...stylex.props(styles.options)}
+              role="dialog"
+              aria-label="PNG export options"
             >
-              {item.label}
-            </button>
-          ))}
+              <label>
+                Theme
+                <select
+                  value={theme}
+                  onChange={(event) =>
+                    setTheme(event.target.value as typeof theme)
+                  }
+                >
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </label>
+              <label>
+                Border
+                <select
+                  value={border}
+                  onChange={(event) =>
+                    setBorder(event.target.value as typeof border)
+                  }
+                >
+                  <option value="none">None</option>
+                  <option value="frame">Padded frame</option>
+                  <option value="rounded">Rounded border</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                {...stylex.props(menuStyles.item)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const figure = container.current?.closest("figure");
+                  if (!figure) return;
+                  setOpen(false);
+                  setRasterAction(null);
+                  void exportPng(source, figure, rasterAction, {
+                    theme,
+                    border,
+                  });
+                }}
+              >
+                {rasterAction === "copy" ? "Copy PNG" : "Download PNG"}
+              </button>
+              <button
+                type="button"
+                {...stylex.props(menuStyles.item)}
+                onClick={() => setRasterAction(null)}
+              >
+                Back to exports
+              </button>
+            </div>
+          ) : (
+            <>
+              {ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="menuitem"
+                  {...stylex.props(menuStyles.item)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setOpen(false);
+                    void exportDiagram(source, item.id);
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                role="menuitem"
+                {...stylex.props(menuStyles.item)}
+                onClick={() => setRasterAction("copy")}
+              >
+                Copy PNG…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                {...stylex.props(menuStyles.item)}
+                onClick={() => setRasterAction("download")}
+              >
+                Download PNG…
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -211,5 +331,12 @@ const styles = stylex.create({
   },
   list: {
     width: "220px",
+  },
+  options: {
+    display: "grid",
+    gap: "8px",
+    padding: "8px",
+    color: "var(--ink)",
+    fontSize: "12px",
   },
 });

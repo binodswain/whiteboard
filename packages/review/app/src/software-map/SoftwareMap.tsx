@@ -1039,6 +1039,7 @@ export function SoftwareMapFrame({
       ) : null}
 
       <div
+        data-diagram-export-body
         {...stylex.props(
           styles.body,
           inspectedNode && styles.bodyWithInspector,

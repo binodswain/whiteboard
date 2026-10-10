@@ -135,7 +135,10 @@ export function FlowDiagram({
       {node.description && (
         <p {...stylex.props(styles.description)}>{node.description}</p>
       )}
-      <div {...stylex.props(styles.body, fullscreen && styles.stageBody)}>
+      <div
+        data-diagram-export-body
+        {...stylex.props(styles.body, fullscreen && styles.stageBody)}
+      >
         <div {...stylex.props(styles.canvas)}>
           <FlowGraph
             block={node}
