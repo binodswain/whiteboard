@@ -297,7 +297,7 @@ export function createOAuthDriver(input: {
     return (await openSession(request)) ?? (await openProxy(request));
   };
 
-  const signInPage = (next: string): string => {
+  const signInPage = (next: string, error?: string): string => {
     const target = safeNext(next);
 
     const action = oauth
@@ -314,6 +314,7 @@ main{max-width:22rem;text-align:center}
 .note{opacity:.7;font-size:.9rem;margin-top:1.5rem}
 </style></head><body><main>
 <h1>Whiteboard</h1>
+${error === "access_denied" ? '<p role="alert">GitHub sign-in was cancelled. You can try again below.</p>' : ""}
 ${action}
 <p class="note">API and MCP access use a personal token from Settings after sign-in.</p>
 </main></body></html>`;
@@ -338,7 +339,12 @@ ${action}
   });
 
   routes.get("/sign-in", (context) =>
-    context.html(signInPage(context.req.query("next") ?? "/")),
+    context.html(
+      signInPage(
+        context.req.query("next") ?? "/",
+        context.req.query("error"),
+      ),
+    ),
   );
 
   routes.post("/logout", async (context) => {
@@ -409,6 +415,17 @@ ${action}
 
       if (!state || a.length !== b.length || !timingSafeEqual(a, b))
         return context.json({ error: "Invalid sign-in state." }, 400);
+
+      const oauthError = context.req.query("error");
+
+      if (oauthError) {
+        const query = new URLSearchParams({
+          error: oauthError === "access_denied" ? "access_denied" : "failed",
+          next: state.next,
+        });
+
+        return context.redirect(`/auth/sign-in?${query}`, 302);
+      }
 
       if (!code) return context.json({ error: "Missing sign-in code." }, 400);
 
