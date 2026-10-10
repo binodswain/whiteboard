@@ -340,10 +340,7 @@ ${action}
 
   routes.get("/sign-in", (context) =>
     context.html(
-      signInPage(
-        context.req.query("next") ?? "/",
-        context.req.query("error"),
-      ),
+      signInPage(context.req.query("next") ?? "/", context.req.query("error")),
     ),
   );
 
