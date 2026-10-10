@@ -19,6 +19,7 @@ export function exportFilename(snapshot: Snapshot, ext: "md" | "html"): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 64) || "review";
+
   return `${slug}.${ext}`;
 }
 
@@ -42,8 +43,11 @@ export function exportFilename(snapshot: Snapshot, ext: "md" | "html"): string {
  */
 export function exportMarkdown(snapshot: Snapshot): string {
   const out: string[] = [`# ${snapshot.title}`, ""];
+
   for (const block of snapshot.document) appendBlockMd(block, 1, out);
+
   while (out.length > 0 && out[out.length - 1] === "") out.pop();
+
   return out.join("\n") + "\n";
 }
 
@@ -61,6 +65,7 @@ function appendBlockMd(block: Block, depth: number, out: string[]): void {
     case "section": {
       const hashes = "#".repeat(Math.min(depth + 1, 6));
       out.push(`${hashes} ${block.title}`, "");
+
       for (const child of block.children) appendBlockMd(child, depth + 1, out);
       break;
     }
@@ -68,17 +73,22 @@ function appendBlockMd(block: Block, depth: number, out: string[]): void {
     case "callout": {
       // Render children to a temporary buffer, then prefix every line with '> '
       const inner: string[] = [];
+
       for (const child of block.children) appendBlockMd(child, depth, inner);
+
       const toneLabel = {
         info: "ℹ️ Note",
         warning: "⚠️ Warning",
         danger: "🚨 Danger",
         success: "✅ Note",
       };
+
       const label = block.title
         ? `**${block.title}**`
         : `**${toneLabel[block.tone]}**`;
+
       out.push(`> ${label}`);
+
       for (const line of inner) out.push(line.length === 0 ? ">" : `> ${line}`);
       out.push("");
       break;
@@ -105,15 +115,18 @@ function appendBlockMd(block: Block, depth: number, out: string[]): void {
 
     case "flow_diagram":
       out.push(`#### ${block.title}`, "");
+
       if (block.description) out.push(block.description, "");
       out.push("```mermaid", flowToMermaid(block), "```", "");
       break;
 
     case "call_stack_diff":
       out.push(`#### ${block.title}`, "", "**Base call stack:**", "");
+
       for (const frame of block.base)
         out.push(`- \`${frame.label ?? frame.key ?? frame.source}\``);
       out.push("", "**Head call stack:**", "");
+
       for (const frame of block.head)
         out.push(`- \`${frame.label ?? frame.key ?? frame.source}\``);
       out.push("");
@@ -145,6 +158,8 @@ function appendBlockMd(block: Block, depth: number, out: string[]): void {
     default: {
       // Exhaustiveness guard — future block types degrade gracefully
       const _: never = block;
+
+      // SAFETY: The default branch is unreachable for this Block union today; if a runtime block reaches it, it still has the Block discriminant.
       out.push(`> *[Unsupported block: ${(block as Block).type}]*`, "");
     }
   }
@@ -172,6 +187,7 @@ function mdEscape(text: string): string {
  */
 export function exportHtml(snapshot: Snapshot): string {
   const titleEsc = htmlEscape(snapshot.title);
+
   const bodyHtml = snapshot.document
     .map((b) => renderBlockHtml(b, 1))
     .join("\n");
@@ -296,14 +312,17 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
       const caption = block.caption
         ? `<p><em>${htmlEscape(block.caption)}</em></p>\n`
         : "";
+
       return `${caption}<pre><code class="language-${htmlEscape(block.language)}">${htmlEscape(block.text)}</code></pre>\n`;
     }
 
     case "section": {
       const level = Math.min(headingLevel + 1, 6);
+
       const inner = block.children
         .map((c) => renderBlockHtml(c, headingLevel + 1))
         .join("\n");
+
       return `<div class="section-block">\n<h${level}>${htmlEscape(block.title)}</h${level}>\n${inner}</div>\n`;
     }
 
@@ -314,12 +333,15 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
         danger: "🚨 Danger",
         success: "✅ Note",
       };
+
       const titleHtml = block.title
         ? `<div class="callout-title">${htmlEscape(block.title)}</div>\n`
         : `<div class="callout-title">${toneLabel[block.tone]}</div>\n`;
+
       const inner = block.children
         .map((c) => renderBlockHtml(c, headingLevel))
         .join("\n");
+
       return `<div class="callout callout-${block.tone}">\n${titleHtml}${inner}</div>\n`;
     }
 
@@ -333,12 +355,14 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
       const actorList = Object.entries(block.actors)
         .map(([k, v]) => `${htmlEscape(k)}: ${htmlEscape(v)}`)
         .join(", ");
+
       const stepRows = block.steps
         .map(
           (s) =>
             `<tr><td>${htmlEscape(s.from)}</td><td>→</td><td>${htmlEscape(s.to)}</td><td>${htmlEscape(s.label)}</td></tr>`,
         )
         .join("\n");
+
       return `<h4>${htmlEscape(block.title)}</h4>\n<p><em>Actors: ${actorList}</em></p>\n<table>\n<thead><tr><th>From</th><th></th><th>To</th><th>Label</th></tr></thead>\n<tbody>\n${stepRows}\n</tbody>\n</table>\n`;
     }
 
@@ -346,12 +370,14 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
       const desc = block.description
         ? `<p>${htmlEscape(block.description)}</p>\n`
         : "";
+
       const nodeRows = block.nodes
         .map(
           (n) =>
             `<tr><td>${htmlEscape(n.key)}</td><td>${htmlEscape(n.label)}</td><td>${htmlEscape(n.kind ?? "process")}</td></tr>`,
         )
         .join("\n");
+
       const edgeSection =
         block.edges.length === 0
           ? ""
@@ -361,6 +387,7 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
                   `<tr><td>${htmlEscape(e.from)}</td><td>→</td><td>${htmlEscape(e.to)}</td><td>${htmlEscape(e.label ?? "")}</td></tr>`,
               )
               .join("\n")}\n</tbody>\n</table>\n`;
+
       return `<h4>${htmlEscape(block.title)}</h4>\n${desc}<div class="diagram-note"><em>Flow diagram — open in Whiteboard to view interactively.</em></div>\n<table>\n<thead><tr><th>Key</th><th>Label</th><th>Kind</th></tr></thead>\n<tbody>\n${nodeRows}\n</tbody>\n</table>\n${edgeSection}`;
     }
 
@@ -372,6 +399,7 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
               `<tr><td><code>${htmlEscape(f.label ?? f.key ?? "")}</code></td><td><code>${htmlEscape(f.source)}</code></td></tr>`,
           )
           .join("\n");
+
       return `<h4>${htmlEscape(block.title)}</h4>\n<p><strong>Base:</strong></p>\n<table><thead><tr><th>Label</th><th>Source</th></tr></thead><tbody>\n${frameRows(block.base)}\n</tbody></table>\n<p><strong>Head:</strong></p>\n<table><thead><tr><th>Label</th><th>Source</th></tr></thead><tbody>\n${frameRows(block.head)}\n</tbody></table>\n`;
     }
 
@@ -392,6 +420,8 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
 
     default: {
       const _: never = block;
+
+      // SAFETY: The default branch is unreachable for this Block union today; if a runtime block reaches it, it still has the Block discriminant.
       return `<p><em>[Unsupported block: ${htmlEscape((block as Block).type)}]</em></p>\n`;
     }
   }
@@ -421,8 +451,10 @@ function nodeToHtml(node: MarkdownNode): string {
       return `<p>${children()}</p>\n`;
     case "heading": {
       const level = Math.min(Math.max(node.depth ?? 1, 1), 6);
+
       return `<h${level}>${children()}</h${level}>\n`;
     }
+
     case "text":
       return htmlEscape(node.value ?? "");
     case "emphasis":
@@ -439,31 +471,40 @@ function nodeToHtml(node: MarkdownNode): string {
       return `<blockquote>\n${children()}</blockquote>\n`;
     case "list": {
       const tag = node.ordered ? "ol" : "ul";
+
       const start =
         node.ordered && node.start != null && node.start !== 1
           ? ` start="${node.start}"`
           : "";
+
       return `<${tag}${start}>\n${children()}</${tag}>\n`;
     }
+
     case "listItem": {
       const checkbox =
         node.checked === true ? `<input type="checkbox" checked disabled> `
         : node.checked === false ? `<input type="checkbox" disabled> `
         : "";
+
       return `<li>${checkbox}${children()}</li>\n`;
     }
+
     case "link": {
       // review-source: links are internal opaque anchors — render as a plain span
       if (node.url?.startsWith("review-source:")) return `<span>${children()}</span>`;
       const href = safeHref(node.url ?? "");
       const title = node.title ? ` title="${htmlEscape(node.title)}"` : "";
+
       return `<a href="${htmlEscape(href)}"${title}>${children()}</a>`;
     }
+
     case "image": {
       const src = safeHref(node.url ?? "");
       const title = node.title ? ` title="${htmlEscape(node.title)}"` : "";
+
       return `<img src="${htmlEscape(src)}" alt="${htmlEscape(node.alt ?? "")}"${title} />\n`;
     }
+
     case "html":
       // Raw markdown HTML renders as escaped text in the app
       // (agent-markdown.tsx returns node.value as a React string), so the
@@ -476,6 +517,7 @@ function nodeToHtml(node: MarkdownNode): string {
       return `<br />\n`;
     case "table": {
       const [head, ...bodyRows] = node.children ?? [];
+
       // Whitelist mdast alignment to the three valid text-align values — a
       // nonstandard string would otherwise land inside a style attribute.
       const align = (node.align ?? []).map((a) =>
@@ -503,6 +545,7 @@ function nodeToHtml(node: MarkdownNode): string {
 
       return `<table>\n<thead><tr>${thCells}</tr></thead>\n<tbody>\n${tbodyRows}</tbody>\n</table>\n`;
     }
+
     case "tableRow":
     case "tableCell":
       return children();
@@ -546,6 +589,6 @@ function safeHref(href: string): string {
     href.startsWith("#")
   )
     return href;
+
   return "#";
 }
-
