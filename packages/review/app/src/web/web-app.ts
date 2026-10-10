@@ -280,8 +280,7 @@ function mountWebCanvas(
   let activeBridge: ReturnType<typeof createWebBridge> | undefined;
 
   let activeReviewContent:
-    | Extract<ReviewCanvasContent, { kind: "api" }>
-    | undefined;
+    Extract<ReviewCanvasContent, { kind: "api" }> | undefined;
 
   const navigate = (path: string) => {
     history.pushState(null, "", path);
@@ -340,6 +339,7 @@ function mountWebCanvas(
           documentWidth: settings.documentWidth,
           codeFontSize: settings.codeFontSize,
           scratchpadEnabled: settings.scratchpadEnabled,
+          softwareMapEnabled: settings.softwareMapEnabled,
         };
 
         return settings;
@@ -428,6 +428,7 @@ function mountWebCanvas(
       bridge: activeBridge,
       documentWidth: webValues?.documentWidth,
       codeFontSize: webValues?.codeFontSize,
+      softwareMapEnabled: webValues?.softwareMapEnabled === true,
       setTitle(title) {
         document.title = title || "Whiteboard Review";
       },

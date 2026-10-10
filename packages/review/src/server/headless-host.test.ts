@@ -166,6 +166,7 @@ it("serves authenticated web preferences and restores them after a server restar
     documentWidth: "standard",
     codeFontSize: 14,
     scratchpadEnabled: false,
+    softwareMapEnabled: false,
   });
 
   const updated = await fetch(endpoint(), {
@@ -176,6 +177,7 @@ it("serves authenticated web preferences and restores them after a server restar
       documentWidth: "wide",
       codeFontSize: 16,
       scratchpadEnabled: true,
+      softwareMapEnabled: true,
     }),
   });
 
@@ -188,7 +190,16 @@ it("serves authenticated web preferences and restores them after a server restar
     documentWidth: "wide",
     codeFontSize: 16,
     scratchpadEnabled: true,
+    softwareMapEnabled: true,
   });
+  // Agents learn they can author maps from the saved web setting alone.
+  expect(
+    await (
+      await fetch(`${server.discovery.url}/reviews-api/capabilities`, {
+        headers,
+      })
+    ).json(),
+  ).toMatchObject({ desktopAvailable: false, softwareMapEnabled: true });
 });
 
 it("reuses a private generated token across server restarts", async () => {

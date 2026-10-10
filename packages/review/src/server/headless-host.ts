@@ -135,7 +135,9 @@ async function serve(input: HeadlessServerInput) {
     deploymentConfig,
     localBrowserAuth: input.localBrowserAuth,
     localBrowserPort: () => localBrowserPort,
-    softwareMapEnabled: input.softwareMapEnabled,
+    // `--software-maps` forces it on; otherwise the web setting decides.
+    softwareMapEnabled: () =>
+      input.softwareMapEnabled === true || persistedSettings.softwareMapEnabled,
     // The scratchpad is the laptop's alone, even with a Desktop attached.
     scratchpad: () => persistedSettings.scratchpadEnabled,
     webSettings: {

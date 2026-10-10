@@ -24,6 +24,7 @@ const webSettingsSchema = z.object({
   documentWidth: z.enum(["standard", "wide", "full"]),
   codeFontSize: z.number().int().min(8).max(32),
   scratchpadEnabled: z.boolean(),
+  softwareMapEnabled: z.boolean(),
 });
 
 export type WebSettingsValues = z.infer<typeof webSettingsSchema>;
@@ -177,8 +178,9 @@ export async function loadWebSettings(
       (await update({ codeFontSize })).codeFontSize,
     readyNotification: "off",
     setReadyNotification: (choice) => unavailable(choice),
-    softwareMapEnabled: false,
-    setSoftwareMapEnabled: (enabled) => unavailable(enabled),
+    softwareMapEnabled: values.softwareMapEnabled,
+    setSoftwareMapEnabled: async (softwareMapEnabled) =>
+      (await update({ softwareMapEnabled })).softwareMapEnabled,
     structuralDiffEnabled: false,
     setStructuralDiffEnabled: (enabled) => unavailable(enabled),
     scratchpadEnabled: values.scratchpadEnabled,
@@ -316,7 +318,12 @@ export function createWebBridge(
       case "openApiReview":
         openReview(request.args.reviewId);
 
-        return { ok: true, result: { softwareMapEnabled: false } };
+        return {
+          ok: true,
+          result: {
+            softwareMapEnabled: options.settings?.softwareMapEnabled === true,
+          },
+        };
 
       case "joinDiscord":
         window.open(REVIEW_DISCORD_URL, "_blank", "noopener");

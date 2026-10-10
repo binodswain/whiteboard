@@ -22,6 +22,7 @@ it("defaults safely and persists validated updates under the state directory", a
     documentWidth: "standard",
     codeFontSize: 14,
     scratchpadEnabled: false,
+    softwareMapEnabled: false,
   });
   expect(
     await settings.update({ theme: "dark", scratchpadEnabled: true }),

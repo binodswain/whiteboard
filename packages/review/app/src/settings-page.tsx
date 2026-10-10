@@ -397,28 +397,6 @@ export function SettingsPage({
                     reloadWindow={settings.reloadWindow}
                   />
                 ) : null}
-                <Row
-                  label="Software Map"
-                  description="Show the experimental Software Map view in sessions."
-                >
-                  <label {...stylex.props(styles.toggle)}>
-                    <input
-                      {...stylex.props(styles.checkbox)}
-                      type="checkbox"
-                      aria-label="Software Map"
-                      checked={softwareMapEnabled}
-                      disabled={busy !== null}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        void run(
-                          "software-map",
-                          () => settings.setSoftwareMapEnabled(enabled),
-                          setSoftwareMapEnabled,
-                        );
-                      }}
-                    />
-                  </label>
-                </Row>
                 {install ? (
                   <TraceCaptureSection
                     install={install}
@@ -426,14 +404,29 @@ export function SettingsPage({
                   />
                 ) : null}
               </>
-            ) : (
-              <Row
-                label="Machine-local controls"
-                description="Keymaps, extensions, agent installation, notifications, and experimental tools are available in Whiteboard Desktop Settings on this machine."
-              >
-                <span aria-label="Unavailable in web canvas">Unavailable</span>
-              </Row>
-            )}
+            ) : null}
+            <Row
+              label="Software Map"
+              description="Show the experimental Software Map view in sessions."
+            >
+              <label {...stylex.props(styles.toggle)}>
+                <input
+                  {...stylex.props(styles.checkbox)}
+                  type="checkbox"
+                  aria-label="Software Map"
+                  checked={softwareMapEnabled}
+                  disabled={busy !== null}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    void run(
+                      "software-map",
+                      () => settings.setSoftwareMapEnabled(enabled),
+                      setSoftwareMapEnabled,
+                    );
+                  }}
+                />
+              </label>
+            </Row>
             <Row
               label="Scratchpad"
               description="Show the experimental scratchpad on Home. Agents draw on it through Whiteboard's MCP tools."
