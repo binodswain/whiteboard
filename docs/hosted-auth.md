@@ -16,14 +16,19 @@ Two sign-in mechanisms can coexist; at least one is required.
 
 ```dotenv
 WHITEBOARD_AUTH_SECRET=…            # signs sessions, OAuth state, seals tokens
-GITHUB_OAUTH_CLIENT_ID=…            # OAuth App client id
-GITHUB_OAUTH_CLIENT_SECRET=…        # OAuth App secret
+GITHUB_OAUTH_CLIENT_ID=…            # GitHub App client id
+GITHUB_OAUTH_CLIENT_SECRET=…        # GitHub App client secret
 ```
 
-Register an OAuth App with the callback
-`https://<host>/auth/github/callback`. The app requests `repo` scope so each
-viewer's token can answer repository-access checks. GitHub tokens are sealed
-with `WHITEBOARD_AUTH_SECRET` before they reach the database, and sessions
+Sign in through a GitHub App with the callback
+`https://<host>/auth/github/callback` and only the **Metadata: read-only**
+repository permission. No OAuth scope is requested: the user token carries
+just the App's permissions, limited to repositories the App is installed on,
+so it can answer read-access checks without write access. Configure the same
+App under [GitHub App repository access](#github-app-repository-access) so
+access checks keep working once a user token expires. A classic OAuth App
+also works, but then only public repositories are readable. GitHub tokens
+are sealed with `WHITEBOARD_AUTH_SECRET` before they reach the database, and sessions
 live in `auth_sessions` (30-day expiry, `HttpOnly` cookie).
 
 ### Trusted identity proxy

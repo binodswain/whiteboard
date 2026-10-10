@@ -390,7 +390,7 @@ ${action}
         `${webUrl}/login/oauth/authorize` +
         `?client_id=${encodeURIComponent(oauth.clientId)}` +
         `&redirect_uri=${encodeURIComponent(callback)}` +
-        `&scope=repo&state=${encodeURIComponent(state)}`;
+        `&state=${encodeURIComponent(state)}`;
 
       return context.redirect(url);
     });

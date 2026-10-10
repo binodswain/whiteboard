@@ -218,11 +218,11 @@ export function createRepoAccess(input: {
 
       if (status === 200) return true;
 
-      // 403/404 is the repo's answer to this user; 401 is an expired token —
-      // not an access verdict.
+      // 403/404 is the repo's answer to this user; 401 is an expired token
+      // (GitHub App user tokens last 8 hours) — let the App check answer.
       if (status === 403 || status === 404) return false;
 
-      if (status === 401) return undefined;
+      if (status === 401 && !input.app) return undefined;
     }
 
     if (input.app) {
