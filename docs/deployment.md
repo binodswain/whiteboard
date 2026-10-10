@@ -9,7 +9,8 @@ For a cloud-free remote-mode stack, run `docker compose --profile remote-dev up 
 | Variable | Purpose |
 | --- | --- |
 | `WHITEBOARD_MODE` | `local` or `remote`; defaults to `local`. |
-| `WHITEBOARD_DB` | `sqlite` locally or a `postgres://` URL remotely. |
+| `WHITEBOARD_DB` | `sqlite` locally or a `postgres://` or `libsql://` (Turso/sqld) URL remotely. |
+| `WHITEBOARD_DB_TOKEN` | Auth token for a `libsql://` database URL; unauthenticated endpoints leave it unset. |
 | `WHITEBOARD_BLOBS` | `fs` locally or `s3://bucket` remotely. |
 | `WHITEBOARD_S3_ENDPOINT` | Optional S3-compatible endpoint, such as MinIO or Google Cloud Storage XML API. |
 | `WHITEBOARD_S3_REGION`, `WHITEBOARD_S3_KEY`, `WHITEBOARD_S3_SECRET` | S3 signing region and credentials. For GCS interoperability use an HMAC access ID and secret. |

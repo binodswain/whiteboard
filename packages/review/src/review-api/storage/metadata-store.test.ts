@@ -236,6 +236,24 @@ suite(
   true,
 );
 
+suite(
+  describe,
+  "libsql file",
+  { kind: "libsql", url: `file:${sqliteFile()}` },
+  true,
+);
+
+suite(
+  process.env.TEST_LIBSQL_URL ? describe : describe.skip,
+  "libsql remote",
+  {
+    kind: "libsql",
+    url: process.env.TEST_LIBSQL_URL ?? "",
+    authToken: process.env.TEST_LIBSQL_TOKEN,
+  },
+  true,
+);
+
 describe("sqlite file reopen", () => {
   it("keeps an existing file's rows across reopens", async () => {
     const dir = sqliteFile();

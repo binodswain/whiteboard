@@ -37,7 +37,7 @@ export async function openReviewProfile(
         ])
           await importHeadlessStore(home, source, lockOptions);
 
-      if (metadataConfig.kind === "postgres") {
+      if (metadataConfig.kind !== "sqlite") {
         const metadataStore = await createMetadataStore(metadataConfig);
 
         try {
@@ -62,13 +62,24 @@ export async function openReviewProfile(
 
 export function metadataStoreConfig(
   home: string,
-  deployment?: Pick<DeploymentConfig, "db" | "postgresUrl">,
+  deployment?: Pick<DeploymentConfig, "db" | "postgresUrl" | "libsql">,
 ): MetadataStoreConfig {
   if (deployment?.db === "postgres") {
     if (!deployment.postgresUrl)
       throw new Error("Postgres deployment requires WHITEBOARD_DB URL.");
 
     return { kind: "postgres", url: deployment.postgresUrl };
+  }
+
+  if (deployment?.db === "libsql") {
+    if (!deployment.libsql?.url)
+      throw new Error("libSQL deployment requires WHITEBOARD_DB URL.");
+
+    return {
+      kind: "libsql",
+      url: deployment.libsql.url,
+      authToken: deployment.libsql.authToken,
+    };
   }
 
   return { kind: "sqlite", dir: path.join(home, "review-api.db") };

@@ -19,7 +19,8 @@ const jsonPath = (path: string) => `$.${path}`;
 const isBusy = (cause: unknown) =>
   cause instanceof Error && cause.message === "database is locked";
 
-const SQLITE_DIALECT: MetadataDialect = {
+/** Shared with the libSQL adapter: libSQL speaks SQLite dialect and schema. */
+export const SQLITE_DIALECT: MetadataDialect = {
   jsonText: (column, path) => `json_extract(${column},'${jsonPath(path)}')`,
   jsonWithout: (column, key) => `json_remove(${column},'$.${key}')`,
   jsonFlag: (column, path) =>
@@ -29,8 +30,8 @@ const SQLITE_DIALECT: MetadataDialect = {
 
 /** The review-api.db schema. Every statement is idempotent so an existing
  * data directory opens without migration; the shapes are byte-for-byte the
- * ones the synchronous store created on first run. */
-const REVIEW_SCHEMA = `
+ * ones the synchronous store created on first run. Shared with libSQL. */
+export const REVIEW_SCHEMA = `
   CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY, version INTEGER NOT NULL, next_id INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS versions(review_id TEXT REFERENCES reviews(id), version INTEGER, snapshot TEXT NOT NULL,
     PRIMARY KEY(review_id,version));
@@ -107,11 +108,11 @@ const REVIEW_SCHEMA = `
 `;
 
 /** Columns the review list filters on, denormalized from the latest version. */
-const REVIEW_COLUMNS = ["branch", "base_sha", "head_sha", "created_by"];
+export const REVIEW_COLUMNS = ["branch", "base_sha", "head_sha", "created_by"];
 
 /** The `.workspaces` sidecar's tables, byte-for-byte what the synchronous
- * workspace manager created. */
-const WORKSPACE_SCHEMA = `
+ * workspace manager created. Shared with libSQL. */
+export const WORKSPACE_SCHEMA = `
   CREATE TABLE IF NOT EXISTS pinned_environments(id TEXT PRIMARY KEY, value TEXT NOT NULL);
   DROP TABLE IF EXISTS workspace_owner;
   CREATE TABLE IF NOT EXISTS workspace_leases(review_id TEXT PRIMARY KEY,owner TEXT NOT NULL,pid INTEGER NOT NULL);`;

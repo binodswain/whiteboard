@@ -35,7 +35,7 @@ export interface MetadataDialect {
  * a second connection sees the same single-writer behaviour SQLite gives one
  * `BEGIN IMMEDIATE`. */
 export interface MetadataStore {
-  readonly kind: "sqlite" | "postgres";
+  readonly kind: "sqlite" | "postgres" | "libsql";
   readonly dialect: MetadataDialect;
   /** All matching rows for a SELECT. */
   all<T = MetadataRow>(sql: string, ...params: MetadataParam[]): Promise<T[]>;
@@ -75,12 +75,28 @@ export type MetadataStoreConfig =
       url: string;
       /** Pool size; sized for a single replica's concurrency. Default 10. */
       poolSize?: number;
+    }
+  | {
+      kind: "libsql";
+      /** A libsql://, ws(s)://, http(s)://, or file: URL (Turso, sqld, local). */
+      url: string;
+      /** Turso/sqld auth token; local file: and unauthenticated sqld need none. */
+      authToken?: string;
+      /** The sidecar workspace database carries only its own two tables;
+       * the review database is the default. */
+      schema?: "review" | "workspace";
     };
 
-/** The default backend is SQLite; Postgres is selected by config. */
+/** The default backend is SQLite; Postgres or libSQL is selected by config. */
 export async function createMetadataStore(
   config: MetadataStoreConfig,
 ): Promise<MetadataStore> {
+  if (config.kind === "libsql") {
+    const { LibsqlMetadataStore } = await import("./libsql.js");
+
+    return LibsqlMetadataStore.open(config);
+  }
+
   if (config.kind === "postgres") {
     const { PostgresMetadataStore } = await import("./postgres.js");
 

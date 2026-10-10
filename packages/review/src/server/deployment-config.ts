@@ -10,6 +10,7 @@ const optionalEnv = z.preprocess(
 const envSchema = z.object({
   WHITEBOARD_MODE: z.enum(["local", "remote"]).default("local"),
   WHITEBOARD_DB: optionalEnv,
+  WHITEBOARD_DB_TOKEN: optionalEnv,
   WHITEBOARD_BLOBS: optionalEnv,
   WHITEBOARD_S3_ENDPOINT: optionalEnv,
   WHITEBOARD_S3_REGION: optionalEnv,
@@ -42,12 +43,14 @@ const envSchema = z.object({
 
 export interface DeploymentConfig {
   mode: "local" | "remote";
-  db: "sqlite" | "postgres";
+  db: "sqlite" | "postgres" | "libsql";
   blobs: "fs" | "s3";
   repoSource: "local" | "github";
   jobs: "inline" | "queue";
   auth: "local-token" | "oauth";
   postgresUrl?: string;
+  /** libsql:// / ws(s):// / http(s):// / file: URL plus optional auth token. */
+  libsql?: { url: string; authToken?: string };
   s3?: {
     bucket: string;
     endpoint?: string;
@@ -110,6 +113,7 @@ export function loadDeploymentConfig(
 
   let db: DeploymentConfig["db"] = "sqlite";
   let postgresUrl: string | undefined;
+  let libsql: DeploymentConfig["libsql"];
 
   if (dbValue === "sqlite") db = "sqlite";
   else if (
@@ -118,8 +122,23 @@ export function loadDeploymentConfig(
   ) {
     db = "postgres";
     postgresUrl = dbValue;
+  } else if (
+    dbValue?.startsWith("libsql://") ||
+    dbValue?.startsWith("ws://") ||
+    dbValue?.startsWith("wss://") ||
+    dbValue?.startsWith("http://") ||
+    dbValue?.startsWith("https://") ||
+    dbValue?.startsWith("file:")
+  ) {
+    db = "libsql";
+    libsql = { url: dbValue };
+
+    if (values.WHITEBOARD_DB_TOKEN)
+      libsql.authToken = values.WHITEBOARD_DB_TOKEN;
   } else if (dbValue)
-    throw new Error("WHITEBOARD_DB must be sqlite or a postgres:// URL");
+    throw new Error(
+      "WHITEBOARD_DB must be sqlite or a postgres:// or libsql:// URL",
+    );
   else requireSetting(dbValue, "WHITEBOARD_DB");
 
   let blobs: DeploymentConfig["blobs"] = "fs";
@@ -164,6 +183,8 @@ export function loadDeploymentConfig(
   };
 
   if (postgresUrl) config.postgresUrl = postgresUrl;
+
+  if (libsql) config.libsql = libsql;
 
   if (s3) config.s3 = s3;
 
