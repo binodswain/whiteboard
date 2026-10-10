@@ -276,9 +276,9 @@ parts of the contract in the same change:
 1. produce it in `build.sh` or `compile-darwin-payload.sh`;
 2. add its repo-relative path to the required or archive-only manifest list;
 3. stage required app content in `package-macos.sh` before signing;
-4. assert it through an existing manifest-driven verifier or
-   `packaged-runtime.test.mjs`, and repeat critical closure checks in
-   `validate-release-artifacts.mjs` before upload.
+4. assert it through an existing manifest-driven verifier, and repeat
+   critical closure checks in `validate-release-artifacts.mjs` before
+   upload.
 
 ### Install and update hosts
 

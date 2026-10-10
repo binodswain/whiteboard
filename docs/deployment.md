@@ -21,7 +21,7 @@ For a cloud-free remote-mode stack, run `docker compose --profile remote-dev up 
 | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth app credentials, unless an identity proxy is used. |
 | `WHITEBOARD_AUTH_PROXY_HEADER`, `WHITEBOARD_AUTH_PROXY_SECRET`, `WHITEBOARD_AUTH_PROXY_SECRET_HEADER` | Trusted identity and proof headers supplied by an upstream identity proxy. |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` | Optional GitHub App credentials for repository checkout and access checks. |
-| `GH_TOKEN` | Optional GitHub token for public or private repository checkout when no GitHub App is configured. |
+| `GITHUB_TOKEN` (or `GH_TOKEN`) | Optional GitHub token for public or private repository checkout when no GitHub App is configured; compose maps `GH_TOKEN` to both. |
 
 ## Review jobs
 

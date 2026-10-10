@@ -54,6 +54,12 @@ Reviews are authored through the JSON API: `whiteboard api` calls a tool
 directly, and `whiteboard mcp` serves the same catalog over stdio MCP for a
 connected agent.
 
+The canvas supports Software Maps and Structural Diffs on the web surface.
+Sequence, flow, and C4 Software Map diagrams can be exported as Mermaid,
+Excalidraw, draw.io, or XMind files. Reviews can be exported as Markdown or
+HTML, or printed/saved as PDF. The Sessions home can assign a task to an agent
+to create a new session.
+
 `whiteboard server start` runs that API without Desktop. It binds `127.0.0.1`
 by default; pass `--host <address>` (or set `WHITEBOARD_HOST`) to bind another
 interface, such as `0.0.0.0` for every interface when the server runs inside a
