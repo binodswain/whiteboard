@@ -29,7 +29,7 @@ For a cloud-free remote-mode stack, run `docker compose --profile remote-dev up 
 
 ## Cloud Run reference
 
-[`../deploy/cloudrun/service.yaml`](../deploy/cloudrun/service.yaml) is a starting point for a Cloud Run API service. Provision Cloud SQL for PostgreSQL, a GCS bucket, S3 interoperability HMAC credentials, and Secret Manager entries before deploying it. Grant the Cloud Run service account access to connect to Cloud SQL and read the named secrets. The manifest uses the Cloud SQL Unix socket and GCS XML endpoint; configure GCS HMAC keys as `WHITEBOARD_S3_KEY` and `WHITEBOARD_S3_SECRET`.
+`deploy/cloudrun/service.yaml` in the repository root is a starting point for a Cloud Run API service. Provision Cloud SQL for PostgreSQL, a GCS bucket, S3 interoperability HMAC credentials, and Secret Manager entries before deploying it. Grant the Cloud Run service account access to connect to Cloud SQL and read the named secrets. The manifest uses the Cloud SQL Unix socket and GCS XML endpoint; configure GCS HMAC keys as `WHITEBOARD_S3_KEY` and `WHITEBOARD_S3_SECRET`.
 
 Configure a Cloud Tasks queue or Cloud Scheduler target to POST to `/internal/jobs/run` with the `WHITEBOARD_JOB_SECRET` bearer token. Keep that route behind authenticated task delivery or ingress restrictions. The sample manifest runs the API only; deploy a separate worker/Cloud Run Job if job throughput requires it. MCP requests are stateless and their review state is stored in Postgres, so Cloud Run does not need sticky sessions. Session signing uses the shared `WHITEBOARD_AUTH_SECRET` across replicas.
 
