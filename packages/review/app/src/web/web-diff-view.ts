@@ -177,7 +177,6 @@ function patchRows(patch: string): WebDiffRow[] {
       const last = rows[rows.length - 1];
 
       if (last?.type === "line" && last.lhs && !last.rhs) last.rhs = added;
-
       else rows.push({ type: "line", rhs: added });
 
       continue;
@@ -213,7 +212,6 @@ function textWithSpans(
 
   for (const span of [...line.spans].sort((a, b) => a.start - b.start)) {
     if (span.start > cursor)
-
       fragment.append(line.text.slice(cursor, span.start));
 
     const mark = document.createElement("span");
@@ -461,7 +459,6 @@ export function createWebDiffView(
           if (!section.folds) return;
 
           if (collapsed) section.folds.add(id);
-
           else section.folds.delete(id);
 
           rerender(section);
@@ -479,7 +476,6 @@ export function createWebDiffView(
           const fragment = document.createDocumentFragment();
 
           for (const pair of row.hidden)
-
             fragment.append(emitRow({ type: "line", ...pair }, context));
 
           marker.replaceWith(fragment);
@@ -543,7 +539,6 @@ export function createWebDiffView(
       }
 
       if (section.file)
-
         renderRows(
           section,
           buildWebDiffRows({
@@ -592,15 +587,12 @@ export function createWebDiffView(
         };
 
         for (const source of [section.diff.lhs, section.diff.rhs])
-
           if (source) walk(source.root);
 
         let changed = false;
 
         for (const range of file.unfoldRanges)
-
           for (const region of regions)
-
             if (
               section.folds.has(region.id) &&
               range.fromLine - 1 < region.end &&
@@ -834,7 +826,6 @@ export function createWebDiffView(
 
           if (event.type === "complete") {
             if (event.aborted && !statusRemoved)
-
               status.textContent = `diffr stopped early: ${event.aborted.message}`;
 
             continue;
@@ -892,7 +883,6 @@ export function createWebDiffView(
         }
       } catch (error) {
         if (!disposed && !abort.signal.aborted)
-
           fail(
             error instanceof Error
               ? error.message
@@ -963,7 +953,6 @@ export function createWebDiffView(
         }
       } catch (error) {
         if (!disposed && !abort.signal.aborted)
-
           fail(
             error instanceof Error
               ? error.message
@@ -987,7 +976,6 @@ export function createWebDiffView(
     }
 
     if (options.structural()) void streamStructural();
-
     else void loadTextual();
 
     return {
@@ -1031,14 +1019,12 @@ export function createWebDiffView(
         if (side) walk(side.root);
 
         for (const region of regions)
-
           if (
             section.folds.has(region.fold_state_id) &&
             line > region.start.line &&
             line <
               (region.end.column === 0 ? region.end.line : region.end.line + 1)
           )
-
             section.folds.delete(region.fold_state_id);
 
         rerender(section);

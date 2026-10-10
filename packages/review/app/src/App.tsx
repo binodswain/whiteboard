@@ -43,6 +43,7 @@ import { DiffLayoutControl } from "./diff-layout-control";
 import { ReviewDiffView } from "./DiffView";
 import { useDocumentEmbedScroll } from "./document-embed-scroll";
 import { documentStyles } from "./document-styles";
+import { ExportControl } from "./export-control";
 import { useReviewSession } from "./host/review-session";
 import { MarkerUnderline, SettingsSlidersIcon } from "./icons";
 import {
@@ -94,7 +95,6 @@ import {
   motion,
   radius,
 } from "./scale.stylex";
-import { ExportControl } from "./export-control";
 import { shellStyles } from "./shell-styles";
 import { useRightPanelResize } from "./side-panel-resizer";
 import { selectActiveSoftwareMapModel } from "./software-map-selection";

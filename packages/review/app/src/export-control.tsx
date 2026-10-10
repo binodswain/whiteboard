@@ -2,8 +2,8 @@ import { IconButton } from "@canvas/ui/button";
 import * as stylex from "@stylexjs/stylex";
 import type { ReactElement } from "react";
 
-import { controlStyles } from "./controls-styles";
 import { useCurrentReviewSnapshot } from "./api-canvas";
+import { controlStyles } from "./controls-styles";
 import {
   exportFilename,
   exportHtml,
@@ -93,6 +93,5 @@ export function ExportControl(): ReactElement | null {
     </div>
   );
 }
-
 
 const styles = stylex.create({ control: { position: "relative" } });

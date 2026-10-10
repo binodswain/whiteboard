@@ -76,9 +76,7 @@ describe("exportMarkdown", () => {
   it("passes markdown blocks through verbatim", () => {
     const md = exportMarkdown(
       snap({
-        document: [
-          { id: "m1", type: "markdown", markdown: "Hello **world**" },
-        ],
+        document: [{ id: "m1", type: "markdown", markdown: "Hello **world**" }],
       }),
     );
 
@@ -174,9 +172,7 @@ describe("exportMarkdown", () => {
             id: "ca1",
             type: "callout",
             tone: "warning",
-            children: [
-              { id: "m3", type: "markdown", markdown: "Watch out!" },
-            ],
+            children: [{ id: "m3", type: "markdown", markdown: "Watch out!" }],
           },
         ],
       }),
@@ -503,8 +499,7 @@ describe("exportHtml", () => {
           {
             id: "m1",
             type: "markdown",
-            markdown:
-              "[src](review-source:head/src/foo.ts#L1-L5)",
+            markdown: "[src](review-source:head/src/foo.ts#L1-L5)",
           },
         ],
       }),
