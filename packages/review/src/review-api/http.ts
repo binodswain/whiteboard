@@ -18,6 +18,10 @@ import {
   selectionMarkdown,
 } from "@review/agent-selection.js";
 import { type AskAgentStatus, askAgents } from "@review/ask/agents.js";
+import {
+  buildSessionPreamble,
+  buildSessionPrompt,
+} from "@review/ask/build-prompt.js";
 import { checkoutFiles, mentionableFiles } from "@review/ask/checkout-files.js";
 import { parseFileRef, resolveFileRefs } from "@review/ask/file-refs.js";
 import {
@@ -101,9 +105,10 @@ export interface AskHost {
 const askStartSchema = z.strictObject({
   agent: z.enum(askAgentIds),
   question: askQuestionSchema,
-  selection: AgentSelectionSchema,
+  selection: AgentSelectionSchema.optional(),
   picks: askPicksSchema.optional(),
   bypass: z.boolean().optional(),
+  purpose: z.literal("build").optional(),
 });
 
 const askPermitSchema = z.strictObject({ bypass: z.boolean() });
@@ -151,6 +156,7 @@ const queuedAskSchema = z.strictObject({
   reviewId: z.string().min(1),
   prompt: z.string().min(1).max(20_000),
   createdBy: z.string().min(1).max(200).default("board"),
+  purpose: z.literal("build").optional(),
 });
 
 const claimAskSchema = z.strictObject({ runnerId: z.string().min(1).max(200) });
@@ -334,8 +340,14 @@ export function createReviewApi(
     );
 
     await assertRepoAccess(input.reviewId);
-    await readReview(input.reviewId);
-    const askId = await store.askQueue.create(input);
+    const snapshot = await readReview(input.reviewId);
+
+    const prompt =
+      input.purpose === "build"
+        ? buildSessionPrompt(input.prompt, snapshot.title)
+        : input.prompt;
+
+    const askId = await store.askQueue.create({ ...input, prompt });
 
     return context.json({ askId }, 202);
   });
@@ -1659,16 +1671,39 @@ export function createReviewApi(
     };
 
     /** What an agent reads before a session's first question: the review,
-     * the checkout, and the selection. */
+     * the checkout, and optionally the selection. When purpose is "build",
+     * the agent receives the build preamble instead of the reviewer framing. */
     const askContext = async (
       agent: AskAgentId,
       snapshot: Snapshot,
       checkout: { head: string; live: boolean },
-      selection: AgentSelection,
+      selection: AgentSelection | undefined,
       version: number | undefined,
+      purpose?: "build",
     ) => {
       const reach = await ask.threads.reach(agent);
       const { reviewId } = snapshot;
+
+      const reachLines =
+        reach?.kind === "mcp"
+          ? [
+              `The whiteboard MCP tools read and change this review: its sessionId is "${reviewId}". Read it with session_get. If the reviewer asks you to change the review, first read session_get_instructions({}) for its guidelines and each component's fields (the review exists, so skip creating one), then edit it with session_edit; do not write files to do it.`,
+            ]
+          : reach?.kind === "cli"
+            ? [
+                `Whiteboard's CLI reads and changes this review from your shell: its sessionId is "${reviewId}". Read it with \`${reach.command} api session_get '{"sessionId":"${reviewId}"}'\`. If the reviewer asks you to change the review, first read \`${reach.command} api session_get_instructions '{}'\` for its guidelines and each component's fields (the review exists, so skip creating one), then edit it with \`${reach.command} api session_edit '<json>'\`; do not write files to do it. \`${reach.command} api tools\` lists each tool's input.`,
+              ]
+            : [];
+
+      if (purpose === "build") {
+        return [
+          buildSessionPreamble(snapshot.title),
+          checkout.live
+            ? "Your working directory is the repository the review describes."
+            : `Your working directory is a checkout of the review's head commit, ${checkout.head}.`,
+          ...reachLines,
+        ].join("\n");
+      }
 
       return [
         `A reviewer is reading "${snapshot.title}" in Whiteboard and has a question about a selection.`,
@@ -1677,23 +1712,22 @@ export function createReviewApi(
           : `Your working directory is a checkout of the review's head commit, ${checkout.head}. Answer from this code, not from other branches.`,
         "Answer the question for a staff engineer: lead with the answer and keep it short. Explain at the level of components and data flow before functions, and check each claim about the code against code you have read.",
         "Name files by their path from the checkout root, with a line where it helps, as in `src/app.ts:42`; the reviewer can open them from your answer.",
-        ...(reach?.kind === "mcp"
-          ? [
-              `The whiteboard MCP tools read and change this review: its sessionId is "${reviewId}". Read it with session_get. If the reviewer asks you to change the review, first read session_get_instructions({}) for its guidelines and each component's fields (the review exists, so skip creating one), then edit it with session_edit; do not write files to do it.`,
-            ]
-          : reach?.kind === "cli"
-            ? [
-                `Whiteboard's CLI reads and changes this review from your shell: its sessionId is "${reviewId}". Read it with \`${reach.command} api session_get '{"sessionId":"${reviewId}"}'\`. If the reviewer asks you to change the review, first read \`${reach.command} api session_get_instructions '{}'\` for its guidelines and each component's fields (the review exists, so skip creating one), then edit it with \`${reach.command} api session_edit '<json>'\`; do not write files to do it. \`${reach.command} api tools\` lists each tool's input.`,
-              ]
-            : []),
+        ...reachLines,
         "",
-        await selectionContext(reviewId, selection, version),
+        ...(selection
+          ? [await selectionContext(reviewId, selection, version)]
+          : []),
       ].join("\n");
     };
 
     // The agents answering in any review, which quitting the app would stop.
     app.get("/ask/working", (context) =>
       context.json({ agents: ask.threads.working() }),
+    );
+    // Global agent list, not review-scoped; used by the home dialog to decide
+    // whether to offer the agent picker before a session exists.
+    app.get("/ask/agents", async (context) =>
+      context.json({ agents: await ask.agents() }),
     );
 
     // Each agent with the models and efforts it offered last; none until
@@ -1774,9 +1808,16 @@ export function createReviewApi(
 
       const snapshot = await readReview(reviewId, version);
       const checkout = await data.agentCheckout(snapshot);
-      const target = input.selection.target;
       const id = crypto.randomUUID();
       const createdAt = new Date().toISOString();
+
+      // A minimal placeholder selection stored when none is provided (build purpose).
+      const effectiveSelection = input.selection ?? {
+        title: "",
+        target: { kind: "text" as const, quote: "" },
+      };
+
+      const target = effectiveSelection.target;
 
       const thread = ask.threads.open({
         id,
@@ -1797,7 +1838,7 @@ export function createReviewApi(
                 version: snapshot.version,
                 head: checkout.head,
                 cwd: checkout.rootPath,
-                selection: input.selection,
+                selection: effectiveSelection,
                 title: input.question.text.slice(0, 200),
                 createdAt,
                 updatedAt: createdAt,
@@ -1818,7 +1859,7 @@ export function createReviewApi(
         cwd: checkout.rootPath,
         head: checkout.head,
         selection: {
-          title: input.selection.title,
+          title: effectiveSelection.title,
           quote: target.kind === "text" ? target.quote : undefined,
         },
         context: await askContext(
@@ -1827,6 +1868,7 @@ export function createReviewApi(
           checkout,
           input.selection,
           version,
+          input.purpose,
         ),
         question: input.question,
       });

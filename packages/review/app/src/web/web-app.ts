@@ -3,6 +3,7 @@ import { reviewFetchUrl } from "@canvas/host/review-client";
 import type {
   ReviewApiRepository,
   ReviewApiSummary,
+  AskAgentStatusLike,
   ReviewCanvasContent,
   ReviewCanvasSettingsContent,
 } from "@dev.fast/review-protocol";
@@ -272,6 +273,8 @@ function mountWebCanvas(
   let repositories: ReviewApiRepository[] = [];
   let searchQuery = "";
   let catalogError: string | undefined;
+  let hostedMode = false;
+  let hostedModePromise: Promise<boolean> | undefined;
   let catalog: AbortController | undefined;
   let disposed = false;
   let webValues: WebSettingsValues | undefined;
@@ -280,7 +283,8 @@ function mountWebCanvas(
   let activeBridge: ReturnType<typeof createWebBridge> | undefined;
 
   let activeReviewContent:
-    Extract<ReviewCanvasContent, { kind: "api" }> | undefined;
+    | Extract<ReviewCanvasContent, { kind: "api" }>
+    | undefined;
 
   const navigate = (path: string) => {
     history.pushState(null, "", path);
@@ -349,8 +353,22 @@ function mountWebCanvas(
     return settingsPromise;
   };
 
+  const ensureHostedMode = () => {
+    hostedModePromise ??= client
+      .read<{ deployment?: { mode?: string } }>("/status")
+      .then((status) => status.deployment?.mode === "remote")
+      .catch(() => false)
+      .then((isHosted) => {
+        hostedMode = isHosted;
+        return isHosted;
+      });
+
+    return hostedModePromise;
+  };
+
   const homeContent = (): ReviewCanvasContent => ({
     kind: "home",
+    hostedMode,
     reviews,
     repositories,
     searchQuery,
@@ -361,6 +379,14 @@ function mountWebCanvas(
     refreshCatalog() {
       void showHome();
     },
+    askAgents: hostedMode
+      ? undefined
+      : async () => {
+          const result = await client.read<{ agents: AskAgentStatusLike[] }>(
+            "/ask/agents",
+          );
+          return result.agents;
+        },
     editTags: async (reviewId, change) => {
       const result = await client.post<{ tags?: string[] }>("/commands", {
         operation: { type: "tags", reviewId, ...change },
@@ -368,7 +394,7 @@ function mountWebCanvas(
 
       return result.tags ?? [];
     },
-    createSession: async ({ title, repositoryId }) => {
+    createSession: async ({ title, repositoryId, task }) => {
       const result = await client.post<{ review: ReviewApiSummary }>(
         "/commands",
         {
@@ -380,6 +406,38 @@ function mountWebCanvas(
           },
         },
       );
+
+      if (task?.prompt.trim()) {
+        try {
+          if (hostedMode) {
+            await client.post("/asks", {
+              reviewId: result.review.reviewId,
+              prompt: task.prompt,
+              purpose: "build",
+            });
+          } else {
+            await client.post(
+              `/${encodeURIComponent(result.review.reviewId)}/ask`,
+              {
+                agent: task.agent,
+                question: { text: task.prompt },
+                purpose: "build",
+              },
+            );
+          }
+          webNotify(
+            "success",
+            hostedMode
+              ? "Task queued for a local connector"
+              : `${task.agent} is building this session`,
+          );
+        } catch (error) {
+          webNotify(
+            "error",
+            `Session created, but the agent task could not be started: ${error instanceof Error ? error.message : "Unknown error."}`,
+          );
+        }
+      }
 
       return result.review;
     },
@@ -450,6 +508,7 @@ function mountWebCanvas(
       const [nextReviews, nextRepositories] = await Promise.all([
         client.read<ReviewApiSummary[]>("", signal),
         client.read<ReviewApiRepository[]>("/repositories", signal),
+        ensureHostedMode(),
         ensureSettings(),
       ]);
 

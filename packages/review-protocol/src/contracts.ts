@@ -6,6 +6,7 @@ import {
 import { z } from "zod";
 
 import type {
+  AskAgentStatusLike,
   ReviewApiRepository,
   ReviewApiSummary,
   ReviewSessionCreateInput,
@@ -747,6 +748,8 @@ export type ReviewCanvasContent =
       createSession?(
         input: ReviewSessionCreateInput,
       ): Promise<ReviewApiSummary>;
+      askAgents?(): Promise<readonly AskAgentStatusLike[]>;
+      hostedMode?: boolean;
       searchQuery?: string;
       setSearchQuery?(query: string): void;
       catalogError?: string;

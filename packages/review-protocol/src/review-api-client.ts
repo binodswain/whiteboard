@@ -59,6 +59,17 @@ export interface ReviewApiRepository {
 export interface ReviewSessionCreateInput {
   title: string;
   repositoryId: string;
+  task?: { prompt: string; agent?: AskAgentId };
+}
+
+export type AskAgentId = "claude" | "codex" | "cursor" | "opencode" | "pi";
+
+export interface AskAgentStatusLike {
+  id: AskAgentId;
+  name: string;
+  available: boolean;
+  readOnly: boolean;
+  bypass: boolean;
 }
 
 export interface ReviewSourceEntry {

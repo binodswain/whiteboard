@@ -12,6 +12,7 @@ import { Button, IconButton, buttonStyles } from "@canvas/ui/button";
 import { EmptyState } from "@canvas/ui/empty-state";
 import { textStyles } from "@canvas/ui/text";
 import type {
+  AskAgentStatusLike,
   ReviewApiRepository,
   ReviewApiSummary,
   ReviewCanvasInstallContent,
@@ -52,6 +53,8 @@ interface ReviewHomeProps {
   reviews: readonly ReviewApiSummary[];
   repositories?: readonly ReviewApiRepository[];
   onCreateSession?(input: ReviewSessionCreateInput): Promise<ReviewApiSummary>;
+  askAgents?(): Promise<readonly AskAgentStatusLike[]>;
+  hostedMode?: boolean;
   searchQuery?: string;
   onSearchQueryChange?(query: string): void;
   catalogError?: string;
@@ -120,6 +123,8 @@ export function ReviewHome({
   reviews,
   repositories,
   onCreateSession,
+  askAgents,
+  hostedMode,
   searchQuery,
   onSearchQueryChange,
   catalogError,
@@ -143,6 +148,11 @@ export function ReviewHome({
   const [creationOpen, setCreationOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string>();
+
+  const [availableAgents, setAvailableAgents] = useState<
+    readonly AskAgentStatusLike[]
+  >([]);
+
   const [, setNow] = useState(Date.now);
 
   const [deletions, setDeletions] = useState(
@@ -164,6 +174,12 @@ export function ReviewHome({
   useEffect(() => {
     if (!creationOpen) return;
 
+    if (!hostedMode && askAgents) {
+      void askAgents()
+        .then(setAvailableAgents)
+        .catch(() => setAvailableAgents([]));
+    }
+
     const dismiss = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !creating) setCreationOpen(false);
     };
@@ -171,7 +187,7 @@ export function ReviewHome({
     window.addEventListener("keydown", dismiss);
 
     return () => window.removeEventListener("keydown", dismiss);
-  }, [creationOpen, creating]);
+  }, [creationOpen, creating, hostedMode, askAgents]);
 
   const createSession = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -179,6 +195,8 @@ export function ReviewHome({
     const form = new FormData(event.currentTarget);
     const title = String(form.get("title") ?? "").trim();
     const repositoryId = String(form.get("repositoryId") ?? "");
+    const prompt = String(form.get("task") ?? "").trim();
+    const agent = String(form.get("agent") ?? "");
 
     if (
       !title ||
@@ -189,11 +207,31 @@ export function ReviewHome({
       return;
     }
 
+    if (!hostedMode && prompt && !agent) {
+      setCreationError("Select an agent to give a task.");
+
+      return;
+    }
+
     setCreating(true);
     setCreationError(undefined);
 
     try {
-      const review = await onCreateSession?.({ title, repositoryId });
+      const sessionInput: ReviewSessionCreateInput = {
+        title,
+        repositoryId,
+      };
+
+      if (prompt) {
+        sessionInput.task = { prompt };
+
+        if (agent) {
+          // SAFETY: agent is only set when the form is in local mode with an available agent.
+          sessionInput.task.agent = agent as AskAgentStatusLike["id"];
+        }
+      }
+
+      const review = await onCreateSession?.(sessionInput);
 
       if (review) {
         setCreationOpen(false);
@@ -465,8 +503,9 @@ export function ReviewHome({
               New session
             </h2>
             <p {...stylex.props(styles.dialogNote)}>
-              An agent will populate this session. The browser is read-only for
-              board authoring.
+              {hostedMode
+                ? "A local connector (whiteboard ask --server <url> --agent <id>) must be running to pick up a task."
+                : "Give an agent a task to populate this session. The browser is read-only for board authoring."}
             </p>
             <form onSubmit={createSession}>
               <label {...stylex.props(styles.dialogField)}>
@@ -480,6 +519,42 @@ export function ReviewHome({
                   placeholder="e.g. Review checkout flow"
                 />
               </label>
+              {!hostedMode && availableAgents.length === 0 ? (
+                <p {...stylex.props(styles.dialogNote)}>
+                  No agent CLI detected on this machine.
+                </p>
+              ) : null}
+              <label {...stylex.props(styles.dialogField)}>
+                Task for agent (optional)
+                <textarea
+                  {...stylex.props(styles.fieldControl)}
+                  name="task"
+                  rows={4}
+                  disabled={!hostedMode && availableAgents.length === 0}
+                  placeholder="Describe what the agent should build on the board"
+                />
+              </label>
+              {!hostedMode && availableAgents.length > 0 ? (
+                <label {...stylex.props(styles.dialogField)}>
+                  Agent
+                  <select
+                    {...stylex.props(styles.fieldControl)}
+                    name="agent"
+                    defaultValue={
+                      availableAgents.filter((item) => item.available)[0]?.id ||
+                      ""
+                    }
+                  >
+                    {availableAgents
+                      .filter((item) => item.available)
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              ) : null}
               <label {...stylex.props(styles.dialogField)}>
                 Repository
                 <select

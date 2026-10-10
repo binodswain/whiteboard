@@ -40,6 +40,208 @@ describe("ReviewHome", () => {
     vi.restoreAllMocks();
   });
 
+  it("submits a task with the preselected first agent, and omits an empty task", async () => {
+    const created = summary({ reviewId: uuid(900), title: "Created" });
+    const onCreateSession = vi.fn(async () => created);
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[{ id: "repo", name: "Repository" }]}
+          askAgents={async () => [
+            {
+              id: "codex",
+              name: "Codex",
+              available: true,
+              readOnly: true,
+              bypass: false,
+            },
+            {
+              id: "claude",
+              name: "Claude",
+              available: true,
+              readOnly: false,
+              bypass: false,
+            },
+          ]}
+          onCreateSession={onCreateSession}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    const fillAndSubmit = async (task: string) => {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>("button")?.click();
+      });
+      const title = container.querySelector<HTMLInputElement>(
+        'input[name="title"]',
+      )!;
+      const repository = container.querySelector<HTMLSelectElement>(
+        'select[name="repositoryId"]',
+      )!;
+      const taskInput = container.querySelector<HTMLTextAreaElement>(
+        'textarea[name="task"]',
+      )!;
+      title.value = "Create something";
+      repository.value = "repo";
+      taskInput.value = task;
+      await act(async () => {
+        container
+          .querySelector("form")!
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true }),
+          );
+      });
+    };
+
+    await fillAndSubmit("Build a board");
+    expect(onCreateSession).toHaveBeenNthCalledWith(1, {
+      title: "Create something",
+      repositoryId: "repo",
+      task: { prompt: "Build a board", agent: "codex" },
+    });
+
+    await fillAndSubmit("");
+    expect(onCreateSession).toHaveBeenNthCalledWith(2, {
+      title: "Create something",
+      repositoryId: "repo",
+    });
+  });
+
+  it("preselects the first available agent and has no 'Use default' option", async () => {
+    const onCreateSession = vi.fn();
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[{ id: "repo", name: "Repository" }]}
+          askAgents={async () => [
+            {
+              id: "codex",
+              name: "Codex",
+              available: true,
+              readOnly: true,
+              bypass: false,
+            },
+          ]}
+          onCreateSession={onCreateSession}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+
+    const agentSelect = container.querySelector<HTMLSelectElement>(
+      'select[name="agent"]',
+    )!;
+
+    expect(agentSelect).toBeDefined();
+    expect(agentSelect.value).toBe("codex");
+    const options = Array.from(agentSelect.querySelectorAll("option")).map(
+      (opt) => opt.textContent,
+    );
+    expect(options).not.toContain("Use default agent");
+  });
+
+  it("shows 'No agent CLI detected' and disables task textarea when no agents available in local mode", async () => {
+    const onCreateSession = vi.fn();
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[{ id: "repo", name: "Repository" }]}
+          askAgents={async () => []}
+          hostedMode={false}
+          onCreateSession={onCreateSession}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+
+    expect(container.textContent).toContain(
+      "No agent CLI detected on this machine",
+    );
+
+    const taskInput = container.querySelector<HTMLTextAreaElement>(
+      'textarea[name="task"]',
+    )!;
+
+    expect(taskInput.disabled).toBe(true);
+  });
+
+  it("prevents task submission without an agent in local mode", async () => {
+    const onCreateSession = vi.fn();
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[{ id: "repo", name: "Repository" }]}
+          askAgents={async () => [
+            {
+              id: "codex",
+              name: "Codex",
+              available: true,
+              readOnly: true,
+              bypass: false,
+            },
+          ]}
+          hostedMode={false}
+          onCreateSession={onCreateSession}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+
+    const title = container.querySelector<HTMLInputElement>(
+      'input[name="title"]',
+    )!;
+
+    const repository = container.querySelector<HTMLSelectElement>(
+      'select[name="repositoryId"]',
+    )!;
+
+    const taskInput = container.querySelector<HTMLTextAreaElement>(
+      'textarea[name="task"]',
+    )!;
+
+    const agentSelect = container.querySelector<HTMLSelectElement>(
+      'select[name="agent"]',
+    )!;
+
+    title.value = "Create something";
+
+    repository.value = "repo";
+
+    taskInput.value = "Do something";
+
+    agentSelect.value = "";
+
+    await act(async () => {
+      container
+        .querySelector("form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Select an agent to give a task",
+    );
+    expect(onCreateSession).not.toHaveBeenCalled();
+  });
+
   it("groups chronologically across repositories and shows origins", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-22T12:00:00Z"));
 
