@@ -307,8 +307,7 @@ export function AskPanelContent({
   const ask = async (question: AskQuestion) => {
     const selectedAgent = agent ?? (hostedMode ? "claude" : undefined);
 
-    if ((!selectedAgent && !hostedMode) || busy || thread?.status === "failed")
-      return false;
+    if (!selectedAgent || busy || thread?.status === "failed") return false;
     setSending(true);
     setRequestError(null);
 
@@ -341,7 +340,7 @@ export function AskPanelContent({
         setQueuedAskId(id);
       } else {
         const response = await post("/ask", {
-          agent: selectedAgent!,
+          agent: selectedAgent,
           question,
           selection,
           picks: currentPicks(),
@@ -358,7 +357,7 @@ export function AskPanelContent({
           return false;
         }
 
-        rememberAskAgent(session, agent);
+        rememberAskAgent(session, selectedAgent);
         setThreadId(id);
       }
 

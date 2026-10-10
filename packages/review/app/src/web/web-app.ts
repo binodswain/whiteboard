@@ -108,6 +108,8 @@ function renderTokenPrompt(
     location.reload();
   });
 
+  form.append(input, button);
+
   if (signIn) {
     const link = document.createElement("a");
 

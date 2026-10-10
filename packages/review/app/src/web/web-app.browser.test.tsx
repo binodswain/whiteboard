@@ -798,7 +798,8 @@ describe("the web canvas entry", () => {
       true,
     );
     expect(container.querySelector("input[type=password]")).toBeTruthy();
-    expect(requested).toEqual(["/reviews-api/capabilities"]);
+    // Only the probes run; no review data is read without a token.
+    expect(requested).toEqual(["/auth/session", "/reviews-api/capabilities"]);
 
     await act(async () => app?.dispose());
     container.replaceChildren();
