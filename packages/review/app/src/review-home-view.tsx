@@ -961,8 +961,16 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [isEditing, setIsEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setTags(review.tags ?? []), [review.tags]);
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isEditing]);
 
   if (!onEditTags && tags.length === 0) return null;
 
@@ -980,6 +988,12 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const closeEdit = () => {
+    setIsEditing(false);
+    setDraft("");
+    setError(undefined);
   };
 
   return (
@@ -1005,23 +1019,41 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
         </span>
       ))}
       {onEditTags ? (
-        <input
-          {...stylex.props(tagStyles.input)}
-          value={draft}
-          disabled={busy}
-          placeholder="Add tag"
-          aria-label={`Add tag to ${reviewTitle(review)}`}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter") return;
-            event.preventDefault();
-            const tag = draft.trim().toLowerCase();
-
-            if (!tag) return;
-            setDraft("");
-            void change([tag], []);
-          }}
-        />
+        isEditing ? (
+          <input
+            ref={inputRef}
+            {...stylex.props(tagStyles.input)}
+            value={draft}
+            disabled={busy}
+            placeholder="Add tag"
+            aria-label={`Add tag to ${reviewTitle(review)}`}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={closeEdit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                const tag = draft.trim().toLowerCase();
+                if (!tag) return;
+                setDraft("");
+                void change([tag], []);
+                closeEdit();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                closeEdit();
+              }
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            {...stylex.props(tagStyles.addButton)}
+            disabled={busy}
+            aria-label={`Add tag to ${reviewTitle(review)}`}
+            onClick={() => setIsEditing(true)}
+          >
+            + tag
+          </button>
+        )
       ) : null}
       {error ? (
         <span role="alert" {...stylex.props(tagStyles.error)}>
@@ -1481,6 +1513,18 @@ const tagStyles = stylex.create({
     backgroundColor: "transparent",
     color: "inherit",
     font: "inherit",
+    cursor: "pointer",
+  },
+  addButton: {
+    padding: "0 6px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.rule,
+    borderRadius: radius.control,
+    backgroundColor: "transparent",
+    color: tokens.inkMuted,
+    font: "inherit",
+    fontSize: fontSize.ui,
     cursor: "pointer",
   },
   input: {
