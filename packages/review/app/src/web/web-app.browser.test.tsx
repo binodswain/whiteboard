@@ -350,7 +350,9 @@ describe("the web canvas entry", () => {
         .click();
     });
     expect(location.pathname).toBe("/settings");
-    expect(container!.textContent).toContain("Machine-local controls");
+    expect(container!.textContent).toContain(
+      "Settings apply to Whiteboard on this machine.",
+    );
     expect(
       container!.querySelector<HTMLInputElement>(
         'input[aria-label="Scratchpad"]',
