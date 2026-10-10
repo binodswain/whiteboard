@@ -6,6 +6,7 @@ packages:
   - "apps/*"
 
 catalog:
+  '@libsql/client': 0.18.0
   mermaid: 11.17.2
   zod: "4.6.5"
 
@@ -37,11 +38,17 @@ overrides:
   # it resolve to the workspace package. Do not remove it.
   "@dev.fast/local-vcs": "workspace:0.1.0"
   esbuild: "0.28.1"
+  # 8.7.1 is under minimumReleaseAge; pin the newest mature release.
+  express-rate-limit: "8.7.0"
   hono: "4.13.5"
+  # 1.9.0 is under minimumReleaseAge; pin the newest mature release.
+  package-manager-detector: "1.8.0"
   postcss: "8.5.23"
   source-map-js: "1.2.2"
   tinypool: "2.2.0"
   undici: "7.29.1"
+  # 14.0.3 is under minimumReleaseAge; pin the newest mature release.
+  uuid: "14.0.2"
   vite: "8.0.16"
 
 # Ask runs the user's own `claude` and `codex` (CLAUDE_CODE_EXECUTABLE and

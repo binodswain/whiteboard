@@ -61,6 +61,30 @@ describe("loadDeploymentConfig", () => {
     );
   });
 
+  it("resolves a libsql URL and token for remote mode", () => {
+    const config = loadDeploymentConfig({
+      WHITEBOARD_MODE: "remote",
+      WHITEBOARD_DB: "libsql://reviews-org.turso.io",
+      WHITEBOARD_DB_TOKEN: "auth-token",
+      WHITEBOARD_BLOBS: "s3://reviews",
+      WHITEBOARD_S3_REGION: "auto",
+      WHITEBOARD_S3_KEY: "access",
+      WHITEBOARD_S3_SECRET: "private",
+      WHITEBOARD_AUTH_SECRET: "session-secret",
+      GITHUB_OAUTH_CLIENT_ID: "client-id",
+      GITHUB_OAUTH_CLIENT_SECRET: "client-secret",
+    });
+
+    expect(config).toMatchObject({
+      mode: "remote",
+      db: "libsql",
+      libsql: { url: "libsql://reviews-org.turso.io", authToken: "auth-token" },
+    });
+    expect(JSON.stringify(publicDeploymentConfig(config))).not.toMatch(
+      /auth-token/,
+    );
+  });
+
   it("honors driver overrides in remote mode", () => {
     expect(
       loadDeploymentConfig({

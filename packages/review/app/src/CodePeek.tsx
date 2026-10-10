@@ -1,3 +1,4 @@
+import { fontSize } from "@canvas/scale.stylex";
 import type {
   ReviewDiffSide,
   ReviewInlineEditorHeightMode,
@@ -7,13 +8,40 @@ import {
   type DiffSelection,
   selectionKey,
   sourceAnchor,
+  sourcePinsKey,
 } from "@review/lens-selection";
-import { type FileLineRange, codePeekSource } from "@review/source";
+import {
+  type FileLineRange,
+  SourceRangeError,
+  codePeekSource,
+  sliceSourceRange,
+} from "@review/source";
 import * as stylex from "@stylexjs/stylex";
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { z } from "zod";
 
-import { CodeFontSizeContext } from "./code-font-size";
+import { useCodeCardExpanded } from "./code-card-state";
+import {
+  CodeExcerptCard,
+  CodeFullViewerDialog,
+  CodeFullViewerLines,
+  SourceUnavailableCard,
+} from "./code-excerpt-card";
+import { languageFromFilename } from "./code-highlighting";
+import {
+  type LineRange,
+  expandRangesWithContext,
+  formatLineRangeLabel,
+  lineRangeGaps,
+  mergeLineRanges,
+} from "./code-line-ranges";
 import { DocumentCodeView } from "./DocumentCodeView";
 import { drawStyles } from "./draw-styles";
 import { useReviewSession } from "./host/review-session";
@@ -27,6 +55,11 @@ import type { SourcePeekAnchor } from "./review-panel-model";
 import { withClass } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
 import { captureUiEvent } from "./ui-telemetry";
+import { Button } from "./ui/button";
+
+/** +-5 lines, the amount "Show surrounding context" reveals on each side of
+ * a selection, bounded by the file and merged across overlapping windows. */
+const CONTEXT_LINES = 5;
 
 /** The software-map inspector's peek input: a range on one diff side. */
 export interface CodePeekProps {
@@ -119,33 +152,48 @@ export function CodePeekGroup({
           );
 
         return (
-          <section
+          <NativeCodePeekSection
             key={group.key}
-            {...withClass("code-peek", styles.peek)}
-            data-code-rendering="inline-editor"
+            contextStateKey={`group:${group.key}:${(
+              group.countRanges ?? group.ranges
+            )
+              .map(
+                (range) =>
+                  `${range.side ?? group.side}:${range.startLine}-${range.endLine}`,
+              )
+              .sort()
+              .join(",")}`}
+            defaultSide={group.side}
+            baseRanges={group.ranges}
+            label={`${group.file}, full snippet`}
           >
-            <DocumentCodeView
-              path={group.file}
-              title={group.file}
-              side={group.side}
-              ranges={group.ranges}
-              heightMode="content"
-              countRanges={group.countRanges}
-              active={false}
-              collapsed={collapsed}
-              lenses={lenses}
-              onOpen={() =>
-                session.surface.revealAnchor(
-                  group.file,
-                  {
-                    fromLine: primaryRange.startLine,
-                    toLine: primaryRange.endLine,
-                  },
-                  primaryRange.side ?? group.side,
-                )
-              }
-            />
-          </section>
+            {(displayRanges, variant) => (
+              <DocumentCodeView
+                path={group.file}
+                title={group.file}
+                side={group.side}
+                ranges={displayRanges}
+                heightMode="content"
+                countRanges={group.countRanges}
+                active={variant === "full"}
+                collapsed={variant === "inline" && collapsed}
+                lenses={lenses}
+                onOpen={
+                  variant === "inline"
+                    ? () =>
+                        session.surface.revealAnchor(
+                          group.file,
+                          {
+                            fromLine: primaryRange.startLine,
+                            toLine: primaryRange.endLine,
+                          },
+                          primaryRange.side ?? group.side,
+                        )
+                    : undefined
+                }
+              />
+            )}
+          </NativeCodePeekSection>
         );
       })}
     </>
@@ -227,9 +275,31 @@ export function CodePeekCard({
         {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
         role="status"
       >
-        {outcome === "failed"
-          ? "Diff selection unavailable"
-          : "Loading diff selection…"}
+        {outcome === "failed" ? (
+          <>
+            Diff selection unavailable
+            <dl {...stylex.props(styles.nativeUnavailableMeta)}>
+              <div>
+                <dt>File</dt>
+                <dd>{anchor.file}</dd>
+              </div>
+              <div>
+                <dt>Side</dt>
+                <dd>{anchor.side}</dd>
+              </div>
+              <div>
+                <dt>Requested range</dt>
+                <dd>
+                  {formatLineRangeLabel([
+                    { startLine: anchor.fromLine, endLine: anchor.toLine },
+                  ])}
+                </dd>
+              </div>
+            </dl>
+          </>
+        ) : (
+          "Loading diff selection…"
+        )}
       </section>
     );
 
@@ -238,35 +308,161 @@ export function CodePeekCard({
       {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
       data-code-rendering="inline-editor"
     >
-      <DocumentCodeView
-        path={source.file}
-        title={
-          source.start.side === source.end.side
-            ? codePeekRangeTitle(
-                source.file,
-                source.start.line,
-                source.end.line,
-              )
-            : source.file
-        }
-        side={anchor.side}
-        pins={source.pins}
-        ranges={ranges}
-        countRanges={ranges}
-        heightMode={heightMode}
-        active={active}
-        onFocus={onNativeFocus}
-        onOpen={() =>
-          session.surface.revealAnchor(
-            anchor.file,
-            { fromLine: anchor.fromLine, toLine: anchor.toLine },
-            anchor.side,
-            source.pins,
-          )
-        }
-      />
+      <NativeCodePeekSection
+        contextStateKey={`card:${key}`}
+        defaultSide={anchor.side}
+        baseRanges={ranges}
+        label={`${source.file}, full snippet`}
+      >
+        {(displayRanges, variant) => (
+          <DocumentCodeView
+            path={source.file}
+            title={
+              source.start.side === source.end.side
+                ? codePeekRangeTitle(
+                    source.file,
+                    source.start.line,
+                    source.end.line,
+                  )
+                : source.file
+            }
+            side={anchor.side}
+            pins={source.pins}
+            ranges={displayRanges}
+            countRanges={ranges}
+            heightMode={variant === "full" ? "content" : heightMode}
+            active={variant === "full" ? true : active}
+            onFocus={variant === "inline" ? onNativeFocus : undefined}
+            onOpen={
+              variant === "inline"
+                ? () =>
+                    session.surface.revealAnchor(
+                      anchor.file,
+                      { fromLine: anchor.fromLine, toLine: anchor.toLine },
+                      anchor.side,
+                      source.pins,
+                    )
+                : undefined
+            }
+          />
+        )}
+      </NativeCodePeekSection>
     </section>
   );
+}
+
+/** Native "Show surrounding context": widens `baseRanges` by +-5 lines per
+ * side, merged, lower-bounded at line 1 (the native editor's own model
+ * clamps a request past its last line, so no upper bound is needed here).
+ * `countRanges` passed to the editor stays the unwidened selection, so it
+ * keeps marking which lines are authored versus revealed context. */
+function NativeCodePeekSection({
+  contextStateKey,
+  defaultSide,
+  baseRanges,
+  label,
+  children,
+}: {
+  contextStateKey: string;
+  defaultSide: ReviewDiffSide;
+  baseRanges: readonly ReviewInlineEditorRange[];
+  /** The full-snippet dialog's accessible name, e.g. "src/app.ts, full
+   * snippet". */
+  label: string;
+  /** `variant` is "full" only for the uncapped copy rendered inside the
+   * larger viewer dialog, with the unwidened selection and no surrounding
+   * chrome (no focus/open callbacks): a read-only inspector, not a second
+   * interactive surface. */
+  children: (
+    ranges: ReviewInlineEditorRange[],
+    variant: "inline" | "full",
+  ) => ReactNode;
+}) {
+  const [showContext, setShowContext] = useCodeCardExpanded(
+    contextStateKey,
+    false,
+  );
+
+  const [fullOpen, setFullOpen] = useState(false);
+  const regionId = useId();
+  const openFullRef = useRef<HTMLButtonElement | null>(null);
+
+  const displayRanges = showContext
+    ? expandMixedSideRanges(baseRanges, defaultSide, CONTEXT_LINES)
+    : [...baseRanges];
+
+  return (
+    <>
+      <div id={regionId}>{children(displayRanges, "inline")}</div>
+      <div {...withClass("code-peek-context-toggle", styles.contextToggle)}>
+        <Button
+          variant="ghost"
+          aria-expanded={showContext}
+          aria-controls={regionId}
+          onClick={() => setShowContext(!showContext)}
+        >
+          {showContext
+            ? "Hide surrounding context"
+            : "Show surrounding context"}
+        </Button>
+        <Button
+          ref={openFullRef}
+          variant="ghost"
+          onClick={() => setFullOpen(true)}
+        >
+          Open full snippet
+        </Button>
+      </div>
+      <CodeFullViewerDialog
+        open={fullOpen}
+        onClose={() => setFullOpen(false)}
+        triggerRef={openFullRef}
+        label={label}
+      >
+        {children([...baseRanges], "full")}
+      </CodeFullViewerDialog>
+    </>
+  );
+}
+
+function expandMixedSideRanges(
+  ranges: readonly ReviewInlineEditorRange[],
+  defaultSide: ReviewDiffSide,
+  context: number,
+): ReviewInlineEditorRange[] {
+  const sides: readonly ReviewDiffSide[] =
+    defaultSide === "head" ? ["head", "base"] : ["base", "head"];
+
+  const expanded: ReviewInlineEditorRange[] = [];
+
+  for (const side of sides) {
+    const sideRanges: LineRange[] = ranges.flatMap((range) =>
+      (range.side ?? defaultSide) === side
+        ? [{ startLine: range.startLine, endLine: range.endLine }]
+        : [],
+    );
+
+    if (!sideRanges.length) continue;
+
+    for (const range of expandRangesWithContext(sideRanges, context, {
+      minLine: 1,
+    })) {
+      const compact: ReviewInlineEditorRange = {
+        startLine: range.startLine,
+        endLine: range.endLine,
+      };
+
+      if (side !== defaultSide) compact.side = side;
+      expanded.push(compact);
+    }
+  }
+
+  return expanded;
+}
+
+interface WebSourceFileState {
+  text?: string;
+  error?: string;
 }
 
 function WebCodePeek({
@@ -285,61 +481,72 @@ function WebCodePeek({
   outcome: PeekResolutionOutcome;
 }) {
   const session = useReviewSession();
-  const codeFontSize = useContext(CodeFontSizeContext);
 
-  const [results, setResults] = useState<
-    readonly { key: string; text?: string; error?: string }[]
-  >([]);
+  const sides = useMemo(
+    () => [...new Set(ranges.map((range) => range.side))].sort(),
+    [ranges],
+  );
+
+  const sidesKey = sides.join(",");
+  const pinsKey = pins ? sourcePinsKey(pins) : "";
+
+  const [filesBySide, setFilesBySide] = useState<
+    Record<string, WebSourceFileState>
+  >({});
+
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const requestId = (requestIdRef.current += 1);
+    const controller = new AbortController();
 
-    const queryFor = (range: (typeof ranges)[number]) => {
-      const query = new URLSearchParams({ side: range.side, file });
+    setFilesBySide({});
 
-      if (pins) {
-        query.set("repositoryId", pins.repositoryId);
-        query.set("head", pins.head);
-
-        if (pins.base) query.set("base", pins.base);
-      }
-
-      return {
-        key: `${range.side}:${range.startLine}-${range.endLine}`,
-        query,
-      };
-    };
-
-    setResults([]);
     void Promise.all(
-      ranges.map(async (range) => {
-        const { key, query } = queryFor(range);
+      sides.map(
+        async (side): Promise<readonly [string, WebSourceFileState]> => {
+          const query = new URLSearchParams({ side, file });
 
-        try {
-          const response = await session.fetch(`/file?${query.toString()}`);
+          if (pins) {
+            query.set("repositoryId", pins.repositoryId);
+            query.set("head", pins.head);
 
-          if (!response.ok) throw new Error("Source unavailable");
+            if (pins.base) query.set("base", pins.base);
+          }
 
-          const { text } = z
-            .object({ text: z.string() })
-            .parse(await response.json());
+          try {
+            const response = await session.fetch(`/file?${query.toString()}`, {
+              signal: controller.signal,
+            });
 
-          return { key, text };
-        } catch {
-          return {
-            key,
-            error: "This code peek is not available in web reviews.",
-          };
-        }
-      }),
-    ).then((loaded) => {
-      if (!cancelled) setResults(loaded);
+            if (!response.ok) throw new Error("Source unavailable");
+
+            const { text } = z
+              .object({ text: z.string() })
+              .parse(await response.json());
+
+            return [side, { text }];
+          } catch (caught) {
+            return [
+              side,
+              {
+                error:
+                  caught instanceof DOMException && caught.name === "AbortError"
+                    ? undefined
+                    : "This code peek is not available in web reviews.",
+              },
+            ];
+          }
+        },
+      ),
+    ).then((entries) => {
+      if (requestIdRef.current !== requestId) return; // a newer request superseded this one
+      setFilesBySide(Object.fromEntries(entries));
     });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [file, pins, ranges, session]);
+    return () => controller.abort();
+    // eslint-disable-next-line -- `sides`/`pins` are compared through their derived string keys below.
+  }, [session, file, sidesKey, pinsKey]);
 
   if (!ranges.length)
     return (
@@ -358,47 +565,205 @@ function WebCodePeek({
       {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
       data-code-rendering="read-only"
     >
-      {ranges.map((range) => {
-        const key = `${range.side}:${range.startLine}-${range.endLine}`;
-        const result = results.find((item) => item.key === key);
-
-        if (result?.error)
-          return (
-            <p key={key} role="note">
-              {result.error}
-            </p>
-          );
-
-        if (!result?.text)
-          return (
-            <p key={key} role="status">
-              Loading code peek…
-            </p>
-          );
-
-        const lines = result.text.split("\n");
-
-        const excerpt = lines
-          .slice(range.startLine - 1, range.endLine)
-          .map((line, index) => `${range.startLine + index}  ${line}`)
-          .join("\n");
-
-        return (
-          <pre
-            key={key}
-            tabIndex={0}
-            style={
-              codeFontSize === undefined
-                ? undefined
-                : { fontSize: codeFontSize }
-            }
-            aria-label={`${file}, ${range.side} lines ${range.startLine} to ${range.endLine}`}
-          >
-            <code data-review-copy-prose>{excerpt}</code>
-          </pre>
-        );
-      })}
+      {sides.map((side) => (
+        <WebSourceExcerpt
+          key={side}
+          file={file}
+          side={side}
+          pins={pins}
+          ranges={ranges.filter((range) => range.side === side)}
+          state={filesBySide[side]}
+        />
+      ))}
     </section>
+  );
+}
+
+/** One side's compact excerpt card: the file text is already loaded (one
+ * fetch per side, shared across every disjoint range on it); everything
+ * else — context, the full viewers, copy — works on that loaded text, with
+ * no further request. */
+function WebSourceExcerpt({
+  file,
+  side,
+  pins,
+  ranges,
+  state,
+}: {
+  file: string;
+  side: ReviewDiffSide;
+  pins?: DiffSelection["pins"];
+  ranges: readonly { startLine: number; endLine: number }[];
+  state: WebSourceFileState | undefined;
+}) {
+  const relevantRanges = useMemo(() => mergeLineRanges(ranges), [ranges]);
+  const rangeLabel = formatLineRangeLabel(relevantRanges);
+
+  const stateKey = `${file}:${side}:${pins ? sourcePinsKey(pins) : ""}:${relevantRanges
+    .map((range) => `${range.startLine}-${range.endLine}`)
+    .join(",")}`;
+
+  const [showContext, setShowContext] = useCodeCardExpanded(
+    `web-context:${stateKey}`,
+    false,
+  );
+
+  const [dialog, setDialog] = useState<"snippet" | "file" | null>(null);
+  const openSnippetRef = useRef<HTMLButtonElement | null>(null);
+  const openFileRef = useRef<HTMLButtonElement | null>(null);
+
+  const language = languageFromFilename(file);
+
+  const identity = `${side === "base" ? "Base" : "Head"} · ${
+    pins ? `${pins.repositoryId}@${pins.head}` : "review revision"
+  }`;
+
+  if (!state)
+    return (
+      <p role="status" {...stylex.props(styles.webLoading)}>
+        Loading code peek…
+      </p>
+    );
+
+  if (state.error !== undefined || state.text === undefined)
+    return (
+      <SourceUnavailableCard
+        file={file}
+        side={side}
+        revision={pins ? `${pins.repositoryId}@${pins.head}` : undefined}
+        rangeLabel={rangeLabel}
+        reason={state.error}
+      />
+    );
+
+  const text = state.text;
+
+  const lines = text.endsWith("\n")
+    ? text.slice(0, -1).split("\n")
+    : text.split("\n");
+
+  const displayRanges = showContext
+    ? expandRangesWithContext(relevantRanges, CONTEXT_LINES, {
+        minLine: 1,
+        maxLine: lines.length,
+      })
+    : relevantRanges;
+
+  let segments: { startLine: number; code: string }[];
+
+  try {
+    segments = displayRanges.map((range) => ({
+      startLine: range.startLine,
+      code: sliceSourceRange(text, {
+        file,
+        fromLine: range.startLine,
+        toLine: range.endLine,
+      }),
+    }));
+  } catch (caught) {
+    return (
+      <SourceUnavailableCard
+        file={file}
+        side={side}
+        revision={pins ? `${pins.repositoryId}@${pins.head}` : undefined}
+        rangeLabel={rangeLabel}
+        reason={
+          caught instanceof SourceRangeError
+            ? caught.message
+            : "Source unavailable."
+        }
+      />
+    );
+  }
+
+  const gaps = lineRangeGaps(displayRanges);
+
+  const copyText = segments.map((segment) => segment.code).join("\n");
+
+  const fullSnippetText = relevantRanges
+    .map((range) =>
+      sliceSourceRange(text, {
+        file,
+        fromLine: range.startLine,
+        toLine: range.endLine,
+      }),
+    )
+    .join("\n");
+
+  return (
+    <>
+      <CodeExcerptCard
+        title={file}
+        language={language}
+        rangeLabel={`${side === "base" ? "base " : ""}${rangeLabel}`}
+        segments={segments}
+        gaps={gaps}
+        relevantRanges={showContext ? relevantRanges : undefined}
+        copyText={copyText}
+        ariaLabel={`${file}, ${side} lines ${rangeLabel}`}
+        scrollKey={stateKey}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              aria-expanded={showContext}
+              onClick={() => setShowContext(!showContext)}
+            >
+              {showContext
+                ? "Hide surrounding context"
+                : "Show surrounding context"}
+            </Button>
+            <Button
+              ref={openSnippetRef}
+              variant="ghost"
+              onClick={() => setDialog("snippet")}
+            >
+              Open full snippet
+            </Button>
+            <Button
+              ref={openFileRef}
+              variant="ghost"
+              onClick={() => setDialog("file")}
+            >
+              Open full file
+            </Button>
+          </>
+        }
+      />
+      <CodeFullViewerDialog
+        open={dialog === "snippet"}
+        onClose={() => setDialog(null)}
+        triggerRef={openSnippetRef}
+        label={`${file}, full snippet`}
+        identity={identity}
+        copyLabel="Copy full snippet"
+        copyText={fullSnippetText}
+      >
+        {relevantRanges.map((range) => (
+          <CodeFullViewerLines
+            key={`${range.startLine}-${range.endLine}`}
+            startLine={range.startLine}
+            code={sliceSourceRange(text, {
+              file,
+              fromLine: range.startLine,
+              toLine: range.endLine,
+            })}
+            language={language}
+          />
+        ))}
+      </CodeFullViewerDialog>
+      <CodeFullViewerDialog
+        open={dialog === "file"}
+        onClose={() => setDialog(null)}
+        triggerRef={openFileRef}
+        label={`${file}, full file`}
+        identity={identity}
+        copyLabel="Copy full file"
+        copyText={text}
+      >
+        <CodeFullViewerLines startLine={1} code={text} language={language} />
+      </CodeFullViewerDialog>
+    </>
   );
 }
 
@@ -425,30 +790,53 @@ function FileSnippetCard({
     onNativeFocusRef.current = onNativeFocus;
   }, [onNativeFocus]);
 
+  const contextStateKey = `snippet:${source.file}:${source.side}:${source.fromLine}-${source.toLine}:${
+    source.pins ? sourcePinsKey(source.pins) : ""
+  }`;
+
   return (
     <section
       {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
       data-code-rendering="inline-editor"
     >
-      <DocumentCodeView
-        path={subject.file}
-        title={subject.title}
-        side={source.side}
-        pins={source.pins}
-        ranges={[{ startLine: subject.line, endLine: subject.endLine }]}
-        heightMode={heightMode}
-        active={active}
-        lenses={lenses}
-        onFocus={() => onNativeFocusRef.current?.()}
-        onOpen={() =>
-          session.surface.revealAnchor(
-            subject.file,
-            { fromLine: subject.line, toLine: subject.endLine },
-            source.side,
-            source.pins,
-          )
-        }
-      />
+      <NativeCodePeekSection
+        contextStateKey={contextStateKey}
+        defaultSide={source.side}
+        baseRanges={[{ startLine: subject.line, endLine: subject.endLine }]}
+        label={`${subject.file}, full snippet`}
+      >
+        {(displayRanges, variant) => (
+          <DocumentCodeView
+            path={subject.file}
+            title={subject.title}
+            side={source.side}
+            pins={source.pins}
+            ranges={displayRanges}
+            countRanges={[
+              { startLine: subject.line, endLine: subject.endLine },
+            ]}
+            heightMode={variant === "full" ? "content" : heightMode}
+            active={variant === "full" ? true : active}
+            lenses={lenses}
+            onFocus={
+              variant === "inline"
+                ? () => onNativeFocusRef.current?.()
+                : undefined
+            }
+            onOpen={
+              variant === "inline"
+                ? () =>
+                    session.surface.revealAnchor(
+                      subject.file,
+                      { fromLine: subject.line, toLine: subject.endLine },
+                      source.side,
+                      source.pins,
+                    )
+                : undefined
+            }
+          />
+        )}
+      </NativeCodePeekSection>
     </section>
   );
 }
@@ -587,5 +975,21 @@ const styles = stylex.create({
     },
     color: tokens.ink,
     fontFamily: tokens.fontMono,
+  },
+  contextToggle: {
+    display: "flex",
+    marginTop: "4px",
+  },
+  nativeUnavailableMeta: {
+    display: "grid",
+    gap: "2px",
+    marginTop: "6px",
+    fontSize: fontSize.small,
+    lineHeight: "16px",
+    color: tokens.inkFaint,
+  },
+  webLoading: {
+    padding: "8px 0",
+    color: tokens.inkFaint,
   },
 });
