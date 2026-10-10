@@ -509,6 +509,9 @@ describe("the web canvas entry", () => {
         () => container!.querySelectorAll(".react-flow__edge").length > 0,
       ),
     ).toBe(true);
+    expect(container!.querySelector("header")?.textContent).toContain(
+      "Fixture review",
+    );
 
     await act(async () => {
       container!

@@ -282,7 +282,7 @@ function mountWebCanvas(
   serverUrl: string,
   token: string,
   request: (url: string, init?: RequestInit) => Promise<Response>,
-  appBar: WebAppFrame,
+  frame: WebAppFrame,
 ): WebAppHandle {
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
@@ -306,20 +306,22 @@ function mountWebCanvas(
     | undefined;
 
   const navigate = (path: string) => {
+    if (path === `${location.pathname}${location.search}`) return;
+
     // Navigating to Settings remembers the sender so closing it goes back,
     // not home. Re-entering Settings keeps the sender it already has.
     const state =
       path === "/settings"
         ? location.pathname === "/settings"
           ? history.state
-          : { from: `${location.pathname}${location.search}` }
+          : { from: `${location.pathname}${location.search}${location.hash}` }
         : null;
 
     history.pushState(state, "", path);
     route();
   };
 
-  appBar.update({ onNavigate: navigate });
+  frame.update({ onNavigate: navigate });
 
   let settingsFrom: string | undefined;
 
@@ -531,7 +533,7 @@ function mountWebCanvas(
         // A late snapshot must not retitle a page the reader already left.
         if (location.pathname !== `/r/${encodeURIComponent(reviewId)}`) return;
         document.title = title || "Whiteboard Review";
-        appBar.update({ context: title || "Session" });
+        frame.update({ context: title || "Session" });
       },
       setSourceView(_selection, view) {
         activeBridge?.setSourceView(view);
@@ -611,7 +613,7 @@ function mountWebCanvas(
       catalog?.abort();
       const state = settingsStateSchema.safeParse(history.state);
       settingsFrom = state.success ? state.data.from : undefined;
-      appBar.update({ context: "Settings" });
+      frame.update({ context: "Settings" });
       document.title = "Settings - Whiteboard";
       void ensureSettings()
         .then((settings) => {
@@ -638,13 +640,13 @@ function mountWebCanvas(
 
     if (reviewId) {
       // Seed the crumb from the catalog; the snapshot's setTitle refines it.
-      appBar.update({
+      frame.update({
         context:
           reviews.find((review) => review.reviewId === reviewId)?.title ?? null,
       });
       showReview(reviewId);
     } else {
-      appBar.update({ context: null });
+      frame.update({ context: null });
       void showHome();
     }
   }
@@ -660,6 +662,7 @@ function mountWebCanvas(
       colorScheme.removeEventListener("change", updateSystemTheme);
       setupLink.dispose();
       canvas.dispose();
+      frame.dispose();
     },
   };
 }
