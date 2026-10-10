@@ -517,6 +517,17 @@ test("a new endpoint is treated like a new provider", async () => {
   ).toMatchObject({ api_key: "", endpoint: "https://proxy.example/v1" });
 });
 
+test("a draft endpoint never receives the environment key either", async () => {
+  await diffrTestProcess();
+
+  vi.stubEnv("GEMINI_API_KEY", "gemini-env");
+
+  const moved = { ...draft, endpoint: "https://proxy.example/v1" };
+
+  // The test aborts before diffr runs, so no stored credential leaves the box.
+  await expect(testDiffrSummarizer(moved)).rejects.toThrow("Add an API key");
+});
+
 test("settings still read when diffr describes no schema", async () => {
   await diffrTestProcess();
   vi.stubEnv("FAIL_SCHEMA", "1");

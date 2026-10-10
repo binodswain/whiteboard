@@ -37,6 +37,7 @@ function webFixtureRequest(info: SetupInfo) {
           documentWidth: "standard",
           codeFontSize: 14,
           softwareMapEnabled: false,
+          structuralDiffEnabled: false,
           scratchpadEnabled: false,
         }),
       );

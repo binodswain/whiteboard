@@ -426,12 +426,23 @@ export async function testDiffrSummarizer(
     const variables =
       providers.find((known) => known.id === provider)?.keyVariables ?? [];
 
+    // Stored credentials only answer a test against the destination they were
+    // saved for. A saved key needs the whole destination (provider and
+    // endpoint) unchanged; an environment key belongs to the draft provider
+    // but still must not travel to a user-chosen endpoint.
+    const moving = movesKey(config, parsed.data);
+
+    const savedEndpoint = valueAt(config, `${prefix}.endpoint`);
+
+    const endpointMoved =
+      parsed.data.endpoint !==
+      (isStringValue(savedEndpoint) ? savedEndpoint : "");
+
     const apiKey =
       parsed.data.apiKey ||
-      (!movesKey(config, parsed.data) && isStringValue(saved.api_key)
-        ? saved.api_key
-        : "") ||
-      environmentKey(providers, provider);
+      (!moving && isStringValue(saved.api_key) && saved.api_key) ||
+      (!endpointMoved && environmentKey(providers, provider)) ||
+      "";
 
     if (!apiKey && !keyOptional(providers, provider, endpoint))
       throw new Error("Add an API key to test summaries.");

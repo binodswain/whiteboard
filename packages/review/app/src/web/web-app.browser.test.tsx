@@ -56,6 +56,7 @@ function webFixtureRequest(state: FixtureState) {
     documentWidth: "standard",
     codeFontSize: 14,
     softwareMapEnabled: false,
+    structuralDiffEnabled: false,
     scratchpadEnabled: false,
   };
 
@@ -122,6 +123,9 @@ function webFixtureRequest(state: FixtureState) {
 
       return Response.json(settings);
     }
+
+    if (pathname === "/diffr-config")
+      return Response.json({ values: {}, credentialSource: "missing" });
 
     if (pathname === "/reviews-api/status")
       return Response.json({
@@ -350,6 +354,7 @@ describe("the web canvas entry", () => {
         .click();
     });
     expect(location.pathname).toBe("/settings");
+    expect(container!.textContent).toContain("Structural Diffs");
     expect(container!.textContent).toContain(
       "Settings apply to Whiteboard on this machine.",
     );

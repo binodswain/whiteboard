@@ -367,43 +367,50 @@ export function SettingsPage({
           ) : null}
 
           <Section label="Experimental Features">
-            {!web ? (
-              <>
+            <Row
+              label="Structural Diffs"
+              description="Replace the standard diff view with syntax-aware diffs and linked folds."
+            >
+              <label {...stylex.props(styles.toggle)}>
+                <input
+                  {...stylex.props(styles.checkbox)}
+                  type="checkbox"
+                  aria-label="Structural Diffs"
+                  checked={structuralDiffEnabled}
+                  disabled={busy !== null}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    void run(
+                      "structural-diff",
+                      () => settings.setStructuralDiffEnabled(enabled),
+                      setStructuralDiffEnabled,
+                    );
+                  }}
+                />
+              </label>
+            </Row>
+            {structuralDiffEnabled ? (
+              settings.diffrConfigAvailable === false ? (
                 <Row
-                  label="Structural Diffs"
-                  description="Replace the standard diff view with syntax-aware diffs and linked folds."
+                  label="Summaries"
+                  description="Diffr configuration is managed by the server operator."
                 >
-                  <label {...stylex.props(styles.toggle)}>
-                    <input
-                      {...stylex.props(styles.checkbox)}
-                      type="checkbox"
-                      aria-label="Structural Diffs"
-                      checked={structuralDiffEnabled}
-                      disabled={busy !== null}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        void run(
-                          "structural-diff",
-                          () => settings.setStructuralDiffEnabled(enabled),
-                          setStructuralDiffEnabled,
-                        );
-                      }}
-                    />
-                  </label>
+                  <span aria-label="Managed by the server operator">
+                    Server-managed
+                  </span>
                 </Row>
-                {structuralDiffEnabled ? (
-                  <DiffrConfigSection
-                    actions={settings.diffrConfig}
-                    reloadWindow={settings.reloadWindow}
-                  />
-                ) : null}
-                {install ? (
-                  <TraceCaptureSection
-                    install={install}
-                    onStatusChange={setInstallStatus}
-                  />
-                ) : null}
-              </>
+              ) : (
+                <DiffrConfigSection
+                  actions={settings.diffrConfig}
+                  reloadWindow={settings.reloadWindow}
+                />
+              )
+            ) : null}
+            {!web && install ? (
+              <TraceCaptureSection
+                install={install}
+                onStatusChange={setInstallStatus}
+              />
             ) : null}
             <Row
               label="Software Map"

@@ -22,9 +22,11 @@ import {
   listTrackedFilesAtCommit,
   readFileAtCommit,
   resolveRepoContext,
+  splitGitPatchFiles,
 } from "@dev.fast/local-vcs";
 import { structuralChangeCounts } from "@dev.fast/review-protocol";
 import type {
+  ReviewDiffFileWire,
   ReviewLanguageEnvironment,
   ReviewSourceEntry,
   StructuralDiffEvent,
@@ -1537,6 +1539,16 @@ export class LocalReviewData {
     checkRelativePath(file);
 
     return this.rawPatch(pins, { paths: [file] });
+  }
+  /** The whole comparison as per-file Git patches, for clients that render
+   * their own textual diff instead of diffr's structural stream. */
+  async patches(pins: Pins): Promise<ReviewDiffFileWire[]> {
+    const patch = await this.rawPatch(pins, {});
+
+    return splitGitPatchFiles(patch).map((entry) => ({
+      ...entry.file,
+      patch: entry.patch,
+    }));
   }
   private async summaries(pins: Pins) {
     if (pins.worktreeRevision) {

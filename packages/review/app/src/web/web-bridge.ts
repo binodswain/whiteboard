@@ -1,18 +1,27 @@
 import { reviewFetchUrl } from "@canvas/host/review-client";
 import {
+  type JsonValue,
   REVIEW_DISCORD_URL,
   type ReviewAccessTokens,
   type ReviewCanvasBridge,
+  ReviewDiffFileSchema,
+  type ReviewDiffFileWire,
   type ReviewDiffLayout,
   type ReviewRuntimeConfig,
+  type ReviewSourceView,
+  type ReviewStructuralDiffEvent,
   type ReviewSurfaceEvent,
   type ReviewTheme,
   type ReviewVerbRequest,
   type ReviewVerbResponse,
+  decodeReviewStructuralDiffEvent,
+  parseReviewDiffrConfig,
 } from "@dev.fast/review-protocol";
 import type { ReviewCanvasSettingsContent } from "@dev.fast/review-protocol";
 import wasmAssetUrl from "@mr_mint/elkjs-libavoid/dist/libavoid.wasm?url";
 import { z } from "zod";
+
+import { type WebDiffViewSource, createWebDiffView } from "./web-diff-view";
 
 const BROWSER_ONLY_MESSAGE =
   "This action opens an editor, which is unavailable in the browser review canvas.";
@@ -25,6 +34,7 @@ const webSettingsSchema = z.object({
   codeFontSize: z.number().int().min(8).max(32),
   scratchpadEnabled: z.boolean(),
   softwareMapEnabled: z.boolean(),
+  structuralDiffEnabled: z.boolean(),
 });
 
 export type WebSettingsValues = z.infer<typeof webSettingsSchema>;
@@ -108,6 +118,12 @@ export interface WebBridgeOptions {
   openSettings?: () => void;
 }
 
+/** The web bridge exposes one extra hook the desktop doesn't need: the
+ * canvas reports the displayed source version through `setSourceView`. */
+export interface WebCanvasBridge extends ReviewCanvasBridge {
+  setSourceView(view: ReviewSourceView): void;
+}
+
 export async function loadWebSettings(
   options: Pick<WebBridgeOptions, "serverUrl" | "token" | "request">,
   onChange?: (settings: WebSettingsValues) => void,
@@ -159,6 +175,46 @@ export async function loadWebSettings(
     return values;
   };
 
+  // The diffr config endpoints answer the same JSON envelope as the API:
+  // `{ error }` on failure, the payload itself otherwise.
+  const readJson = async <T = unknown>(path: string): Promise<T> => {
+    const response = await request(`${config.serverUrl}${path}`);
+
+    if (!response.ok)
+      throw new Error(
+        (await response.json().catch(() => ({}))).error ??
+          `diffr configuration request failed (${response.status}).`,
+      );
+
+    return response.json();
+  };
+
+  const writeJson = async <T = unknown>(
+    path: string,
+    method: "PUT" | "POST",
+    body: JsonValue,
+  ): Promise<T> => {
+    const response = await request(`${config.serverUrl}${path}`, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok)
+      throw new Error(
+        (await response.json().catch(() => ({}))).error ??
+          `diffr configuration request failed (${response.status}).`,
+      );
+
+    return response.json();
+  };
+
+  // Remote deployments do not mount the diffr config routes; the settings
+  // page swaps its editor for a note when the probe 404s or 401s.
+  const diffrConfigAvailable = await request(`${config.serverUrl}/diffr-config`)
+    .then((response) => response.ok)
+    .catch(() => false);
+
   const unavailable = async <T>(value: T) => value;
 
   return {
@@ -181,18 +237,35 @@ export async function loadWebSettings(
     softwareMapEnabled: values.softwareMapEnabled,
     setSoftwareMapEnabled: async (softwareMapEnabled) =>
       (await update({ softwareMapEnabled })).softwareMapEnabled,
-    structuralDiffEnabled: false,
-    setStructuralDiffEnabled: (enabled) => unavailable(enabled),
+    structuralDiffEnabled: values.structuralDiffEnabled,
+    setStructuralDiffEnabled: async (structuralDiffEnabled) =>
+      (await update({ structuralDiffEnabled })).structuralDiffEnabled,
     scratchpadEnabled: values.scratchpadEnabled,
     setScratchpadEnabled: async (scratchpadEnabled) =>
       (await update({ scratchpadEnabled })).scratchpadEnabled,
     diffrConfig: {
-      read: async () => ({ values: {}, credentialSource: "missing" }),
-      set: async () => ({ values: {}, credentialSource: "missing" }),
-      saveSummarizer: async () => ({ values: {}, credentialSource: "missing" }),
-      testSummarizer: async () => "Unavailable in the web canvas.",
+      read: async () => parseReviewDiffrConfig(await readJson("/diffr-config")),
+      set: async (key, value) =>
+        parseReviewDiffrConfig(
+          await writeJson("/diffr-config", "PUT", { key, value }),
+        ),
+      saveSummarizer: async (input) =>
+        parseReviewDiffrConfig(
+          await writeJson("/diffr-config/summarizer", "PUT", input),
+        ),
+      testSummarizer: async (input) =>
+        (
+          await writeJson<{ summary: string }>(
+            "/diffr-config/summarizer/test",
+            "POST",
+            input,
+          )
+        ).summary,
     },
-    reloadWindow: async () => {},
+    diffrConfigAvailable,
+    reloadWindow: async () => {
+      location.reload();
+    },
     manageExtensions: () => {},
     importVsCodeSettings: () => {},
     web: true,
@@ -243,7 +316,7 @@ function mountUnavailableNotice(container: HTMLElement, text: string): number {
  */
 export function createWebBridge(
   options: WebBridgeOptions = {},
-): ReviewCanvasBridge {
+): WebCanvasBridge {
   const media =
     typeof matchMedia === "undefined"
       ? null
@@ -285,6 +358,15 @@ export function createWebBridge(
       : "split";
 
   const diffLayoutListeners = new Set<(layout: ReviewDiffLayout) => void>();
+
+  // SAFETY: version starts unset (0); the canvas installs a real
+  // ReviewSourceView through setSourceView before any diff request.
+  const sourceView = {
+    current: {
+      reviewId: options.reviewId ?? "",
+      version: 0,
+    } as ReviewSourceView,
+  };
 
   const setCurrentTheme = (theme: ReviewTheme) => {
     currentTheme = theme;
@@ -349,10 +431,12 @@ export function createWebBridge(
     }
   }
 
+  const request =
+    options.request ?? ((url, init) => reviewFetchUrl(config, url, init));
+
   return {
     config,
-    request:
-      options.request ?? ((url, init) => reviewFetchUrl(config, url, init)),
+    request,
 
     subscribe(listener) {
       listeners.add(listener);
@@ -415,28 +499,111 @@ export function createWebBridge(
       },
     },
 
-    diffView: {
-      create(spec) {
-        mountUnavailableNotice(
-          spec.container,
-          "Open this review in the desktop app to browse its diff.",
-        );
-        const noOp = { dispose() {} };
+    diffView: createWebDiffView({
+      source: {
+        async files(scope, patch) {
+          const view = sourceView.current;
+          const query = new URLSearchParams();
 
-        return {
-          dispose() {},
-          focus() {},
-          onDidError: () => noOp,
-        };
-      },
+          if (view.version) query.set("version", String(view.version));
 
-      async files() {
-        return [];
+          if (scope?.commit) query.set("commit", scope.commit);
+
+          if (patch) query.set("patch", "true");
+
+          const response = await request(
+            `${config.serverUrl}/reviews-api/${encodeURIComponent(
+              view.reviewId,
+            )}/diff?${query}`,
+          );
+
+          if (!response.ok)
+            throw new Error(
+              (await response.json().catch(() => ({}))).error ??
+                `Could not load the diff (${response.status}).`,
+            );
+
+          return z.array(ReviewDiffFileSchema).parse(await response.json());
+        },
+
+        async *structural(query, signal) {
+          const view = sourceView.current;
+          const params = new URLSearchParams();
+
+          if (query.version) params.set("version", String(query.version));
+
+          if (query.commit) params.set("commit", query.commit);
+
+          const response = await request(
+            `${config.serverUrl}/reviews-api/${encodeURIComponent(
+              view.reviewId,
+            )}/structural-diff?${params}`,
+            { signal },
+          );
+
+          if (!response.ok)
+            throw new Error(
+              (await response.json().catch(() => ({}))).error ??
+                "Structural diff request failed.",
+            );
+
+          if (!response.body) throw new Error("The diff stream did not open.");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          try {
+            for (;;) {
+              const chunk = await reader.read();
+
+              buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+
+              const lines = buffer.split("\n");
+
+              buffer = lines.pop()!;
+
+              if (chunk.done && buffer.trim()) {
+                lines.push(buffer);
+                buffer = "";
+              }
+
+              for (const line of lines) {
+                if (!line.trim()) continue;
+
+                const event: ReviewStructuralDiffEvent =
+                  decodeReviewStructuralDiffEvent(line);
+
+                if (event.type === "error") throw new Error(event.message);
+
+                yield event;
+              }
+
+              if (chunk.done) break;
+            }
+          } finally {
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
+          }
+        },
+      } satisfies WebDiffViewSource,
+      structural: () => options.settings?.structuralDiffEnabled === true,
+      layout: () => diffLayout,
+      onDidChangeLayout: (listener) => {
+        diffLayoutListeners.add(listener);
+
+        return { dispose: () => diffLayoutListeners.delete(listener) };
       },
-    },
+      codeFontSize: () => options.settings?.codeFontSize,
+      sourceVersion: () => sourceView.current.version || undefined,
+    }),
 
     notify({ kind, text }) {
       webNotify(kind, text);
+    },
+
+    setSourceView(view) {
+      sourceView.current = view;
     },
 
     setupTooltip(target, text, options) {

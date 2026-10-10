@@ -74,7 +74,12 @@ export const readQuerySchemas = {
     side,
     file: z.string().min(1),
   }),
-  diff: z.strictObject({ version, commit, ...anchor }),
+  diff: z.strictObject({
+    version,
+    commit,
+    ...anchor,
+    patch: z.literal("true").optional(),
+  }),
   structuralDiff: z.strictObject({
     version,
     commit,

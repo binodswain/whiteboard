@@ -156,10 +156,14 @@ function appendBlockMd(block: Block, depth: number, out: string[]): void {
       break;
 
     default: {
-      // Exhaustiveness guard — future block types degrade gracefully
+      // Exhaustiveness guard — future block types degrade gracefully. The
+      // switch above is exhaustive over Block, so TypeScript narrows block
+      // to never here.
       const _: never = block;
 
-      // SAFETY: The default branch is unreachable for this Block union today; if a runtime block reaches it, it still has the Block discriminant.
+      // SAFETY: the narrowing to never only reflects the known Block union;
+      // the original value still carries whatever `type` string an
+      // unrecognized future block variant sends, which we want to report.
       out.push(`> *[Unsupported block: ${(block as Block).type}]*`, "");
     }
   }
@@ -419,9 +423,13 @@ function renderBlockHtml(block: Block, headingLevel: number): string {
       return "";
 
     default: {
+      // The switch above is exhaustive over Block, so TypeScript narrows
+      // block to never here.
       const _: never = block;
 
-      // SAFETY: The default branch is unreachable for this Block union today; if a runtime block reaches it, it still has the Block discriminant.
+      // SAFETY: the narrowing to never only reflects the known Block union;
+      // the original value still carries whatever `type` string an
+      // unrecognized future block variant sends, which we want to report.
       return `<p><em>[Unsupported block: ${htmlEscape((block as Block).type)}]</em></p>\n`;
     }
   }

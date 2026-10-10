@@ -109,6 +109,62 @@ it("constructs the configured GitHub repo source on the Whiteboard core", async 
   });
 });
 
+it("keeps the diffr configuration machine-local on a remote deployment", async () => {
+  const profile = await openLocalReviewStore(path.join(root, "diffr-auth.db"));
+
+  const core = createWhiteboardCore({
+    profile,
+    relay: new GlobalReviewDesktopVerbRelay(),
+    token: "test-token-0000000000000000000000000000",
+    instanceId: "test-instance",
+    scratchpad: () => false,
+    status: () => ({}),
+    deploymentConfig: {
+      mode: "remote",
+      db: "postgres",
+      blobs: "fs",
+      repoSource: "github",
+      jobs: "queue",
+      auth: "oauth",
+      authSecret: "test-auth-secret",
+      proxy: {
+        header: "x-user",
+        secret: "proxy-secret",
+        secretHeader: "x-proxy-secret",
+      },
+      postgresUrl: "postgres://whiteboard:secret@db/whiteboard",
+    },
+  });
+
+  stops.push(async () => {
+    await profile.data.close();
+    await profile.store.close();
+  });
+
+  // A signed-in user must not read or write the server-wide diffr config.
+  const signedIn = {
+    "x-user": "ada",
+    "x-proxy-secret": "proxy-secret",
+  };
+
+  for (const method of ["GET", "PUT", "POST"]) {
+    const response = await core.app.request("/diffr-config", {
+      method,
+      headers: signedIn,
+    });
+
+    expect(response.status).toBe(404);
+  }
+
+  const test = await core.app.request("/diffr-config/summarizer/test", {
+    method: "POST",
+    headers: signedIn,
+    body: JSON.stringify({}),
+  });
+
+  expect(test.status).toBe(404);
+});
+
 it("prepares a commits review inline from a local repository", async () => {
   const repository = path.join(root, "source-repo");
   await mkdir(repository);
@@ -447,6 +503,22 @@ describe.each(["desktop", "headless"] as const)("the %s server", (kind) => {
       ok: false,
       error: "Invalid JSON body.",
     });
+  });
+
+  it("serves the diffr configuration to the token", async () => {
+    const server = await start();
+
+    expect((await fetch(`${server.url}/diffr-config`)).status).toBe(401);
+
+    const response = await fetch(`${server.url}/diffr-config`, {
+      headers: { "x-review-token": server.token },
+    });
+
+    expect(response.status).toBe(200);
+
+    const config = (await response.json()) as { values: unknown };
+
+    expect(config.values).toBeDefined();
   });
 });
 

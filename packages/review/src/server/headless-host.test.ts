@@ -167,6 +167,7 @@ it("serves authenticated web preferences and restores them after a server restar
     codeFontSize: 14,
     scratchpadEnabled: false,
     softwareMapEnabled: false,
+    structuralDiffEnabled: false,
   });
 
   const updated = await fetch(endpoint(), {
