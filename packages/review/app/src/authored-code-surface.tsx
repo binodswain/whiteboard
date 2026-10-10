@@ -1,13 +1,23 @@
-import { fontSize } from "@canvas/scale.stylex";
-import * as stylex from "@stylexjs/stylex";
-import type { ReactElement } from "react";
+import { type ReactElement, useRef, useState } from "react";
 
+import { fingerprintText, useCodeCardExpanded } from "./code-card-state";
+import {
+  CodeExcerptCard,
+  CodeFullViewerDialog,
+  CodeFullViewerLines,
+} from "./code-excerpt-card";
 import type { PeekAnchor } from "./review-panel-model";
-import { tokens } from "./tokens.stylex";
+import { Button } from "./ui/button";
+
+/** A 100-line standalone snippet initially shows its first 12 logical
+ * lines; a shorter one shows completely. */
+const STANDALONE_PREVIEW_LINES = 12;
 
 /**
- * Authored inline code shown in a side peek or tour stop. Lines are numbered
- * from the anchor's authored range when it has one, otherwise from 1.
+ * Standalone authored code shown in a side peek or tour stop: the shared
+ * compact code card, with a bounded preview instead of source context.
+ * Lines are numbered from the anchor's authored range when it has one,
+ * otherwise from 1 — there is no repository anchor to resolve.
  */
 export function AuthoredCodeSurface({
   anchor,
@@ -19,64 +29,79 @@ export function AuthoredCodeSurface({
   language?: string;
 }): ReactElement {
   const firstLine = anchor.peek?.start.line ?? 1;
+  const normalized = code.replace(/\r\n?/g, "\n");
+  const rawLines = normalized.split("\n");
+  const hasTrailingNewline = rawLines.length > 1 && rawLines.at(-1) === "";
+  const lines = hasTrailingNewline ? rawLines.slice(0, -1) : rawLines;
+  const totalLines = lines.length;
+  const truncatable = totalLines > STANDALONE_PREVIEW_LINES;
+
+  const stateKey = `${anchor.id}:${fingerprintText(normalized)}:${
+    language ?? ""
+  }:${firstLine}`;
+
+  const [expanded, setExpanded] = useCodeCardExpanded(stateKey, false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const openFullSnippetRef = useRef<HTMLButtonElement | null>(null);
+
+  const showAll = expanded || !truncatable;
+  const shownLines = showAll ? lines : lines.slice(0, STANDALONE_PREVIEW_LINES);
+  const shownText = shownLines.join("\n");
+  const fullText = lines.join("\n");
+
+  const rangeLabel = truncatable
+    ? `${shownLines.length} of ${totalLines} lines`
+    : `${totalLines} ${totalLines === 1 ? "line" : "lines"}`;
 
   return (
-    <div {...stylex.props(styles.block)}>
-      <pre {...stylex.props(styles.surface)} data-language={language}>
-        {code
-          .replace(/\r\n?/g, "\n")
-          .split("\n")
-          .map((text, index) => (
-            <span
-              {...stylex.props(styles.line)}
-              key={`line:${firstLine + index}`}
+    <>
+      <CodeExcerptCard
+        title={undefined}
+        language={language}
+        rangeLabel={rangeLabel}
+        segments={[{ startLine: firstLine, code: shownText }]}
+        copyText={shownText}
+        ariaLabel={
+          language ? `${language} snippet, ${rangeLabel}` : "Code snippet"
+        }
+        scrollKey={stateKey}
+        footer={
+          <>
+            {truncatable && (
+              <Button
+                variant="ghost"
+                aria-expanded={expanded}
+                onClick={() => setExpanded(!expanded)}
+              >
+                {expanded
+                  ? "Show less"
+                  : `Expand snippet (${totalLines - STANDALONE_PREVIEW_LINES} more)`}
+              </Button>
+            )}
+            <Button
+              ref={openFullSnippetRef}
+              variant="ghost"
+              onClick={() => setDialogOpen(true)}
             >
-              <span {...stylex.props(styles.gutter)}>{firstLine + index}</span>
-              <span {...stylex.props(styles.marker)} aria-hidden="true">
-                {" "}
-              </span>
-              <code>{text || " "}</code>
-            </span>
-          ))}
-      </pre>
-    </div>
+              Open full snippet
+            </Button>
+          </>
+        }
+      />
+      <CodeFullViewerDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        triggerRef={openFullSnippetRef}
+        label={language ? `${language} snippet, full` : "Code snippet, full"}
+        copyLabel="Copy full snippet"
+        copyText={fullText}
+      >
+        <CodeFullViewerLines
+          startLine={firstLine}
+          code={fullText}
+          language={language}
+        />
+      </CodeFullViewerDialog>
+    </>
   );
 }
-
-const styles = stylex.create({
-  block: {
-    position: "relative",
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr)",
-    minWidth: 0,
-    backgroundColor: tokens.bg,
-  },
-  surface: {
-    position: "relative",
-    display: "block",
-    minWidth: 0,
-    margin: 0,
-    overflow: "auto",
-    backgroundColor: tokens.tray,
-    color: tokens.ink,
-    fontFamily: tokens.fontMono,
-    fontSize: fontSize.body,
-    lineHeight: "19px",
-  },
-  line: {
-    display: "grid",
-    minWidth: 0,
-    gridTemplateColumns: "42px 14px minmax(0, 1fr)",
-    minHeight: "19px",
-    whiteSpace: "pre",
-  },
-  gutter: {
-    padding: "0 5px 0 16px",
-    color: tokens.inkFaint,
-    textAlign: "right",
-  },
-  marker: {
-    color: tokens.inkFaint,
-    textAlign: "center",
-  },
-});
