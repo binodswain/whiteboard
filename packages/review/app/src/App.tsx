@@ -652,15 +652,6 @@ function ReviewLayoutContent({
               <ReviewStackSelector />
               <AskHistoryControl />
               {session.config.surface === "web" && <WebHelpControl />}
-              {session.config.surface === "web" && (
-                <Button
-                  variant="ghost"
-                  aria-label="Open Settings"
-                  onClick={() => session.surface.openSettings?.()}
-                >
-                  Settings
-                </Button>
-              )}
               <CommentsControl />
               <ExportControl />
               <ReviewBatonChip outcome={review.submissionOutcome} />

@@ -8,8 +8,10 @@ import type {
   ReviewCanvasSettingsContent,
 } from "@dev.fast/review-protocol";
 import { ReviewApiClient } from "@dev.fast/review-protocol";
+import { z } from "zod";
 
 import { mountSetupLink, mountWebSetup } from "./setup-view";
+import { type WebAppFrame, mountWebAppFrame } from "./web-app-frame";
 import {
   type WebSettingsValues,
   createWebBridge,
@@ -41,6 +43,9 @@ function routeReviewId(pathname: string): string | null {
 
 /** Server tokens are base64url/hex secrets; the charset keeps `#anchor` links intact. */
 const TOKEN_FORMAT = /^[A-Za-z0-9_-]{16,}$/;
+
+/** The route that opened Settings, stashed in `history.state` by `navigate`. */
+const settingsStateSchema = z.object({ from: z.string().optional() });
 
 /**
  * The server links reviews as `/r/:id#token=...` or `#<token>`. Capture the
@@ -146,6 +151,10 @@ export function startWebCanvas(
 
   const serverUrl = options.serverUrl ?? location.origin;
 
+  // The brand bar wraps every page the entry can show: canvas, setup, or the
+  // token prompt. It exists before auth resolves, so it never knows secrets.
+  const frame = mountWebAppFrame(container);
+
   // True once a hosted deployment answered /auth/session: the canvas enters
   // through GitHub sign-in instead of a pasted token.
   let remoteAuth = false;
@@ -181,16 +190,26 @@ export function startWebCanvas(
 
   // The setup landing page is reachable before any token exists: it is what
   // teaches an agent how to connect, so it never hits the token prompt.
-  if (location.pathname === "/setup")
-    return mountWebSetup(container, { serverUrl, token, request });
+  if (location.pathname === "/setup") {
+    frame.update({ context: "Setup" });
+    const setup = mountWebSetup(frame.page, { serverUrl, token, request });
 
-  if (token) return mountWebCanvas(container, serverUrl, token, request);
+    return {
+      dispose() {
+        setup.dispose();
+        frame.dispose();
+      },
+    };
+  }
+
+  if (token)
+    return mountWebCanvas(frame.page, serverUrl, token, request, frame);
 
   let disposed = false;
   let mounted: WebAppHandle | undefined;
 
   const showPrompt = () => {
-    if (!disposed) renderTokenPrompt(container);
+    if (!disposed) renderTokenPrompt(frame.page);
   };
 
   const showSignIn = (signIn?: string) => {
@@ -199,7 +218,7 @@ export function startWebCanvas(
     // GitHub OAuth links straight at the provider; a proxy-only deployment
     // gets its instructions from the server's own sign-in page.
     renderTokenPrompt(
-      container,
+      frame.page,
       signIn
         ? { href: signIn, label: "Sign in with GitHub" }
         : { href: "/auth/sign-in", label: "Sign in" },
@@ -224,7 +243,7 @@ export function startWebCanvas(
     if (session) remoteAuth = true;
 
     if (session?.authenticated === true) {
-      mounted = mountWebCanvas(container, serverUrl, token, request);
+      mounted = mountWebCanvas(frame.page, serverUrl, token, request, frame);
 
       return;
     }
@@ -244,7 +263,7 @@ export function startWebCanvas(
     }
 
     if (!disposed)
-      mounted = mountWebCanvas(container, serverUrl, token, request);
+      mounted = mountWebCanvas(frame.page, serverUrl, token, request, frame);
   };
 
   void probe().catch(() => showPrompt());
@@ -253,8 +272,7 @@ export function startWebCanvas(
     dispose() {
       disposed = true;
       mounted?.dispose();
-
-      if (!mounted) container.replaceChildren();
+      frame.dispose();
     },
   };
 }
@@ -264,6 +282,7 @@ function mountWebCanvas(
   serverUrl: string,
   token: string,
   request: (url: string, init?: RequestInit) => Promise<Response>,
+  frame: WebAppFrame,
 ): WebAppHandle {
   const client = new ReviewApiClient({ serverUrl, token }, request);
   const canvas = mountReviewCanvas(container, { kind: "loading" });
@@ -287,9 +306,26 @@ function mountWebCanvas(
     | undefined;
 
   const navigate = (path: string) => {
-    history.pushState(null, "", path);
+    if (path === `${location.pathname}${location.search}`) return;
+
+    // Navigating to Settings remembers the sender so closing it goes back,
+    // not home. Re-entering Settings keeps the sender it already has.
+    const state =
+      path === "/settings"
+        ? location.pathname === "/settings"
+          ? history.state
+          : { from: `${location.pathname}${location.search}${location.hash}` }
+        : null;
+
+    history.pushState(state, "", path);
     route();
   };
+
+  frame.update({ onNavigate: navigate });
+
+  let settingsFrom: string | undefined;
+
+  const closeSettings = () => navigate(settingsFrom ?? "/");
 
   const openReview = (reviewId: string) =>
     navigate(`/r/${encodeURIComponent(reviewId)}`);
@@ -329,7 +365,7 @@ function mountWebCanvas(
         kind: "settings",
         settings: settingsContent,
         theme: canvasTheme(next.theme),
-        close: () => navigate("/"),
+        close: closeSettings,
       });
     } else if (location.pathname === "/" && settingsContent) {
       canvas.update(homeContent());
@@ -449,7 +485,6 @@ function mountWebCanvas(
     },
     theme: canvasTheme(),
     openReview,
-    openSettings: bridgeOptions.openSettings,
     openTutorial() {
       webNotify("success", "The tutorial runs in the Whiteboard desktop app.");
     },
@@ -465,7 +500,7 @@ function mountWebCanvas(
         kind: "settings",
         settings: settingsContent,
         theme: canvasTheme("system"),
-        close: () => navigate("/"),
+        close: closeSettings,
       });
     } else if (location.pathname === "/") {
       canvas.update(homeContent());
@@ -495,7 +530,10 @@ function mountWebCanvas(
       softwareMapEnabled: webValues?.softwareMapEnabled === true,
       structuralDiffEnabled: webValues?.structuralDiffEnabled === true,
       setTitle(title) {
+        // A late snapshot must not retitle a page the reader already left.
+        if (location.pathname !== `/r/${encodeURIComponent(reviewId)}`) return;
         document.title = title || "Whiteboard Review";
+        frame.update({ context: title || "Session" });
       },
       setSourceView(_selection, view) {
         activeBridge?.setSourceView(view);
@@ -573,6 +611,9 @@ function mountWebCanvas(
       activeReviewContent = undefined;
       activeBridge = undefined;
       catalog?.abort();
+      const state = settingsStateSchema.safeParse(history.state);
+      settingsFrom = state.success ? state.data.from : undefined;
+      frame.update({ context: "Settings" });
       document.title = "Settings - Whiteboard";
       void ensureSettings()
         .then((settings) => {
@@ -581,7 +622,7 @@ function mountWebCanvas(
               kind: "settings",
               settings,
               theme: canvasTheme(settings.theme),
-              close: () => navigate("/"),
+              close: closeSettings,
             });
           }
         })
@@ -598,8 +639,14 @@ function mountWebCanvas(
     const reviewId = routeReviewId(location.pathname);
 
     if (reviewId) {
+      // Seed the crumb from the catalog; the snapshot's setTitle refines it.
+      frame.update({
+        context:
+          reviews.find((review) => review.reviewId === reviewId)?.title ?? null,
+      });
       showReview(reviewId);
     } else {
+      frame.update({ context: null });
       void showHome();
     }
   }
@@ -615,6 +662,7 @@ function mountWebCanvas(
       colorScheme.removeEventListener("change", updateSystemTheme);
       setupLink.dispose();
       canvas.dispose();
+      frame.dispose();
     },
   };
 }
