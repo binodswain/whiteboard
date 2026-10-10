@@ -1,0 +1,157 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "apps/review-desktop/**"
+      - "docs/**"
+      - "*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vm
+  cancel-in-progress: false
+
+env:
+  IMAGE_TAG: sha-${{ github.sha }}
+
+jobs:
+  build:
+    name: Build image
+    # The VM is aarch64; build natively instead of under QEMU emulation.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: >-
+          docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+
+      # The image travels to the VM as a short-lived workflow artifact rather
+      # than through a registry, so no copy outlives the 1-day retention.
+      - name: Build image
+        uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+        with:
+          context: .
+          target: runtime
+          platforms: linux/arm64
+          tags: whiteboard:${{ env.IMAGE_TAG }}
+          outputs: type=docker,dest=${{ runner.temp }}/whiteboard.tar
+          cache-from: type=gha,scope=vm
+          cache-to: type=gha,mode=max,scope=vm
+
+      - name: Compress image
+        run: gzip -1 "$RUNNER_TEMP/whiteboard.tar"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: whiteboard-image
+          path: ${{ runner.temp }}/whiteboard.tar.gz
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to whiteboard.binodswain.dev
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://whiteboard.binodswain.dev
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download image artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: whiteboard-image
+          path: bundle
+
+      - name: Stage deploy bundle
+        run: cp deploy/vm/docker-compose.prod.yml bundle/
+
+      - name: Copy bundle to VM
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: ${{ secrets.VM_SSH_PORT || 22 }}
+          source: bundle/*
+          target: services/whiteboard
+          strip_components: 1
+          overwrite: true
+
+      - name: Load image and restart service
+        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f # v1.2.2
+        env:
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          WHITEBOARD_DB: ${{ secrets.WHITEBOARD_DB }}
+          WHITEBOARD_DB_TOKEN: ${{ secrets.WHITEBOARD_DB_TOKEN }}
+          WHITEBOARD_BLOBS: ${{ secrets.WHITEBOARD_BLOBS }}
+          WHITEBOARD_S3_ENDPOINT: ${{ secrets.WHITEBOARD_S3_ENDPOINT }}
+          WHITEBOARD_S3_KEY: ${{ secrets.WHITEBOARD_S3_KEY }}
+          WHITEBOARD_S3_SECRET: ${{ secrets.WHITEBOARD_S3_SECRET }}
+          WHITEBOARD_AUTH_SECRET: ${{ secrets.WHITEBOARD_AUTH_SECRET }}
+          GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+          GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+          GH_TOKEN: ${{ secrets.WHITEBOARD_GH_TOKEN }}
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: ${{ secrets.VM_SSH_PORT || 22 }}
+          command_timeout: 15m
+          envs: >-
+            IMAGE_TAG,WHITEBOARD_DB,WHITEBOARD_DB_TOKEN,WHITEBOARD_BLOBS,
+            WHITEBOARD_S3_ENDPOINT,WHITEBOARD_S3_KEY,WHITEBOARD_S3_SECRET,
+            WHITEBOARD_AUTH_SECRET,GITHUB_OAUTH_CLIENT_ID,
+            GITHUB_OAUTH_CLIENT_SECRET,GH_TOKEN
+          script: |
+            set -euo pipefail
+            cd ~/services/whiteboard
+
+            # The VM keeps no secrets of its own: rebuild .env.prod each deploy.
+            umask 077
+            {
+              printf 'WHITEBOARD_DB=%s\n' "$WHITEBOARD_DB"
+              printf 'WHITEBOARD_DB_TOKEN=%s\n' "$WHITEBOARD_DB_TOKEN"
+              printf 'WHITEBOARD_BLOBS=%s\n' "$WHITEBOARD_BLOBS"
+              printf 'WHITEBOARD_S3_ENDPOINT=%s\n' "$WHITEBOARD_S3_ENDPOINT"
+              printf 'WHITEBOARD_S3_KEY=%s\n' "$WHITEBOARD_S3_KEY"
+              printf 'WHITEBOARD_S3_SECRET=%s\n' "$WHITEBOARD_S3_SECRET"
+              printf 'WHITEBOARD_AUTH_SECRET=%s\n' "$WHITEBOARD_AUTH_SECRET"
+              printf 'GITHUB_OAUTH_CLIENT_ID=%s\n' "$GITHUB_OAUTH_CLIENT_ID"
+              printf 'GITHUB_OAUTH_CLIENT_SECRET=%s\n' "$GITHUB_OAUTH_CLIENT_SECRET"
+              printf 'GH_TOKEN=%s\nGITHUB_TOKEN=%s\n' "$GH_TOKEN" "$GH_TOKEN"
+            } > .env.prod
+
+            gunzip -c whiteboard.tar.gz | docker load
+            rm -f whiteboard.tar.gz
+
+            export WHITEBOARD_IMAGE_TAG="$IMAGE_TAG"
+            docker compose -f docker-compose.prod.yml up -d --wait --wait-timeout 180
+
+            # Keep only the running image so old builds do not fill the disk.
+            docker images whiteboard --format '{{.Tag}}' \
+              | grep -vx "$IMAGE_TAG" \
+              | xargs -r -I{} docker rmi "whiteboard:{}" || true
+
+      - name: Check public health endpoint
+        run: |
+          for _ in $(seq 1 20); do
+            if curl --fail --silent --show-error https://whiteboard.binodswain.dev/health; then
+              exit 0
+            fi
+            sleep 6
+          done
+          exit 1
