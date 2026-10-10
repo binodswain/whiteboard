@@ -1033,6 +1033,7 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
               if (event.key === "Enter") {
                 event.preventDefault();
                 const tag = draft.trim().toLowerCase();
+
                 if (!tag) return;
                 setDraft("");
                 void change([tag], []);
