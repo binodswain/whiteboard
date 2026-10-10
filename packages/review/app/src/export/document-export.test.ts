@@ -81,6 +81,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("Hello **world**");
   });
 
@@ -97,6 +98,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("```ts\nconst x = 1;\n```");
   });
 
@@ -114,6 +116,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("*Empty function*");
     expect(md.indexOf("*Empty function*")).toBeLessThan(md.indexOf("```py"));
   });
@@ -133,6 +136,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("## Overview");
     expect(md).toContain("Some content.");
   });
@@ -157,6 +161,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("## Outer");
     expect(md).toContain("### Inner");
   });
@@ -176,6 +181,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("> **⚠️ Warning**");
     expect(md).toMatch(/^> Watch out!/m);
   });
@@ -194,6 +200,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("> **Heads up**");
   });
 
@@ -201,6 +208,7 @@ describe("exportMarkdown", () => {
     const md = exportMarkdown(
       snap({ document: [{ id: "d1", type: "divider" }] }),
     );
+
     expect(md).toContain("---");
   });
 
@@ -216,6 +224,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("head/src/foo.ts#L1-L10");
   });
 
@@ -243,6 +252,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("```mermaid");
     expect(md).toContain("sequenceDiagram");
     expect(md).toContain("participant client as Client");
@@ -288,6 +298,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("flowchart LR");
     expect(md).toContain("start([Start])");
     expect(md).toContain("check{Token valid?}");
@@ -307,6 +318,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("Architecture diagram");
   });
 
@@ -324,6 +336,7 @@ describe("exportMarkdown", () => {
         ],
       }),
     );
+
     expect(md).toContain("trace-1");
     expect(md).toContain("ev-2");
     expect(md).toContain("Saved successfully");
@@ -365,6 +378,7 @@ describe("exportHtml", () => {
         document: [{ id: "m1", type: "markdown", markdown: "Hello **world**" }],
       }),
     );
+
     expect(html).toContain("<strong>world</strong>");
   });
 
@@ -381,6 +395,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).toContain("a &lt; b");
     expect(html).toContain('class="language-ts"');
   });
@@ -405,6 +420,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).toContain('class="section-block"');
     expect(html).toContain("<h2>Overview</h2>");
     expect(html).toContain("<h3>Details</h3>");
@@ -424,6 +440,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).toContain('class="callout callout-danger"');
     expect(html).toContain("Critical");
   });
@@ -452,6 +469,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).toContain("<h4>Auth</h4>");
     expect(html).toContain("<td>a</td>");
     expect(html).toContain("<td>hello</td>");
@@ -474,6 +492,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).not.toContain("javascript:");
   });
 
@@ -490,6 +509,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     // The link must not become an <a href="review-source:…"> — rendered as <span> instead.
     expect(html).not.toMatch(/href="review-source:/);
     // The label text "src" should still appear
@@ -509,6 +529,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).not.toContain('onerror="alert(2)"');
     expect(html).toContain("&lt;script&gt;");
@@ -527,6 +548,7 @@ describe("exportHtml", () => {
         ],
       }),
     );
+
     expect(html).toContain("<table>");
     expect(html).toContain("<th>");
   });
@@ -535,6 +557,7 @@ describe("exportHtml", () => {
     const html = exportHtml(
       snap({ document: [{ id: "d1", type: "divider" }] }),
     );
+
     expect(html).toContain("<hr />");
   });
 });

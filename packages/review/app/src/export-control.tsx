@@ -31,10 +31,12 @@ function download(content: string, mimeType: string, filename: string) {
 export function ExportControl(): ReactElement | null {
   const snapshot = useCurrentReviewSnapshot();
   const tooltip = useTooltip("Export review");
+
   const menu = useCanvasMenu({
     items: OPTIONS.map(({ id, label }) => ({ id, label })),
     onSelect: (id) => {
       if (!snapshot) return;
+
       if (id === "markdown") {
         download(
           exportMarkdown(snapshot),
@@ -49,6 +51,7 @@ export function ExportControl(): ReactElement | null {
         );
       } else if (id === "print") {
         const printWindow = window.open("", "_blank");
+
         if (!printWindow) return;
         printWindow.document.open();
         printWindow.document.write(exportHtml(snapshot));
