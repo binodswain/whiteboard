@@ -7,6 +7,8 @@ import {
 import { createDiagramNavigationStore } from "@canvas/diagram-navigation-store";
 import { diagramStyles } from "@canvas/diagram-styles";
 import { hasTextSelectionWithin } from "@canvas/diagram-text-selection";
+import type { C4ExportInput } from "@canvas/export/diagram-export";
+import { DiagramExportMenu } from "@canvas/export/diagram-export-menu";
 import { flowLayer } from "@canvas/flow-layers.stylex";
 import { useReviewSession } from "@canvas/host/review-session";
 import { CloseIcon, RefreshIcon } from "@canvas/icons";
@@ -822,6 +824,44 @@ function SoftwareMapWithModel({
   );
 }
 
+/** Builds the Export menu's input from the currently displayed C4 nodes and
+ * the layout libavoid/ELK already computed for them — no re-layout. */
+function c4ExportInputFromLayout(
+  title: string,
+  snapshot: SoftwareMapResolvedSnapshot,
+  layout: C4LayoutResult,
+): C4ExportInput {
+  const boxById = new Map(layout.nodes.map((entry) => [entry.node.id, entry]));
+
+  const nodes = (snapshot.nodes ?? []).flatMap((node) => {
+    const box = boxById.get(node.id);
+
+    if (!box) return [];
+
+    return [
+      {
+        id: node.id,
+        label: node.label,
+        parentId: node.parentId,
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+      },
+    ];
+  });
+
+  const relationships = (snapshot.relationships ?? []).map((relationship) => ({
+    from: relationship.from,
+    to: relationship.to,
+    label: relationship.hideLabel
+      ? undefined
+      : (relationship.label ?? relationship.semanticKind),
+  }));
+
+  return { title, nodes, relationships };
+}
+
 export function SoftwareMapFrame({
   snapshot,
   diagramId,
@@ -856,6 +896,11 @@ export function SoftwareMapFrame({
 }: SoftwareMapFrameProps) {
   const session = useReviewSession();
   const frameRef = useRef<HTMLElement | null>(null);
+
+  const [exportSnapshot, setExportSnapshot] = useState<{
+    snapshot: SoftwareMapResolvedSnapshot;
+    layout: C4LayoutResult;
+  } | null>(null);
 
   const codeInspectorResize = useRightPanelResize({
     // The expanded overlay is far wider than the inline frame, so it keeps its
@@ -939,6 +984,18 @@ export function SoftwareMapFrame({
             </figcaption>
           </div>
           <div {...stylex.props(styles.actions)}>
+            {exportSnapshot && (
+              <DiagramExportMenu
+                source={{
+                  kind: "c4",
+                  ...c4ExportInputFromLayout(
+                    title,
+                    exportSnapshot.snapshot,
+                    exportSnapshot.layout,
+                  ),
+                }}
+              />
+            )}
             {onRefresh ? (
               <IconButton
                 xstyle={refreshing && styles.refreshing}
@@ -1018,6 +1075,7 @@ export function SoftwareMapFrame({
             viewportFocusNodeId={viewportFocusNodeId}
             viewportFocusRequiresExpanded={viewportFocusRequiresExpanded}
             onViewportFocusComplete={onViewportFocusComplete}
+            onExportSnapshotChange={setExportSnapshot}
           />
         </div>
         {inspectedNode ? (
@@ -1184,6 +1242,7 @@ function C4MapCanvas({
   viewportFocusNodeId,
   viewportFocusRequiresExpanded,
   onViewportFocusComplete,
+  onExportSnapshotChange,
 }: {
   snapshot: SoftwareMapResolvedSnapshot;
   expanded: boolean;
@@ -1203,6 +1262,13 @@ function C4MapCanvas({
   viewportFocusNodeId?: string | null;
   viewportFocusRequiresExpanded?: boolean;
   onViewportFocusComplete?: (nodeId: string) => void;
+  /** The Export menu lives in the parent frame's header, but only this
+   * canvas knows the live ELK/libavoid layout; it reports the displayed
+   * snapshot plus layout up whenever either changes, or `null` while no
+   * layout has resolved yet. */
+  onExportSnapshotChange?: (
+    displayed: { snapshot: SoftwareMapResolvedSnapshot; layout: C4LayoutResult } | null,
+  ) => void;
 }) {
   const session = useReviewSession();
 
@@ -1252,6 +1318,10 @@ function C4MapCanvas({
   const layout = layoutState?.layout ?? null;
   const nodes = displayedSnapshot.nodes ?? [];
   const { theme } = useReviewDebugSettings();
+
+  useEffect(() => {
+    onExportSnapshotChange?.(layout ? { snapshot: displayedSnapshot, layout } : null);
+  }, [onExportSnapshotChange, displayedSnapshot, layout]);
 
   const reactFlowInteractionProps =
     c4MapReactFlowInteractionProps(interactionMode);

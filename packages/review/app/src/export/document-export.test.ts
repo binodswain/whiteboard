@@ -289,9 +289,9 @@ describe("exportMarkdown", () => {
       }),
     );
     expect(md).toContain("flowchart LR");
-    expect(md).toContain("start([Start])");
-    expect(md).toContain("check{Token valid?}");
-    expect(md).toContain("start-->|next|check");
+    expect(md).toContain("n_start([Start])");
+    expect(md).toContain("n_check{Token valid?}");
+    expect(md).toContain("n_start-->|next|n_check");
   });
 
   it("renders image as an alt-text note", () => {

@@ -1,9 +1,16 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import mermaid from "mermaid";
+import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
+  type C4ExportInput,
   type FlowExportInput,
   type SequenceExportInput,
+  c4ToDrawio,
+  c4ToExcalidraw,
+  c4ToMermaid,
+  c4ToXmind,
   diagramExportFilename,
   flowToDrawio,
   flowToExcalidraw,
@@ -16,6 +23,10 @@ import {
   unzipStore,
   xmlEscape,
 } from "./diagram-export.js";
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
 
 const sequence: SequenceExportInput = {
   title: "Login",
@@ -63,124 +74,224 @@ const reservedFlow: FlowExportInput = {
   edges: [{ from: "a-1", to: "end", label: "A < B" }],
 };
 
-function unquote(value: string): string {
-  return value.startsWith('"') && value.endsWith('"')
-    ? value.slice(1, -1)
-    : value;
+const c4: C4ExportInput = {
+  title: "Billing context",
+  nodes: [
+    { id: "person", label: "Customer", x: 0, y: 0, width: 200, height: 100 },
+    {
+      id: "system",
+      label: "Billing System",
+      x: 300,
+      y: 0,
+      width: 400,
+      height: 300,
+    },
+    {
+      id: "service",
+      label: "Billing Service",
+      parentId: "system",
+      x: 320,
+      y: 40,
+      width: 200,
+      height: 100,
+    },
+  ],
+  relationships: [
+    { from: "person", to: "system", label: "Uses" },
+    { from: "system", to: "service", label: "Routes to" },
+  ],
+};
+
+const reservedC4: C4ExportInput = {
+  title: "C4 chars",
+  nodes: [
+    { id: "a-1", label: 'Gate [open] & "go"', x: 0, y: 0, width: 100, height: 50 },
+    { id: "b", label: "Done #now;", x: 200, y: 0, width: 100, height: 50 },
+  ],
+  relationships: [{ from: "a-1", to: "b", label: "A < B" }],
+};
+
+// ---------------------------------------------------------------------------
+// Mermaid — parsed by mermaid's own parser, not a hand-rolled regex
+// ---------------------------------------------------------------------------
+
+beforeAll(() => {
+  mermaid.initialize({ startOnLoad: false });
+});
+
+interface MermaidSequenceMessage {
+  from: string;
+  to: string;
+  message: string;
 }
 
-function parseMermaidSequence(source: string) {
-  const lines = source
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("%%"));
+interface MermaidFlowVertex {
+  id: string;
+  text: string;
+  type: string;
+}
 
-  if (lines[0] !== "sequenceDiagram")
-    throw new Error(`expected sequenceDiagram, got ${lines[0]}`);
-  const participants: { id: string; label: string }[] = [];
+interface MermaidFlowEdge {
+  start: string;
+  end: string;
+  text: string;
+  stroke: string;
+}
 
-  const messages: { from: string; to: string; arrow: string; label: string }[] =
-    [];
+interface MermaidSubGraph {
+  id: string;
+  title: string;
+  nodes: string[];
+}
 
-  for (const line of lines.slice(1)) {
-    const participant = /^participant\s+(\S+|"[^"]+")(?:\s+as\s+(.+))?$/.exec(
-      line,
+interface MermaidDiagramDb {
+  getActorKeys?(): string[];
+  getMessages?(): MermaidSequenceMessage[];
+  getVertices?(): Map<string, MermaidFlowVertex>;
+  getEdges?(): MermaidFlowEdge[];
+  getSubGraphs?(): MermaidSubGraph[];
+}
+
+async function mermaidDiagram(source: string) {
+  // `parse` is the acceptance gate: it throws on invalid Mermaid syntax.
+  const parsed = await mermaid.parse(source);
+  const diagram = await mermaid.mermaidAPI.getDiagramFromText(source);
+
+  return { parsed, db: diagram.db as MermaidDiagramDb };
+}
+
+describe("sequence mermaid", () => {
+  it("parses into the actors and messages mermaid's sequence parser reads", async () => {
+    const { parsed, db } = await mermaidDiagram(sequenceToMermaid(sequence));
+
+    expect(parsed?.diagramType).toBe("sequence");
+    expect(db.getActorKeys!()).toEqual(["client", "server"]);
+    expect(
+      db.getMessages!().map((message) => ({
+        from: message.from,
+        to: message.to,
+        message: message.message,
+      })),
+    ).toEqual([
+      { from: "client", to: "server", message: "POST /login" },
+      { from: "server", to: "client", message: "200 OK" },
+      { from: "client", to: "client", message: "cache token" },
+    ]);
+  });
+
+  it("escapes Mermaid-reserved characters so the parser still accepts the diagram", async () => {
+    const { parsed, db } = await mermaidDiagram(
+      sequenceToMermaid(reservedSequence),
     );
 
-    if (participant) {
-      const id = unquote(participant[1]!);
-      participants.push({ id, label: participant[2] ?? id });
-      continue;
-    }
+    expect(parsed?.diagramType).toBe("sequence");
+    expect(db.getActorKeys!()).toEqual(["client-api"]);
 
-    const message =
-      /^("[^"]+"|[A-Za-z]\w*)(-->>|->>\+|->|->>)("[^"]+"|[A-Za-z]\w*):\s*(.*)$/.exec(
-        line,
-      );
+    const messages = db.getMessages!();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ from: "client-api", to: "client-api" });
+  });
+});
 
-    if (message) {
-      messages.push({
-        from: unquote(message[1]!),
-        to: unquote(message[3]!),
-        arrow: message[2]!,
-        label: message[4]!,
-      });
-      continue;
-    }
+describe("flow mermaid", () => {
+  it("parses into the node shapes and edge strokes mermaid's flowchart parser reads", async () => {
+    const { parsed, db } = await mermaidDiagram(flowToMermaid(flow));
 
-    throw new Error(`unparsed mermaid sequence line: ${line}`);
-  }
+    expect(parsed?.diagramType).toBe("flowchart-v2");
 
-  return { participants, messages };
-}
+    const vertices = db.getVertices!();
 
-function parseMermaidFlowchart(source: string) {
-  const lines = source
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("%%"));
+    expect(
+      [...vertices.values()].map((vertex) => ({
+        id: vertex.id,
+        text: vertex.text,
+        type: vertex.type,
+      })),
+    ).toEqual([
+      { id: "n_start", text: "Start", type: "stadium" },
+      { id: "n_check", text: "Token valid?", type: "diamond" },
+      { id: "n_ok", text: "Allow", type: "square" },
+    ]);
 
-  const header = /^flowchart\s+(LR|TD)$/.exec(lines[0] ?? "");
+    const edges = db.getEdges!();
 
-  if (!header) throw new Error(`expected flowchart, got ${lines[0]}`);
-  const nodes: { id: string; kind: string; label: string }[] = [];
+    expect(
+      edges.map((edge) => ({
+        start: edge.start,
+        end: edge.end,
+        text: edge.text,
+        stroke: edge.stroke,
+      })),
+    ).toEqual([
+      { start: "n_start", end: "n_check", text: "next", stroke: "normal" },
+      { start: "n_check", end: "n_ok", text: "yes", stroke: "dotted" },
+    ]);
+  });
 
-  const edges: { from: string; arrow: string; label?: string; to: string }[] =
-    [];
+  it("quotes ids and labels that Mermaid would otherwise choke on", async () => {
+    const { parsed, db } = await mermaidDiagram(flowToMermaid(reservedFlow));
 
-  for (const line of lines.slice(1)) {
-    const stadium = /^(\S+|"[^"]+")\(\[(.*)\]\)$/.exec(line);
+    expect(parsed?.diagramType).toBe("flowchart-v2");
 
-    if (stadium) {
-      nodes.push({
-        id: unquote(stadium[1]!),
-        kind: "terminal",
-        label: unquote(stadium[2]!),
-      });
-      continue;
-    }
+    const vertices = db.getVertices!();
+    expect([...vertices.keys()]).toEqual(["n_a-1", "n_end"]);
 
-    const diamond = /^(\S+|"[^"]+")\{(.*)\}$/.exec(line);
+    const edges = db.getEdges!();
+    expect(edges.map((edge) => ({ start: edge.start, end: edge.end }))).toEqual([
+      { start: "n_a-1", end: "n_end" },
+    ]);
+  });
+});
 
-    if (diamond) {
-      nodes.push({
-        id: unquote(diamond[1]!),
-        kind: "decision",
-        label: unquote(diamond[2]!),
-      });
-      continue;
-    }
+describe("C4 mermaid", () => {
+  it("parses into a flowchart whose subgraph is the C4 boundary and whose leaves/edges are the nodes and relationships", async () => {
+    const { parsed, db } = await mermaidDiagram(c4ToMermaid(c4));
 
-    const box = /^(\S+|"[^"]+")\[(.*)\]$/.exec(line);
+    expect(parsed?.diagramType).toBe("flowchart-v2");
 
-    if (box) {
-      nodes.push({
-        id: unquote(box[1]!),
-        kind: "process",
-        label: unquote(box[2]!),
-      });
-      continue;
-    }
+    const subGraphs = db.getSubGraphs!();
 
-    const edge = /^(\S+|"[^"]+")(-\.->|-->)(?:\|([^|]*)\|)?(\S+|"[^"]+")$/.exec(
-      line,
-    );
+    expect(
+      subGraphs.map((subGraph) => ({
+        id: subGraph.id,
+        title: subGraph.title,
+        nodes: subGraph.nodes,
+      })),
+    ).toEqual([
+      { id: "n_system", title: "Billing System", nodes: ["n_service"] },
+    ]);
 
-    if (edge) {
-      edges.push({
-        from: unquote(edge[1]!),
-        arrow: edge[2]!,
-        label: edge[3],
-        to: unquote(edge[4]!),
-      });
-      continue;
-    }
+    const vertices = db.getVertices!();
+    expect(vertices.get("n_person")).toMatchObject({ text: "Customer" });
+    expect(vertices.get("n_service")).toMatchObject({ text: "Billing Service" });
 
-    throw new Error(`unparsed mermaid flowchart line: ${line}`);
-  }
+    const edges = db.getEdges!();
+    expect(
+      edges.map((edge) => ({ start: edge.start, end: edge.end, text: edge.text })),
+    ).toEqual([
+      { start: "n_person", end: "n_system", text: "Uses" },
+      { start: "n_system", end: "n_service", text: "Routes to" },
+    ]);
+  });
 
-  return { direction: header[1], nodes, edges };
-}
+  it("escapes reserved characters so the C4 flowchart still parses", async () => {
+    const { parsed, db } = await mermaidDiagram(c4ToMermaid(reservedC4));
+
+    expect(parsed?.diagramType).toBe("flowchart-v2");
+
+    const vertices = db.getVertices!();
+    expect([...vertices.keys()]).toEqual(["n_a-1", "n_b"]);
+
+    const edges = db.getEdges!();
+    expect(edges.map((edge) => ({ start: edge.start, end: edge.end }))).toEqual([
+      { start: "n_a-1", end: "n_b" },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Excalidraw — validated against its own element schema
+// ---------------------------------------------------------------------------
 
 const excalidrawElementSchema = z
   .object({
@@ -204,156 +315,6 @@ const excalidrawFileSchema = z.object({
 function parseExcalidraw(json: string) {
   return excalidrawFileSchema.parse(JSON.parse(json));
 }
-
-function xmlUnescape(text: string): string {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-function parseDrawio(xml: string) {
-  if (!xml.includes("<mxfile") || !xml.includes("<mxGraphModel"))
-    throw new Error("not an mxfile");
-
-  const cells: {
-    id: string;
-    value: string;
-    style: string;
-    vertex: boolean;
-    edge: boolean;
-    source?: string;
-    target?: string;
-    x?: number;
-    y?: number;
-  }[] = [];
-
-  const tag = /<mxCell\b([^>]*?)\s*(?:\/>|>([\s\S]*?)<\/mxCell>)/g;
-
-  for (const match of xml.matchAll(tag)) {
-    const attrs = match[1] ?? "";
-
-    const attr = (name: string) => {
-      const found = new RegExp(`\\b${name}="([^"]*)"`).exec(attrs);
-
-      return found ? xmlUnescape(found[1]!) : undefined;
-    };
-
-    const body = match[2] ?? "";
-    const geometry = /<mxGeometry\b([^>]*)/.exec(body);
-
-    const geo = (name: string) => {
-      if (!geometry) return undefined;
-      const found = new RegExp(`\\b${name}="([^"]*)"`).exec(geometry[1] ?? "");
-
-      return found ? Number(found[1]) : undefined;
-    };
-
-    cells.push({
-      id: attr("id") ?? "",
-      value: attr("value") ?? "",
-      style: attr("style") ?? "",
-      vertex: attr("vertex") === "1",
-      edge: attr("edge") === "1",
-      source: attr("source"),
-      target: attr("target"),
-      x: geo("x"),
-      y: geo("y"),
-    });
-  }
-
-  return cells.filter((cell) => cell.id !== "0" && cell.id !== "1");
-}
-
-type XmindTopic = {
-  id: string;
-  title: string;
-  children?: { attached: XmindTopic[] };
-};
-
-const xmindTopicSchema: z.ZodType<XmindTopic> = z.lazy(() =>
-  z.object({
-    id: z.string(),
-    title: z.string(),
-    children: z.object({ attached: z.array(xmindTopicSchema) }).optional(),
-  }),
-);
-
-const xmindSheetSchema = z.array(
-  z.object({
-    id: z.string(),
-    class: z.literal("sheet"),
-    title: z.string(),
-    rootTopic: xmindTopicSchema,
-  }),
-);
-
-function parseXmind(bytes: Uint8Array) {
-  const files = unzipStore(bytes);
-  expect(files.get("manifest.json")).toBeTruthy();
-  expect(files.get("metadata.json")).toBeTruthy();
-
-  return xmindSheetSchema.parse(
-    JSON.parse(files.get("content.json") ?? "null"),
-  );
-}
-
-describe("diagramExportFilename", () => {
-  it("slugifies the title", () => {
-    expect(diagramExportFilename("Auth flow!", "mmd")).toBe("auth-flow.mmd");
-  });
-});
-
-describe("sequence mermaid", () => {
-  it("round-trips actors, arrows and labels through a mermaid parse", () => {
-    const parsed = parseMermaidSequence(sequenceToMermaid(sequence));
-    expect(parsed.participants).toEqual([
-      { id: "client", label: "Client" },
-      { id: "server", label: "Server" },
-    ]);
-    expect(parsed.messages).toEqual([
-      { from: "client", to: "server", arrow: "->>", label: "POST /login" },
-      { from: "server", to: "client", arrow: "-->>", label: "200 OK" },
-      { from: "client", to: "client", arrow: "->>+", label: "cache token" },
-    ]);
-  });
-
-  it("escapes mermaid-reserved characters so the parse still recovers the ids", () => {
-    const parsed = parseMermaidSequence(sequenceToMermaid(reservedSequence));
-    expect(parsed.participants.map((participant) => participant.id)).toEqual([
-      "client-api",
-    ]);
-    expect(parsed.messages[0]).toMatchObject({
-      from: "client-api",
-      to: "client-api",
-    });
-    expect(parsed.messages[0]?.label).not.toMatch(/[#;]/);
-  });
-});
-
-describe("flow mermaid", () => {
-  it("round-trips nodes, kinds and edges through a mermaid parse", () => {
-    const parsed = parseMermaidFlowchart(flowToMermaid(flow));
-    expect(parsed.direction).toBe("LR");
-    expect(parsed.nodes).toEqual([
-      { id: "start", kind: "terminal", label: "Start" },
-      { id: "check", kind: "decision", label: "Token valid?" },
-      { id: "ok", kind: "process", label: "Allow" },
-    ]);
-    expect(parsed.edges).toEqual([
-      { from: "start", arrow: "-->", label: "next", to: "check" },
-      { from: "check", arrow: "-.->", label: "yes", to: "ok" },
-    ]);
-  });
-
-  it("quotes ids and labels that mermaid would otherwise comment out", () => {
-    const parsed = parseMermaidFlowchart(flowToMermaid(reservedFlow));
-    expect(parsed.nodes.map((node) => node.id)).toEqual(["a-1", "end"]);
-    expect(parsed.edges[0]).toMatchObject({ from: "a-1", to: "end" });
-  });
-});
 
 describe("sequence excalidraw", () => {
   it("round-trips through the excalidraw schema with participant and message labels", () => {
@@ -392,20 +353,107 @@ describe("flow excalidraw", () => {
     );
 
     const start = file.elements.find((element) => element.id === "node:start");
-
     const check = file.elements.find((element) => element.id === "node:check");
-
     expect(start).toMatchObject({ type: "ellipse" });
     expect(check).toMatchObject({ type: "diamond" });
     expect(start?.x).not.toBe(check?.x);
   });
 });
 
+describe("C4 excalidraw", () => {
+  it("draws every node at its given ELK/libavoid box and connects relationships", () => {
+    const file = parseExcalidraw(c4ToExcalidraw(c4));
+
+    const texts = file.elements
+      .values()
+      .filter((element) => element.type === "text")
+      .map((element) => String(element.text))
+      .toArray();
+
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        "Customer",
+        "Billing System",
+        "Billing Service",
+        "Uses",
+        "Routes to",
+      ]),
+    );
+
+    const service = file.elements.find(
+      (element) => element.id === "node:service",
+    );
+
+    expect(service).toMatchObject({ x: 320, y: 40, width: 200, height: 100 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// draw.io — parsed by a real XML parser (jsdom's DOMParser), not a regex
+// ---------------------------------------------------------------------------
+
+interface DrawioCell {
+  id: string;
+  value: string;
+  style: string;
+  vertex: boolean;
+  edge: boolean;
+  source?: string;
+  target?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+function drawioCells(xml: string): DrawioCell[] {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const parserErrors = doc.getElementsByTagName("parsererror");
+
+  if (parserErrors.length > 0) {
+    throw new Error(`draw.io XML failed to parse: ${parserErrors[0]!.textContent}`);
+  }
+
+  return doc
+    .querySelectorAll("mxCell")
+    .values()
+    .filter((cell) => {
+      const id = cell.getAttribute("id");
+
+      return id !== "0" && id !== "1";
+    })
+    .map((cell) => {
+      const geometry = cell.querySelector("mxGeometry");
+
+      const numericAttr = (name: string) => {
+        const value = geometry?.getAttribute(name);
+
+        return value !== null && value !== undefined ? Number(value) : undefined;
+      };
+
+      return {
+        id: cell.getAttribute("id") ?? "",
+        value: cell.getAttribute("value") ?? "",
+        style: cell.getAttribute("style") ?? "",
+        vertex: cell.getAttribute("vertex") === "1",
+        edge: cell.getAttribute("edge") === "1",
+        source: cell.getAttribute("source") ?? undefined,
+        target: cell.getAttribute("target") ?? undefined,
+        x: numericAttr("x"),
+        y: numericAttr("y"),
+        width: numericAttr("width"),
+        height: numericAttr("height"),
+      };
+    })
+    .toArray();
+}
+
 describe("sequence draw.io", () => {
   it("round-trips lifelines and message styles through mxGraph XML", () => {
-    const cells = parseDrawio(sequenceToDrawio(sequence));
+    const cells = drawioCells(sequenceToDrawio(sequence));
     const vertices = cells.filter((cell) => cell.vertex);
     const edges = cells.filter((cell) => cell.edge);
+
     expect(vertices.map((cell) => cell.value)).toEqual(["Client", "Server"]);
     expect(vertices.every((cell) => cell.style.includes("umlLifeline"))).toBe(
       true,
@@ -423,7 +471,7 @@ describe("sequence draw.io", () => {
   });
 
   it("xml-escapes labels so the parse recovers the original text", () => {
-    const cells = parseDrawio(sequenceToDrawio(reservedSequence));
+    const cells = drawioCells(sequenceToDrawio(reservedSequence));
     expect(cells.find((cell) => cell.vertex)?.value).toBe("Client & Co <v1>");
     expect(xmlEscape("Client & Co <v1>")).toContain("&amp;");
   });
@@ -431,9 +479,10 @@ describe("sequence draw.io", () => {
 
 describe("flow draw.io", () => {
   it("round-trips ELK positions and connectors through mxGraph XML", async () => {
-    const cells = parseDrawio(await flowToDrawio(flow));
+    const cells = drawioCells(await flowToDrawio(flow));
     const vertices = cells.filter((cell) => cell.vertex);
     const edges = cells.filter((cell) => cell.edge);
+
     expect(vertices.map((cell) => cell.value)).toEqual([
       "Start",
       "Token valid?",
@@ -451,10 +500,82 @@ describe("flow draw.io", () => {
   });
 });
 
+describe("C4 draw.io", () => {
+  it("draws each node at its ELK/libavoid box, boundaries first, with relationships as connectors", () => {
+    const cells = drawioCells(c4ToDrawio(c4));
+    const vertices = cells.filter((cell) => cell.vertex);
+    const edges = cells.filter((cell) => cell.edge);
+
+    // The boundary (has children) draws before its leaf so the leaf sits on top.
+    expect(vertices.map((cell) => cell.value)).toEqual([
+      "Billing System",
+      "Customer",
+      "Billing Service",
+    ]);
+    expect(
+      vertices.find((cell) => cell.value === "Billing Service"),
+    ).toMatchObject({ x: 320, y: 40, width: 200, height: 100 });
+    expect(edges).toEqual([
+      expect.objectContaining({
+        value: "Uses",
+        source: "n:person",
+        target: "n:system",
+      }),
+      expect.objectContaining({
+        value: "Routes to",
+        source: "n:system",
+        target: "n:service",
+      }),
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// XMind — validated against its own tree schema
+// ---------------------------------------------------------------------------
+
+type XmindTopic = {
+  id: string;
+  title: string;
+  children?: { attached: XmindTopic[] };
+};
+
+const xmindTopicSchema: z.ZodType<XmindTopic> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    title: z.string(),
+    children: z.object({ attached: z.array(xmindTopicSchema) }).optional(),
+  }),
+);
+
+const xmindSheetSchema = z.array(
+  z.object({
+    id: z.string(),
+    class: z.literal("sheet"),
+    title: z.string(),
+    rootTopic: xmindTopicSchema,
+  }),
+);
+
+function parseXmind(bytes: Uint8Array) {
+  const files = unzipStore(bytes);
+  expect(files.get("manifest.json")).toBeTruthy();
+  expect(files.get("metadata.json")).toBeTruthy();
+
+  return xmindSheetSchema.parse(JSON.parse(files.get("content.json") ?? "null"));
+}
+
+describe("diagramExportFilename", () => {
+  it("slugifies the title", () => {
+    expect(diagramExportFilename("Auth flow!", "mmd")).toBe("auth-flow.mmd");
+  });
+});
+
 describe("sequence xmind", () => {
   it("round-trips an actor → steps tree through the zip/json", () => {
     const [sheet] = parseXmind(sequenceToXmind(sequence));
     expect(sheet?.title).toBe("Login");
+
     const actors = sheet?.rootTopic.children?.attached ?? [];
     expect(actors.map((topic) => topic.title)).toEqual(["Client", "Server"]);
     expect(actors[0]?.children?.attached.map((topic) => topic.title)).toEqual([
@@ -471,11 +592,30 @@ describe("flow xmind", () => {
   it("round-trips the node hierarchy through the zip/json", () => {
     const [sheet] = parseXmind(flowToXmind(flow));
     expect(sheet?.rootTopic.title).toBe("Auth flow");
+
     const roots = sheet?.rootTopic.children?.attached ?? [];
     expect(roots.map((topic) => topic.title)).toEqual(["Start"]);
     expect(roots[0]?.children?.attached[0]?.title).toBe("Token valid?");
     expect(roots[0]?.children?.attached[0]?.children?.attached[0]?.title).toBe(
       "Allow",
     );
+  });
+});
+
+describe("C4 xmind", () => {
+  it("round-trips the expand hierarchy (boundary → children) through the zip/json", () => {
+    const [sheet] = parseXmind(c4ToXmind(c4));
+    expect(sheet?.title).toBe("Billing context");
+
+    const roots = sheet?.rootTopic.children?.attached ?? [];
+    expect(roots.map((topic) => topic.title)).toEqual([
+      "Customer",
+      "Billing System",
+    ]);
+
+    const system = roots.find((topic) => topic.title === "Billing System");
+    expect(system?.children?.attached.map((topic) => topic.title)).toEqual([
+      "Billing Service",
+    ]);
   });
 });

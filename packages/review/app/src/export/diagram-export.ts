@@ -27,6 +27,30 @@ export type FlowExportInput = {
   }[];
 };
 
+/** A C4 node as the software map already lays it out: ELK/libavoid gave it
+ * `x`/`y`/`width`/`height`; `parentId` nests it inside an expanded boundary. */
+export type C4ExportNode = {
+  id: string;
+  label: string;
+  parentId?: string | null;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type C4ExportRelationship = {
+  from: string;
+  to: string;
+  label?: string;
+};
+
+export type C4ExportInput = {
+  title: string;
+  nodes: readonly C4ExportNode[];
+  relationships: readonly C4ExportRelationship[];
+};
+
 const SEQUENCE_LANE_WIDTH = 176;
 
 const SEQUENCE_MESSAGE_TOP = 112;
@@ -64,10 +88,9 @@ export function diagramExportFilename(title: string, ext: string): string {
 
 /** Mermaid treats `#` as a comment and `;` as a statement break. */
 export function escapeMermaidText(text: string): string {
-  return text
-    .replace(/[\r\n]+/g, " ")
-    .replace(/#/g, "＃")
-    .replace(/;/g, "；");
+  return text.replace(/[\r\n]+/g, " ").replace(/[#;]/g, (ch) =>
+    ch === "#" ? "#35;" : "#59;",
+  );
 }
 
 export function xmlEscape(text: string): string {
@@ -82,7 +105,15 @@ export function xmlEscape(text: string): string {
 function mermaidId(id: string): string {
   const safe = escapeMermaidText(id).replace(/"/g, "");
 
-  return /^[A-Za-z][A-Za-z0-9_]*$/.test(safe) ? safe : `"${safe}"`;
+  return /^[A-Za-z][A-Za-z0-9_-]*$/.test(safe) ? safe : `"${safe}"`;
+}
+
+/** Flowchart node/subgraph ids are bare `NODE_STRING` tokens: Mermaid's
+ * flowchart grammar has no quoted-id form (unlike sequence participants), so
+ * this prefixes everything instead — the prefix also keeps an id from ever
+ * colliding with a flowchart keyword like `end`. */
+function mermaidFlowId(id: string): string {
+  return `n_${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
 function mermaidNodeLabel(label: string): string {
@@ -104,7 +135,9 @@ function actorLabel(actors: Record<string, string>, id: string): string {
 }
 
 function sequenceArrow(style: SequenceExportInput["steps"][number]["style"]) {
-  return style === "return" ? "-->>" : style === "async" ? "->>+" : "->>";
+  return style === "return" ? "-->>"
+    : style === "async" ? "-)"
+    : "->>";
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +176,7 @@ export function flowToMermaid(input: FlowExportInput): string {
           ? `([${label}])`
           : `[${label}]`;
 
-    lines.push(`    ${mermaidId(node.key)}${nodeBox}`);
+    lines.push(`    ${mermaidFlowId(node.key)}${nodeBox}`);
   }
 
   for (const edge of input.edges) {
@@ -151,7 +184,83 @@ export function flowToMermaid(input: FlowExportInput): string {
 
     const arrow = edge.style === "dashed" ? "-.->" : "-->";
     lines.push(
-      `    ${mermaidId(edge.from)}${arrow}${edgeLabel}${mermaidId(edge.to)}`,
+      `    ${mermaidFlowId(edge.from)}${arrow}${edgeLabel}${mermaidFlowId(edge.to)}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/** Visible-node ids only: a child whose ancestor isn't part of the exported
+ * set (e.g. a collapsed parent) renders as its own root. */
+function c4ParentOf(
+  node: C4ExportNode,
+  idSet: ReadonlySet<string>,
+): string | null {
+  return node.parentId && idSet.has(node.parentId) ? node.parentId : null;
+}
+
+function c4ChildrenByParent(
+  nodes: readonly C4ExportNode[],
+): Map<string | null, C4ExportNode[]> {
+  const idSet = new Set(nodes.map((node) => node.id));
+  const byParent = new Map<string | null, C4ExportNode[]>();
+
+  for (const node of nodes) {
+    const parentId = c4ParentOf(node, idSet);
+    const siblings = byParent.get(parentId) ?? [];
+    siblings.push(node);
+    byParent.set(parentId, siblings);
+  }
+
+  return byParent;
+}
+
+function c4VisibleRelationships(
+  input: C4ExportInput,
+): C4ExportRelationship[] {
+  const idSet = new Set(input.nodes.map((node) => node.id));
+
+  return input.relationships.filter(
+    (relationship) => idSet.has(relationship.from) && idSet.has(relationship.to),
+  );
+}
+
+/**
+ * C4 maps onto a Mermaid `flowchart`, not `C4Context`/`C4Container`: the
+ * software map's element kinds (person, system, container, data store,
+ * component, code) don't line up with C4-PlantUML's fixed vocabulary, and a
+ * flowchart losslessly keeps every node, the expand hierarchy (as nested
+ * `subgraph`s — Mermaid allows edges to a subgraph itself) and relationship.
+ */
+export function c4ToMermaid(input: C4ExportInput): string {
+  const byParent = c4ChildrenByParent(input.nodes);
+  const lines = ["flowchart TD"];
+
+  const renderNode = (node: C4ExportNode, indent: string) => {
+    const children = byParent.get(node.id) ?? [];
+
+    if (children.length > 0) {
+      lines.push(
+        `${indent}subgraph ${mermaidFlowId(node.id)}[${mermaidNodeLabel(node.label)}]`,
+      );
+
+      for (const child of children) renderNode(child, `${indent}    `);
+      lines.push(`${indent}end`);
+    } else {
+      lines.push(`${indent}${mermaidFlowId(node.id)}[${mermaidNodeLabel(node.label)}]`);
+    }
+  };
+
+  for (const node of byParent.get(null) ?? []) renderNode(node, "    ");
+
+  for (const relationship of c4VisibleRelationships(input)) {
+    const label = relationship.label
+      ? `|${escapeMermaidText(relationship.label)}|`
+      : "";
+
+    lines.push(
+      `    ${mermaidFlowId(relationship.from)}-->${label}${mermaidFlowId(relationship.to)}`,
     );
   }
 
@@ -498,6 +607,88 @@ export async function flowToExcalidraw(
   return JSON.stringify(excalidrawFile(elements));
 }
 
+/**
+ * C4 is already laid out (ELK/libavoid gave every node an absolute box), so
+ * this draws boundaries and leaves at their given positions and connects
+ * relationships center-to-center; no re-layout needed.
+ */
+export function c4ToExcalidraw(input: C4ExportInput): string {
+  const elements: ExcalidrawElement[] = [];
+  const byId = new Map(input.nodes.map((node) => [node.id, node]));
+
+  // Boundaries (nodes with children) draw first so leaves sit visually on top.
+  const hasChildren = new Set(
+    input.nodes.flatMap((node) => (node.parentId ? [node.parentId] : [])),
+  );
+
+  const ordered = [...input.nodes].sort(
+    (a, b) => Number(hasChildren.has(b.id)) - Number(hasChildren.has(a.id)),
+  );
+
+  for (const node of ordered) {
+    const box = { x: node.x, y: node.y, width: node.width, height: node.height };
+    const rectId = `node:${node.id}`;
+    const textId = `node-text:${node.id}`;
+    elements.push(
+      excalidrawElement(rectId, "rectangle", box, {
+        boundElements: [{ id: textId, type: "text" }],
+      }),
+      excalidrawText(textId, node.label, box, { containerId: rectId }),
+    );
+  }
+
+  for (const [index, relationship] of c4VisibleRelationships(input).entries()) {
+    const from = byId.get(relationship.from)!;
+    const to = byId.get(relationship.to)!;
+    const start = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+    const end = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
+    const arrowId = `edge:${index}`;
+    const labelId = `edge-label:${index}`;
+
+    elements.push(
+      excalidrawElement(
+        arrowId,
+        "arrow",
+        {
+          x: start.x,
+          y: start.y,
+          width: Math.max(1, Math.abs(end.x - start.x)),
+          height: Math.max(1, Math.abs(end.y - start.y)),
+        },
+        {
+          points: [
+            [0, 0],
+            [end.x - start.x, end.y - start.y],
+          ],
+          startArrowhead: null,
+          endArrowhead: "triangle",
+          boundElements: relationship.label
+            ? [{ id: labelId, type: "text" }]
+            : null,
+        },
+      ),
+    );
+
+    if (relationship.label) {
+      elements.push(
+        excalidrawText(
+          labelId,
+          relationship.label,
+          {
+            x: (start.x + end.x) / 2 - 60,
+            y: (start.y + end.y) / 2 - 10,
+            width: 120,
+            height: 18,
+          },
+          { fontSize: 12 },
+        ),
+      );
+    }
+  }
+
+  return JSON.stringify(excalidrawFile(elements));
+}
+
 // ---------------------------------------------------------------------------
 // draw.io (mxGraph XML)
 // ---------------------------------------------------------------------------
@@ -584,6 +775,39 @@ export async function flowToDrawio(input: FlowExportInput): Promise<string> {
     const dashed = edge.style === "dashed" ? "dashed=1;" : "";
     cells.push(
       `<mxCell id="e:${index}" value="${xmlEscape(edge.label ?? "")}" style="endArrow=block;endFill=1;html=1;${dashed}" edge="1" parent="1" source="n:${xmlEscape(edge.from)}" target="n:${xmlEscape(edge.to)}"><mxGeometry relative="1" as="geometry"${points ? `>${points}</mxGeometry>` : "/>"}</mxCell>`,
+    );
+  }
+
+  return mxFile(input.title, cells.join(""));
+}
+
+/** Boundaries (nodes with children) render first as unfilled containers so
+ * leaf nodes draw visually inside them; everything stays on the one
+ * coordinate space the C4 layout already computed. */
+export function c4ToDrawio(input: C4ExportInput): string {
+  const hasChildren = new Set(
+    input.nodes.flatMap((node) => (node.parentId ? [node.parentId] : [])),
+  );
+
+  const ordered = [...input.nodes].sort(
+    (a, b) => Number(hasChildren.has(b.id)) - Number(hasChildren.has(a.id)),
+  );
+
+  const cells: string[] = [];
+
+  for (const node of ordered) {
+    const style = hasChildren.has(node.id)
+      ? "rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;"
+      : "rounded=1;whiteSpace=wrap;html=1;";
+
+    cells.push(
+      `<mxCell id="n:${xmlEscape(node.id)}" value="${xmlEscape(node.label)}" style="${style}" vertex="1" parent="1">${mxGeometry(node.x, node.y, node.width, node.height)}</mxCell>`,
+    );
+  }
+
+  for (const [index, relationship] of c4VisibleRelationships(input).entries()) {
+    cells.push(
+      `<mxCell id="e:${index}" value="${xmlEscape(relationship.label ?? "")}" style="endArrow=block;endFill=1;html=1;" edge="1" parent="1" source="n:${xmlEscape(relationship.from)}" target="n:${xmlEscape(relationship.to)}"><mxGeometry relative="1" as="geometry"/></mxCell>`,
     );
   }
 
@@ -697,6 +921,23 @@ export function flowToXmind(input: FlowExportInput): Uint8Array {
   }
 
   return xmindFile(input.title, attached);
+}
+
+/** C4 already has its hierarchy (expand tree); XMind maps it directly, no
+ * traversal heuristics needed the way flow's arbitrary graph does. */
+export function c4ToXmind(input: C4ExportInput): Uint8Array {
+  const byParent = c4ChildrenByParent(input.nodes);
+
+  const walk = (node: C4ExportNode): XmindTopic =>
+    xmindTopic(
+      `node:${node.id}`,
+      node.label,
+      (byParent.get(node.id) ?? []).map(walk),
+    );
+
+  const roots = (byParent.get(null) ?? []).map(walk);
+
+  return xmindFile(input.title, roots);
 }
 
 // ---------------------------------------------------------------------------

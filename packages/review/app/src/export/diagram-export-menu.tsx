@@ -9,8 +9,13 @@ import * as stylex from "@stylexjs/stylex";
 import { type ReactElement, useRef, useState } from "react";
 
 import {
+  type C4ExportInput,
   type FlowExportInput,
   type SequenceExportInput,
+  c4ToDrawio,
+  c4ToExcalidraw,
+  c4ToMermaid,
+  c4ToXmind,
   diagramExportFilename,
   flowToDrawio,
   flowToExcalidraw,
@@ -24,7 +29,8 @@ import {
 
 export type DiagramExportSource =
   | ({ kind: "sequence" } & SequenceExportInput)
-  | ({ kind: "flow" } & FlowExportInput);
+  | ({ kind: "flow" } & FlowExportInput)
+  | ({ kind: "c4" } & C4ExportInput);
 
 const ITEMS = [
   { id: "copy-mermaid", label: "Copy Mermaid" },
@@ -53,34 +59,71 @@ function downloadBytes(bytes: Uint8Array, mimeType: string, filename: string) {
   triggerDownload(new Blob([copy], { type: mimeType }), filename);
 }
 
+function diagramMermaid(source: DiagramExportSource): string {
+  switch (source.kind) {
+    case "sequence":
+      return sequenceToMermaid(source);
+    case "flow":
+      return flowToMermaid(source);
+    case "c4":
+      return c4ToMermaid(source);
+  }
+}
+
+async function diagramExcalidraw(source: DiagramExportSource): Promise<string> {
+  switch (source.kind) {
+    case "sequence":
+      return sequenceToExcalidraw(source);
+    case "flow":
+      return flowToExcalidraw(source);
+    case "c4":
+      return c4ToExcalidraw(source);
+  }
+}
+
+async function diagramDrawio(source: DiagramExportSource): Promise<string> {
+  switch (source.kind) {
+    case "sequence":
+      return sequenceToDrawio(source);
+    case "flow":
+      return flowToDrawio(source);
+    case "c4":
+      return c4ToDrawio(source);
+  }
+}
+
+function diagramXmind(source: DiagramExportSource): Uint8Array {
+  switch (source.kind) {
+    case "sequence":
+      return sequenceToXmind(source);
+    case "flow":
+      return flowToXmind(source);
+    case "c4":
+      return c4ToXmind(source);
+  }
+}
+
 async function exportDiagram(
   source: DiagramExportSource,
   id: (typeof ITEMS)[number]["id"],
 ) {
-  const mermaid =
-    source.kind === "sequence"
-      ? sequenceToMermaid(source)
-      : flowToMermaid(source);
-
   const name = (ext: string) => diagramExportFilename(source.title, ext);
 
   if (id === "copy-mermaid") {
-    await copyText(mermaid);
+    await copyText(diagramMermaid(source));
 
     return;
   }
 
   if (id === "download-mermaid") {
-    download(mermaid, "text/plain", name("mmd"));
+    download(diagramMermaid(source), "text/plain", name("mmd"));
 
     return;
   }
 
   if (id === "download-excalidraw") {
     download(
-      source.kind === "sequence"
-        ? sequenceToExcalidraw(source)
-        : await flowToExcalidraw(source),
+      await diagramExcalidraw(source),
       "application/json",
       name("excalidraw"),
     );
@@ -89,19 +132,13 @@ async function exportDiagram(
   }
 
   if (id === "download-drawio") {
-    download(
-      source.kind === "sequence"
-        ? sequenceToDrawio(source)
-        : await flowToDrawio(source),
-      "application/xml",
-      name("drawio"),
-    );
+    download(await diagramDrawio(source), "application/xml", name("drawio"));
 
     return;
   }
 
   downloadBytes(
-    source.kind === "sequence" ? sequenceToXmind(source) : flowToXmind(source),
+    diagramXmind(source),
     "application/vnd.xmind.workbook",
     name("xmind"),
   );
