@@ -91,3 +91,6 @@ artifacts/devbox/
 scripts/acceptance/evidence/
 
 packages/review/tutorial/pins.json
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

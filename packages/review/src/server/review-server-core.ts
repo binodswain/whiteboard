@@ -284,7 +284,7 @@ export interface WhiteboardCoreInput {
   deploymentConfig?: DeploymentConfig;
   localBrowserAuth?: boolean;
   localBrowserPort?: () => number | undefined;
-  softwareMapEnabled?: boolean;
+  softwareMapEnabled?: () => boolean;
   scratchpad: () => boolean;
   status: () => JsonObject;
   hooks?: ReviewApiHooks;
@@ -642,7 +642,7 @@ export function serveWebCanvas(
 /** The Desktop callbacks `createReviewApi` takes, answered over the relay. */
 export function relayReviewCallbacks(
   relay: ReviewDesktopVerbRelay,
-  softwareMapEnabled = false,
+  softwareMapEnabled: () => boolean = () => false,
 ) {
   return {
     async open(review: {
@@ -662,7 +662,10 @@ export function relayReviewCallbacks(
       Omit<AuthoringCapabilities, "scratchpadEnabled">
     > {
       if (!relay.attached)
-        return { desktopAvailable: false, softwareMapEnabled };
+        return {
+          desktopAvailable: false,
+          softwareMapEnabled: softwareMapEnabled(),
+        };
 
       const result = await relay.dispatch({
         name: "authoringCapabilities",
