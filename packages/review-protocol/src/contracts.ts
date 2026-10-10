@@ -603,6 +603,10 @@ export interface ReviewCanvasSettingsContent {
   setScratchpadEnabled(enabled: boolean): Promise<boolean>;
   // Shared CLI configuration, read when its disclosure opens.
   diffrConfig: ReviewDiffrConfigActions;
+  /** False when the server does not expose the diffr config routes (remote
+   * deployments keep them machine-local); the page says so instead of
+   * rendering the editor. Undefined means present. */
+  diffrConfigAvailable?: boolean;
   reloadWindow(): Promise<void>;
   manageExtensions(): void;
   importVsCodeSettings(): void;

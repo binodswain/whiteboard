@@ -124,6 +124,9 @@ function webFixtureRequest(state: FixtureState) {
       return Response.json(settings);
     }
 
+    if (pathname === "/diffr-config")
+      return Response.json({ values: {}, credentialSource: "missing" });
+
     if (pathname === "/reviews-api/status")
       return Response.json({
         deployment: { mode: state.deploymentMode ?? "local" },

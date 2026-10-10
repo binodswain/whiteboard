@@ -510,7 +510,6 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
 
   api = createReviewApi(
     store,
-
     data,
     callbacks.open,
     shared,
@@ -544,50 +543,55 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     jobs,
   );
 
-  // The browser settings page edits the same diffr config Desktop shows;
-  // values come back redacted, never the stored key itself.
-  app.get("/diffr-config", async () =>
-    serverJson(200, await readDiffrConfig()),
-  );
-  app.put("/diffr-config", async (context) => {
-    const body = await readBoundedRequestJson(context.req.raw);
-
-    const key = isJsonObject(body) ? jsonString(body.key) : undefined;
-
-    const value = isJsonObject(body) ? body.value : undefined;
-
-    if (key === undefined || value === undefined) {
-      throw new ReviewServerError("key and value are required.", 400);
-    }
-
-    return serverJson(200, await setDiffrConfigValue(key, value));
-  });
-  app.put("/diffr-config/summarizer", async (context) => {
-    const input = reviewDiffrSummarizerInputSchema.safeParse(
-      await readBoundedRequestJson(context.req.raw),
+  // The diffr config is machine-local: provider credentials and a summarizer
+  // API key must not reach every signed-in user of a remote deployment, so
+  // only the single-user local server mounts these routes.
+  if (!auth) {
+    // The browser settings page edits the same diffr config Desktop shows;
+    // values come back redacted, never the stored key itself.
+    app.get("/diffr-config", async () =>
+      serverJson(200, await readDiffrConfig()),
     );
+    app.put("/diffr-config", async (context) => {
+      const body = await readBoundedRequestJson(context.req.raw);
 
-    if (!input.success)
-      throw new ReviewServerError("Invalid summary settings.", 400);
+      const key = isJsonObject(body) ? jsonString(body.key) : undefined;
 
-    return serverJson(200, await saveDiffrSummarizer(input.data));
-  });
-  app.post("/diffr-config/summarizer/test", async (context) => {
-    const input = reviewDiffrSummarizerInputSchema.safeParse(
-      await readBoundedRequestJson(context.req.raw),
-    );
+      const value = isJsonObject(body) ? body.value : undefined;
 
-    if (!input.success)
-      throw new ReviewServerError("Invalid summary settings.", 400);
+      if (key === undefined || value === undefined) {
+        throw new ReviewServerError("key and value are required.", 400);
+      }
 
-    return serverJson(200, {
-      summary: await testDiffrSummarizer(
-        input.data,
-        undefined,
-        context.req.raw.signal,
-      ),
+      return serverJson(200, await setDiffrConfigValue(key, value));
     });
-  });
+    app.put("/diffr-config/summarizer", async (context) => {
+      const input = reviewDiffrSummarizerInputSchema.safeParse(
+        await readBoundedRequestJson(context.req.raw),
+      );
+
+      if (!input.success)
+        throw new ReviewServerError("Invalid summary settings.", 400);
+
+      return serverJson(200, await saveDiffrSummarizer(input.data));
+    });
+    app.post("/diffr-config/summarizer/test", async (context) => {
+      const input = reviewDiffrSummarizerInputSchema.safeParse(
+        await readBoundedRequestJson(context.req.raw),
+      );
+
+      if (!input.success)
+        throw new ReviewServerError("Invalid summary settings.", 400);
+
+      return serverJson(200, {
+        summary: await testDiffrSummarizer(
+          input.data,
+          undefined,
+          context.req.raw.signal,
+        ),
+      });
+    });
+  }
 
   // A shared store mounts the publisher with the rest of sharing.
   if (!shared) mountSharingPublisher(api, store, data);

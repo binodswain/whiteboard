@@ -209,6 +209,12 @@ export async function loadWebSettings(
     return response.json();
   };
 
+  // Remote deployments do not mount the diffr config routes; the settings
+  // page swaps its editor for a note when the probe 404s or 401s.
+  const diffrConfigAvailable = await request(`${config.serverUrl}/diffr-config`)
+    .then((response) => response.ok)
+    .catch(() => false);
+
   const unavailable = async <T>(value: T) => value;
 
   return {
@@ -256,6 +262,7 @@ export async function loadWebSettings(
           )
         ).summary,
     },
+    diffrConfigAvailable,
     reloadWindow: async () => {
       location.reload();
     },

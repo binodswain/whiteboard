@@ -390,10 +390,21 @@ export function SettingsPage({
               </label>
             </Row>
             {structuralDiffEnabled ? (
-              <DiffrConfigSection
-                actions={settings.diffrConfig}
-                reloadWindow={settings.reloadWindow}
-              />
+              settings.diffrConfigAvailable === false ? (
+                <Row
+                  label="Summaries"
+                  description="Diffr configuration is managed by the server operator."
+                >
+                  <span aria-label="Managed by the server operator">
+                    Server-managed
+                  </span>
+                </Row>
+              ) : (
+                <DiffrConfigSection
+                  actions={settings.diffrConfig}
+                  reloadWindow={settings.reloadWindow}
+                />
+              )
             ) : null}
             {!web && install ? (
               <TraceCaptureSection
