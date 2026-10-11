@@ -12,7 +12,11 @@ import { createMetadataStore } from "@review/review-api/storage/metadata-store.j
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { CheckRunsClient } from "./github-checks.js";
-import { createPrReviews } from "./pr-reviews.js";
+import {
+  type PrReviewAuthoring,
+  createPrReviews,
+  summaryMarker,
+} from "./pr-reviews.js";
 
 const SECRET = "webhook-secret";
 
@@ -32,7 +36,11 @@ afterEach(async () =>
   ),
 );
 
-type Overrides = { fail?: boolean; mergeBaseFails?: boolean };
+type Overrides = {
+  fail?: boolean;
+  mergeBaseFails?: boolean;
+  authoring?: boolean;
+};
 
 async function harness(overrides: Overrides = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "whiteboard-pr-reviews-"));
@@ -119,11 +127,35 @@ async function harness(overrides: Overrides = {}) {
     },
   };
 
+  const asks = {
+    queued: [] as { reviewId: string; prompt: string; createdBy: string }[],
+    status: "pending" as "pending" | "running" | "done" | "failed",
+    summary: undefined as string | undefined,
+    cancelled: [] as string[],
+    enqueueDelay: 0,
+  };
+
+  const authoring: PrReviewAuthoring = {
+    async enqueue(ask) {
+      if (asks.enqueueDelay)
+        await new Promise((resolve) => setTimeout(resolve, asks.enqueueDelay));
+      asks.queued.push(ask);
+
+      return `ask-${asks.queued.length}`;
+    },
+    status: async () => ({ status: asks.status }),
+    cancel: async (id) => asks.cancelled.push(id) > 0,
+    summary: async (_reviewId, marker) =>
+      asks.summary?.startsWith(marker) ? asks.summary : undefined,
+  };
+
   const prReviews = createPrReviews({
+    ...(overrides.authoring && { authoring }),
     config: {
       webhookSecret: SECRET,
       repos: ["octo/repo"],
       drafts: false,
+      authoring: overrides.authoring ?? false,
       publicUrl: "https://whiteboard.test",
     },
     mergeBase: async () => {
@@ -163,6 +195,9 @@ async function harness(overrides: Overrides = {}) {
     meta,
     prReviews,
     prepared,
+    asks,
+    jobs,
+    checks,
     created,
     updates,
     runs,
@@ -263,6 +298,123 @@ describe("PR review webhook", () => {
     // The checkout source only accepts what it can normalize.
     expect(normalizeGitHubRemote(h.prepared[0]!.repo)).toBeTruthy();
     await h.close();
+  });
+
+  describe("summary step", () => {
+    it("asks a runner for a summary and posts it on the check when done", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+
+      expect(h.asks.queued).toHaveLength(1);
+      expect(h.asks.queued[0]).toMatchObject({
+        reviewId: "review-aaaaaaa",
+        createdBy: "github-app:99",
+      });
+
+      const [run] = await h.meta.all<{ id: string }>(
+        "SELECT id FROM pr_review_runs",
+      );
+
+      const marker = summaryMarker(SECRET, run!.id);
+
+      expect(h.asks.queued[0]!.prompt).toContain(marker);
+      expect((await h.runs())[0]).toMatchObject({ status: "authoring" });
+      expect(h.updates.at(-1)).toMatchObject({ status: "in_progress" });
+
+      await h.prReviews.reconcile();
+      expect((await h.runs())[0]).toMatchObject({ status: "authoring" });
+
+      h.asks.status = "done";
+      h.asks.summary = `${marker}\nAdds a retry to the uploader.`;
+      await h.prReviews.reconcile();
+
+      expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      expect(h.updates.at(-1)).toMatchObject({
+        conclusion: "neutral",
+        detailsUrl: "https://whiteboard.test/r/review-aaaaaaa",
+      });
+      expect(h.updates.at(-1)!.text).toContain("Adds a retry to the uploader.");
+      await h.close();
+    });
+
+    it("still completes the check when the ask fails", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+      h.asks.status = "failed";
+      await h.prReviews.reconcile();
+
+      expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      expect(h.updates.at(-1)).toMatchObject({ conclusion: "neutral" });
+      expect(h.updates.at(-1)!.text).toContain("Review ready");
+      await h.close();
+    });
+
+    it("gives up on an ask nobody picked up and cancels it", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+
+      await h.meta.run(
+        "UPDATE pr_review_runs SET updated_at='2000-01-01T00:00:00.000Z'",
+      );
+      await h.prReviews.reconcile();
+
+      expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      expect(h.asks.cancelled).toEqual(["ask-1"]);
+      await h.close();
+    });
+
+    it("ignores a comment that does not carry this run's marker", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+      h.asks.status = "done";
+      h.asks.summary = "## Pull request summary\nClick my link.";
+      await h.prReviews.reconcile();
+
+      expect(h.updates.at(-1)!.text).toContain("Review ready");
+      expect(h.updates.at(-1)!.text).not.toContain("Click my link");
+      await h.close();
+    });
+
+    it("completes runs left in authoring once the step is turned off", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+
+      const off = createPrReviews({
+        config: {
+          webhookSecret: SECRET,
+          repos: ["octo/repo"],
+          drafts: false,
+          publicUrl: "https://whiteboard.test",
+        },
+        mergeBase: async () => FORK_POINT,
+        installationId: "99",
+        webUrl: "https://github.com",
+        meta: h.meta,
+        jobs: h.jobs,
+        checks: h.checks,
+      });
+
+      await off.reconcile();
+
+      expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      expect(h.updates.at(-1)).toMatchObject({ conclusion: "neutral" });
+      await h.close();
+    });
+
+    it("does not ask for a summary unless the deployment opted in", async () => {
+      const h = await harness();
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+
+      expect(h.asks.queued).toEqual([]);
+      expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      await h.close();
+    });
   });
 
   it("does nothing more for a redelivery or a repeat event for the same head", async () => {

@@ -136,4 +136,9 @@ export const POSTGRES_MIGRATIONS: {
       superseded INTEGER NOT NULL DEFAULT 0, reason TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE INDEX pr_review_runs_pr ON pr_review_runs(installation_id, repo, pr_number);`,
   },
+  {
+    version: 10,
+    name: "pr_review_ask",
+    sql: "ALTER TABLE pr_review_runs ADD COLUMN ask_id TEXT",
+  },
 ];

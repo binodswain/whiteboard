@@ -109,6 +109,11 @@ export class LibsqlMetadataStore implements MetadataStore {
               "ALTER TABLE jobs_jobs ADD COLUMN submitter_id TEXT",
             );
 
+          if (!(await columnsOf("pr_review_runs")).has("ask_id"))
+            await tx.execute(
+              "ALTER TABLE pr_review_runs ADD COLUMN ask_id TEXT",
+            );
+
           const present = await columnsOf("reviews");
 
           const missing = REVIEW_COLUMNS.filter(

@@ -570,6 +570,20 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           webUrl: deploymentConfig.github?.webUrl ?? "https://github.com",
           meta: store.metadataStore(),
           jobs,
+          authoring: deploymentConfig.prReviews.authoring
+            ? {
+                enqueue: (ask) => store.askQueue.create(ask),
+                status: (id) => store.askQueue.get(id),
+                cancel: (id) => store.askQueue.cancel(id),
+                summary: async (reviewId, marker) =>
+                  (await store.comments.list(reviewId)).find(
+                    (comment) =>
+                      !comment.parentId &&
+                      !comment.anchor &&
+                      comment.body.startsWith(marker),
+                  )?.body,
+              }
+            : undefined,
           mergeBase: createMergeBaseResolver({
             app: githubApp,
             apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
@@ -583,6 +597,24 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           log: (message) => console.error(`[pr-reviews] ${message}`),
         })
       : undefined;
+
+  // An ask finishes on a runner, not here, so nothing else would notice it.
+  const authoringTimer =
+    prReviews && deploymentConfig.prReviews?.authoring
+      ? setInterval(
+          () =>
+            void prReviews
+              .reconcile()
+              .catch((cause: unknown) =>
+                console.error(
+                  `[pr-reviews] reconcile failed: ${String(cause)}`,
+                ),
+              ),
+          30_000,
+        )
+      : undefined;
+
+  authoringTimer?.unref();
 
   const app = createReviewServerApp({
     token: input.token,
@@ -703,7 +735,10 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     repoSource,
     deployment: deploymentConfig,
     auth: auth ?? undefined,
-    close: () => askThreads?.closeAll(),
+    close: () => {
+      clearInterval(authoringTimer);
+      askThreads?.closeAll();
+    },
   };
 }
 

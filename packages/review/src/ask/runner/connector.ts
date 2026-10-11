@@ -115,7 +115,7 @@ export async function runAskConnector(
       selection: { title: "Hosted Whiteboard review" },
       context:
         `You are connected to a hosted Whiteboard review. Its sessionId is "${pending.reviewId}". ` +
-        "Call session_get and session_get_instructions before authoring. Use the Whiteboard MCP tools to draw the requested diagram in this review. Do not edit local files.",
+        "Call session_get and session_get_instructions before authoring. Use the Whiteboard MCP tools to do the requested work in this review, such as drawing a diagram or adding a comment. Do not edit local files.",
       question: { text: pending.prompt },
     });
 
