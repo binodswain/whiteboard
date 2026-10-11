@@ -164,11 +164,18 @@ describe("loadDeploymentConfig", () => {
         webhookSecret: "hook-secret",
         repos: ["octo/repo", "octo/other"],
         drafts: false,
+        authoring: false,
         publicUrl: "https://whiteboard.example.com",
       });
       expect(
         loadDeploymentConfig({ ...base, WHITEBOARD_PR_REVIEW_DRAFTS: "true" })
           .prReviews?.drafts,
+      ).toBe(true);
+      expect(
+        loadDeploymentConfig({
+          ...base,
+          WHITEBOARD_PR_REVIEW_AUTHORING: "true",
+        }).prReviews?.authoring,
       ).toBe(true);
     });
 

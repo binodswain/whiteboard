@@ -22,7 +22,10 @@ import {
 } from "@review/auth/repo-access.js";
 import { createCheckRunsClient } from "@review/integrations/github-checks.js";
 import { createMergeBaseResolver } from "@review/integrations/github-compare.js";
-import { createPrReviews } from "@review/integrations/pr-reviews.js";
+import {
+  SUMMARY_MARKER,
+  createPrReviews,
+} from "@review/integrations/pr-reviews.js";
 import {
   type JobRunner,
   type PrepareReviewInput,
@@ -570,6 +573,20 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           webUrl: deploymentConfig.github?.webUrl ?? "https://github.com",
           meta: store.metadataStore(),
           jobs,
+          authoring: deploymentConfig.prReviews.authoring
+            ? {
+                enqueue: (ask) => store.askQueue.create(ask),
+                status: (id) => store.askQueue.get(id),
+                summary: async (reviewId, since) =>
+                  (await store.comments.list(reviewId)).find(
+                    (comment) =>
+                      !comment.parentId &&
+                      !comment.anchor &&
+                      comment.createdAt >= since &&
+                      comment.body.startsWith(SUMMARY_MARKER),
+                  )?.body,
+              }
+            : undefined,
           mergeBase: createMergeBaseResolver({
             app: githubApp,
             apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",

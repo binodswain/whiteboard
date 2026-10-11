@@ -21,6 +21,7 @@ All of it is deployment environment, never repository files.
 | `WHITEBOARD_GITHUB_WEBHOOK_SECRET`        | Turns the feature on. Must match the App's webhook secret.                                                             |
 | `WHITEBOARD_PR_REVIEW_REPOS`              | Comma-separated `owner/repo` allowlist. Required.                                                                      |
 | `WHITEBOARD_PR_REVIEW_DRAFTS`             | `true` to review draft PRs. Skipped by default.                                                                        |
+| `WHITEBOARD_PR_REVIEW_AUTHORING`          | `true` to have an ask runner write a summary of each prepared review (see below). Off by default.                      |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | Required. The same App that checks repositories out. Set `GITHUB_APP_INSTALLATION_ID` to accept one installation only. |
 | `WHITEBOARD_PUBLIC_URL`                   | Required. The origin readers use to reach this deployment; check links are `<origin>/r/<review id>`, with no token.    |
 | `WHITEBOARD_REPO_SOURCE`                  | Must be `github` (the default for a remote deployment). github.com only: GitHub Enterprise is not supported.           |
@@ -53,6 +54,28 @@ narrowed to `checks: write` on the one repository.
 5. A failed job completes the check as `failure` with fixed text. Error details
    stay in the run row (`pr_review_runs.error`), never in check output.
    Redelivering the webhook (or pushing a new commit) retries it.
+
+## Written summary (opt-in)
+
+With `WHITEBOARD_PR_REVIEW_AUTHORING=true`, a prepared review is not completed
+at once. The run moves to `authoring` and a hosted ask is queued with a fixed,
+server-owned prompt: read the change through the review's Whiteboard tools, and
+post one whole-review comment that starts with `## Pull request summary`.
+The prompt marks the diff and comments as untrusted data to describe, never
+instructions. When the ask ends, the check is completed as `neutral` with that
+comment (cut to 4000 characters) as its summary and `details_url` on the
+review.
+
+The review is already usable at that point, so a failed ask, an ask with no
+summary comment, or no runner picking it up within 30 minutes still completes
+the check with the plain "Review ready" text.
+
+An ask runner (`whiteboard ask connect`) must be running for this to do
+anything. The runner currently uses the deployment's general token, so the
+agent can reach every review on the server, not only this one; scoping it to a
+single review, isolating the worker and pinning the agent's provider and model
+are not done yet. Enable this only on a deployment where that trust is
+acceptable.
 
 A `synchronize` marks the PR's older runs `superseded`. Each run only ever
 updates its own check run, so an old head finishing late cannot change the

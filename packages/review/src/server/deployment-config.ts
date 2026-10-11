@@ -46,6 +46,10 @@ const envSchema = z.object({
     (value) => (value === "" ? undefined : value),
     z.enum(["true", "false"]).optional(),
   ),
+  WHITEBOARD_PR_REVIEW_AUTHORING: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.enum(["true", "false"]).optional(),
+  ),
 });
 
 export interface DeploymentConfig {
@@ -85,6 +89,9 @@ export interface DeploymentConfig {
     repos: string[];
     /** Whether draft PRs are reviewed; skipped by default. */
     drafts: boolean;
+    /** Whether a prepared review is handed to an ask runner for a written
+     * summary; off by default, as it needs a runner and agent credentials. */
+    authoring: boolean;
     /** Where reviewers reach this deployment; check links start here. */
     publicUrl: string;
   };
@@ -336,6 +343,7 @@ export function loadDeploymentConfig(
       publicUrl,
       repos,
       drafts: values.WHITEBOARD_PR_REVIEW_DRAFTS === "true",
+      authoring: values.WHITEBOARD_PR_REVIEW_AUTHORING === "true",
     };
   }
 
