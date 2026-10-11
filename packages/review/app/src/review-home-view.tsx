@@ -992,7 +992,6 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
 
   const closeEdit = () => {
     setIsEditing(false);
-    setDraft("");
     setError(undefined);
   };
 
@@ -1028,7 +1027,6 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
             placeholder="Add tag"
             aria-label={`Add tag to ${reviewTitle(review)}`}
             onChange={(event) => setDraft(event.target.value)}
-            onBlur={closeEdit}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
@@ -2035,8 +2033,8 @@ const styles = stylex.create({
     },
   },
   td: {
-    height: "60px",
-    padding: "0 8px",
+    minHeight: "60px",
+    padding: "10px 8px",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: tokens.rule,

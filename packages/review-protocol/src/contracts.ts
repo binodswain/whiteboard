@@ -713,9 +713,9 @@ export interface ReviewApiSourceLocation {
 }
 
 export type ReviewCanvasContent =
-  | { kind: "loading" }
+  | { kind: "loading"; theme?: ReviewTheme }
   | {
-      kind: "api";
+      kind: "api"; theme?: ReviewTheme;
       tutorial?: ReviewCanvasTutorialBridge;
       setTutorial?(enabled: boolean): void;
       structuralDiffEnabled?: boolean;
@@ -746,7 +746,7 @@ export type ReviewCanvasContent =
   // session) and carries the human-readable reason.
   | { kind: "source"; error?: string }
   | {
-      kind: "home";
+      kind: "home"; theme?: ReviewTheme;
       reviews: readonly ReviewApiSummary[];
       repositories?: readonly ReviewApiRepository[];
       createSession?(

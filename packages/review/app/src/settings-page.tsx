@@ -153,7 +153,9 @@ export function SettingsPage({
             ) : null}
           </div>
           <p {...stylex.props(styles.lede)}>
-            {web ? "Settings apply to your browser session." : "Settings apply to Whiteboard on this machine."}
+            {web
+              ? "Settings apply to your browser session."
+              : "Settings apply to Whiteboard on this machine."}
           </p>
 
           {!web && install ? (

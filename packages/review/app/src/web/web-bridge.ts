@@ -289,14 +289,15 @@ export function webNotify(kind: "success" | "error", text: string): void {
     "background:var(--tray,#12161e);color:var(--ink,#eef0f4);" +
     "border:1px solid var(--rule,#262c37);z-index:2147483000;" +
     "font:13px/1.4 inherit;box-shadow:0 8px 24px rgb(0 0 0 / 40%);";
-  
-  const themeHost = document.querySelector('.review-canvas-root');
+
+  const themeHost = document.querySelector(".review-canvas-root");
+
   if (themeHost) {
     themeHost.append(toast);
   } else {
     document.body.append(toast);
   }
-  
+
   if (kind === "error") {
     setTimeout(() => toast.remove(), 10000);
   } else {

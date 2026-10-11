@@ -165,7 +165,9 @@ function CanvasShell({
   theme?: "dark" | "light";
 }) {
   return (
-    <main {...stylex.props(styles.shell, theme === "light" && themeStyles.light)}>
+    <main
+      {...stylex.props(styles.shell, theme === "light" && themeStyles.light)}
+    >
       <div {...stylex.props(textStyles.eyebrow, styles.brand)}>
         /dev/fast Whiteboard
       </div>
