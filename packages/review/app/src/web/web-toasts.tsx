@@ -57,9 +57,9 @@ function WebToastStack() {
 function ensureMounted() {
   if (mounted?.host.isConnected) return;
 
-  const host = createWebThemeHost(document, { displayContents: true });
+  const { root, host } = createWebThemeHost(null, document);
 
-  document.body.append(host);
+  document.body.append(root);
   createRoot(host).render(<WebToastStack />);
   mounted = { host };
 }

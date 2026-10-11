@@ -70,13 +70,10 @@ export function renderTokenPrompt(
 ): void {
   current?.unmount();
 
-  const host = createWebThemeHost(container.ownerDocument, {
-    displayContents: true,
-  });
-
+  // The frame's page is the scope root the brand bar mirrors the theme from.
+  const { host } = createWebThemeHost(container, container.ownerDocument);
   const root = createRoot(host);
 
-  container.append(host);
   root.render(<TokenPrompt {...options} />);
   current = {
     host,
