@@ -83,8 +83,8 @@ const adminStyles = stylex.create({
     borderRadius: radius.control,
   },
   remove: {
-    border: "none",
-    background: "none",
+    borderWidth: 0,
+    backgroundColor: "transparent",
     color: "inherit",
     cursor: "pointer",
     padding: "0 4px",
