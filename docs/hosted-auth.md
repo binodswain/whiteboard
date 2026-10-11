@@ -48,19 +48,20 @@ A request authenticates only when the secret header matches — the login
 header alone is never trusted, so the proxy must strip both from inbound
 traffic and inject them itself.
 
-## API tokens
+## API keys
 
-Signed-in viewers manage personal API tokens in Settings → API tokens
-(`/auth/tokens`). A token is shown once at creation; the database stores only
+Signed-in viewers manage personal API keys in Settings → API keys
+(`/auth/tokens`). A key is not an OAuth token: it is an opaque `wbt_…` secret
+sent as a standard `Authorization: Bearer` header. A key is shown once at creation; the database stores only
 its SHA-256 hash. Revoking a token deletes the row, so it fails on its very
 next request.
 
 ```sh
 curl -H "Authorization: Bearer wbt_…" https://<host>/reviews-api
-whiteboard review --repo .   # sends the token as x-review-token
+whiteboard review --repo .   # sends the key as x-review-token
 ```
 
-`x-review-token` and `Authorization: Bearer` are equivalent. A token
+`x-review-token` and `Authorization: Bearer` are equivalent. A key
 identifies its owner but cannot mint or manage further tokens — that needs a
 session.
 
