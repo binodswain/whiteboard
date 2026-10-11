@@ -625,6 +625,59 @@ describe("the web canvas entry", () => {
     ).toBe(true);
   });
 
+  it("recovers from a failed settings load without reloading the page", async () => {
+    const state: FixtureState = {
+      catalog: [],
+      repositories: [],
+      snapshots: new Map(),
+    };
+
+    const fixture = webFixtureRequest(state);
+    let fail = true;
+
+    const request = (url: string, init?: RequestInit) => {
+      if (new URL(url).pathname === "/reviews-api/settings" && fail) {
+        fail = false;
+
+        return Promise.resolve(
+          Response.json({ error: "Settings unavailable." }, { status: 503 }),
+        );
+      }
+
+      return fixture.request(url, init);
+    };
+
+    history.replaceState(null, "", "/");
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      app = startWebCanvas(container!, {
+        token: "test-token",
+        serverUrl: "http://fixture.local",
+        request,
+      });
+    });
+
+    expect(
+      await settled(() =>
+        container!.textContent?.includes("Settings unavailable."),
+      ),
+    ).toBe(true);
+
+    await act(async () =>
+      userEvent.click(
+        [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent === "Retry",
+        )!,
+      ),
+    );
+
+    expect(
+      await settled(() => container!.textContent?.includes("No sessions yet")),
+    ).toBe(true);
+  });
+
   it("creates a worktree session for the selected repository and opens it", async () => {
     const state: FixtureState = {
       catalog: [],

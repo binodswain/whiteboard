@@ -91,6 +91,24 @@ function DocumentBody() {
   );
 }
 
+const LOADING_STATUS_DELAY_MS = 400;
+
+function DelayedLoadingStatus() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), LOADING_STATUS_DELAY_MS);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  return visible ? (
+    <p {...stylex.props(styles.error)} role="status">
+      Loading review…
+    </p>
+  ) : null;
+}
+
 const message = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
 
@@ -386,11 +404,12 @@ export function ApiCanvas({
     [client, content.reviewId, data],
   );
 
-  // Loads are near-instant, so stay blank until there is data or an error.
   // Both branches root the same query provider, so its cache outlives a load.
+  // A fast load stays blank; a slow one gets a status after a short delay.
   if (!data)
     return (
       <CanvasQueryProvider client={client} reviewId={content.reviewId}>
+        {error === undefined && <DelayedLoadingStatus />}
         {error !== undefined && (
           <>
             <p {...stylex.props(styles.error)} role="status">

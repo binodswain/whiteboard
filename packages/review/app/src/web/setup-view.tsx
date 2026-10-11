@@ -21,6 +21,8 @@ import { type ReactNode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
 
+import { readCachedTheme } from "./theme-cache";
+
 const setupInfoSchema = z.object({
   serverUrl: z.string(),
   codeRoot: z.string().nullable(),
@@ -363,7 +365,16 @@ export function mountWebSetup(
   );
 
   const applyTheme = () => {
-    const light = media ? !media.matches : false;
+    // Setup is reached before settings can load, so it follows the choice this
+    // browser last saw and falls back to the OS when there is none.
+    const choice = readCachedTheme();
+
+    const light =
+      choice === "system"
+        ? media
+          ? !media.matches
+          : false
+        : choice === "light";
 
     container.dataset.reviewTheme = light ? "light" : "dark";
     host.className = [
