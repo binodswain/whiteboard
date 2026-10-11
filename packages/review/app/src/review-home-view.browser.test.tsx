@@ -1016,6 +1016,45 @@ describe("ReviewHome", () => {
       }
     });
 
+    it("drives the Sort menu from the keyboard and returns focus to its trigger", async () => {
+      await act(async () =>
+        renderWithHost(<ReviewHome reviews={reviews} onOpen={() => {}} />),
+      );
+
+      const trigger = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Sort reviews"]',
+      )!;
+
+      const press = (key: string) =>
+        act(async () => {
+          document.activeElement?.dispatchEvent(
+            new KeyboardEvent("keydown", { key, bubbles: true }),
+          );
+        });
+
+      const focused = () => document.activeElement?.getAttribute("data-value");
+
+      await act(async () => trigger.click());
+      expect(focused()).toBe("newest");
+      await press("ArrowDown");
+      expect(focused()).toBe("oldest");
+      await press("End");
+      expect(focused()).toBe("title");
+      await press("ArrowDown");
+      expect(focused()).toBe("newest");
+      await press("Escape");
+      expect(container.querySelector('[role="menu"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+
+      await act(async () => trigger.click());
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[data-value="title"]')!
+          .click(),
+      );
+      expect(document.activeElement).toBe(trigger);
+    });
+
     it("names the trunk shortcut after the branch the sessions use", async () => {
       await act(async () =>
         renderWithHost(<ReviewHome reviews={reviews} onOpen={() => {}} />),
