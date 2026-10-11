@@ -497,6 +497,7 @@ function mountWebCanvas(
 
       return result.review;
     },
+    setupHref: "/setup",
     theme: canvasTheme(),
     openReview,
     openTutorial() {

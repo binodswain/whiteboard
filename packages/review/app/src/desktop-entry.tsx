@@ -151,6 +151,7 @@ function Home({
       onboarding={content.onboarding}
       onOpenTutorial={content.openTutorial}
       onOpenSettings={content.openSettings}
+      setupHref={content.setupHref}
     />
   );
 }
