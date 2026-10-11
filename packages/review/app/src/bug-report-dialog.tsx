@@ -10,6 +10,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -30,6 +31,7 @@ import { useToast } from "./toast";
 import { tokens } from "./tokens.stylex";
 import { useTutorial } from "./tutorial-context";
 import { captureUiEvent, clientErrorName } from "./ui-telemetry";
+import { useModalFocus } from "./use-modal-focus";
 import { useTooltip } from "./use-tooltip";
 
 const MAX_DESCRIPTION_BYTES = 64 * 1024;
@@ -53,6 +55,8 @@ export function BugReportControl({
   const { toast, showToast: setToast } = useToast();
   const tooltip = useTooltip("Report a bug");
   const capturePending = useRef(false);
+  const opener = useRef<HTMLElement>(null);
+  const dialog = useRef<HTMLElement>(null);
   const descriptionBytes = new TextEncoder().encode(description).byteLength;
   const canSend = descriptionBytes <= MAX_DESCRIPTION_BYTES && !sending;
 
@@ -65,11 +69,32 @@ export function BugReportControl({
     setSending(false);
   };
 
+  // Cancel is the deliberate discard. Escape and the backdrop only hide the
+  // dialog, so the draft is still there when it reopens, and neither closes it
+  // while a report is going out.
   const cancel = () => {
     captureUiEvent(session, "bug_report_cancelled");
     reset();
     setOpen(false);
   };
+
+  const hide = () => {
+    if (!sending) setOpen(false);
+  };
+
+  const trapFocus = useModalFocus({ open, dialog, opener });
+
+  useEffect(() => {
+    if (!open) return;
+
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape") hide();
+    };
+
+    window.addEventListener("keydown", dismiss);
+
+    return () => window.removeEventListener("keydown", dismiss);
+  });
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -185,6 +210,14 @@ export function BugReportControl({
 
   const openDialog = async () => {
     if (tutorial || capturePending.current) return;
+
+    // An unsent draft reopens as it was, screenshot included.
+    if (description !== "" || screenshot !== null) {
+      setOpen(true);
+
+      return;
+    }
+
     capturePending.current = true;
     setCapturing(true);
     captureUiEvent(session, "bug_report_dialog_opened");
@@ -207,16 +240,20 @@ export function BugReportControl({
         aria-label="Report a bug"
         ref={tooltip}
         disabled={tutorial !== null || capturing}
-        onClick={() => void openDialog()}
+        onClick={(event) => {
+          opener.current = event.currentTarget;
+          void openDialog();
+        }}
       >
         <BugIcon xstyle={controlStyles.chromeIcon} />
       </IconButton>
       {open && (
         <div
           {...stylex.props(shellStyles.topbarItem, styles.backdrop)}
-          onMouseDown={cancel}
+          onMouseDown={hide}
         >
           <section
+            ref={dialog}
             {...stylex.props(
               surfaceStyles.dialog,
               styles.dialog,
@@ -226,6 +263,7 @@ export function BugReportControl({
             aria-modal="true"
             aria-labelledby="bug-report-title"
             onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={trapFocus}
             onPaste={pasteScreenshot}
             onDragOver={(event) => {
               event.preventDefault();
@@ -371,8 +409,13 @@ const styles = stylex.create({
     padding: "24px",
     backgroundColor: tokens.backdrop,
   },
+  // Bounded to the visible height (dynamic, so a mobile keyboard counts) with
+  // the form scrolling inside; the actions stay pinned below.
   dialog: {
+    boxSizing: "border-box",
     width: "min(540px, 100%)",
+    maxHeight: "calc(100dvh - 48px)",
+    overflowY: "auto",
   },
   dropTarget: {
     outline: `2px dashed ${tokens.accent}`,
@@ -457,9 +500,14 @@ const styles = stylex.create({
     color: tokens.inkFaint,
   },
   actions: {
+    position: "sticky",
+    bottom: "-20px",
     display: "flex",
     justifyContent: "flex-end",
     gap: "8px",
+    marginBottom: "-20px",
+    paddingBlock: "10px 20px",
+    backgroundColor: tokens.surfaceRaised,
   },
   action: {
     minWidth: "76px",
