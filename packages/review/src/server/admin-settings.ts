@@ -164,6 +164,13 @@ export function createAdminSettings(input: {
 
     prReviews: async () => prReviewsOf((await read()).stored),
 
+    /** The stored reviewer key, unsealed, for checking it from the page. */
+    storedApiKey: async (): Promise<string | undefined> => {
+      const { apiKey } = (await read()).stored.reviewer;
+
+      return apiKey ? unseal(apiKey) : undefined;
+    },
+
     /** The reviewer's agent config, or undefined when no key is stored. */
     reviewerAgent: async (): Promise<ReviewerAgentConfig | undefined> => {
       const { reviewer } = (await read()).stored;
@@ -246,12 +253,115 @@ export function isAdmin(
   return person && admins.includes(principal.login.toLowerCase());
 }
 
-/** `GET`/`PUT /admin/settings`, for admins signed in on the settings page. */
+export interface ReviewerKeyCheck {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Whether a provider accepts `apiKey`, by listing its models — a free call
+ * that needs a valid key — and, when it can, whether `model` is among them.
+ */
+export async function checkReviewerKey(
+  input: { provider: ReviewerProvider; apiKey: string; model?: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<ReviewerKeyCheck> {
+  const { provider, apiKey, model } = input;
+
+  const request: { url: string; headers: Record<string, string> } = {
+    anthropic: {
+      url: "https://api.anthropic.com/v1/models?limit=1000",
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    },
+    openai: {
+      url: "https://api.openai.com/v1/models",
+      headers: { authorization: `Bearer ${apiKey}` },
+    },
+    // OpenRouter's model list is public; its key endpoint is not.
+    openrouter: {
+      url: "https://openrouter.ai/api/v1/key",
+      headers: { authorization: `Bearer ${apiKey}` },
+    },
+    google: {
+      url: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+      headers: { "x-goog-api-key": apiKey },
+    },
+  }[provider];
+
+  let response: Response;
+
+  try {
+    response = await fetchImpl(request.url, {
+      headers: request.headers,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    return { ok: false, message: `Could not reach ${provider}.` };
+  }
+
+  if (response.status === 401 || response.status === 403)
+    return { ok: false, message: `${provider} rejected this key.` };
+
+  if (!response.ok)
+    return {
+      ok: false,
+      message: `${provider} answered ${response.status}; try again.`,
+    };
+
+  if (!model || provider === "openrouter")
+    return { ok: true, message: "Key works." };
+
+  const listed = z
+    .object({
+      data: z.array(z.object({ id: z.string() })).optional(),
+      models: z.array(z.object({ name: z.string() })).optional(),
+    })
+    .safeParse(await response.json().catch(() => null));
+
+  const ids = listed.success
+    ? [
+        ...(listed.data.data ?? []).map((entry) => entry.id),
+        ...(listed.data.models ?? []).map((entry) =>
+          entry.name.replace(/^models\//, ""),
+        ),
+      ]
+    : [];
+
+  return ids.length === 0 || ids.includes(model)
+    ? { ok: true, message: "Key works." }
+    : {
+        ok: false,
+        message: `Key works, but ${provider} does not list the model “${model}”.`,
+      };
+}
+
+const keyCheckSchema = z.strictObject({
+  provider: providerSchema,
+  model: nameSchema.optional(),
+  /** Absent checks the stored key. */
+  apiKey: z.string().trim().min(1).max(1000).optional(),
+});
+
+const githubRepoSchema = z.array(
+  z.object({
+    full_name: z.string(),
+    private: z.boolean(),
+    permissions: z.object({ admin: z.boolean() }).partial().optional(),
+  }),
+);
+
+/** `GET`/`PUT /admin/settings`, for admins signed in on the settings page;
+ * `GET /admin/repositories` lists the admin's GitHub repositories and
+ * `POST /admin/reviewer/check` tries a provider key. */
 export function adminSettingsRoutes(input: {
   auth: Pick<AuthDriver, "authenticate">;
   admins: readonly string[];
   settings: AdminSettings;
+  githubApiUrl?: string;
+  fetchImpl?: typeof fetch;
 }): Hono {
+  const fetchImpl = input.fetchImpl ?? fetch;
+
   const routes = new Hono();
 
   const admin = async (request: Request) => {
@@ -289,6 +399,85 @@ export function adminSettingsRoutes(input: {
 
     return context.json(
       await input.settings.update(parsed.data, principal.login),
+    );
+  });
+
+  routes.get("/repositories", async (context) => {
+    const principal = await admin(context.req.raw);
+
+    if (!principal) return forbidden();
+
+    if (!principal.githubToken)
+      return context.json(
+        { ok: false, error: "Sign in with GitHub to list repositories." },
+        409,
+      );
+
+    const apiUrl = input.githubApiUrl ?? "https://api.github.com";
+    const repos: { name: string; private: boolean }[] = [];
+
+    // Ten pages of a hundred is plenty for a picker; the rest stay typeable.
+    for (let page = 1; page <= 10; page++) {
+      const response = await fetchImpl(
+        `${apiUrl}/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`,
+        {
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${principal.githubToken}`,
+            "user-agent": "whiteboard",
+          },
+        },
+      ).catch(() => undefined);
+
+      if (!response?.ok)
+        return context.json(
+          {
+            ok: false,
+            error: `GitHub did not list repositories (${response?.status ?? "unreachable"}).`,
+          },
+          502,
+        );
+
+      const parsed = githubRepoSchema.safeParse(await response.json());
+
+      if (!parsed.success) break;
+
+      repos.push(
+        ...parsed.data.map((repo) => ({
+          name: repo.full_name.toLowerCase(),
+          private: repo.private,
+        })),
+      );
+
+      if (parsed.data.length < 100) break;
+    }
+
+    return context.json({ repositories: repos });
+  });
+
+  routes.post("/reviewer/check", async (context) => {
+    if (!(await admin(context.req.raw))) return forbidden();
+
+    const parsed = keyCheckSchema.safeParse(
+      await context.req.json().catch(() => undefined),
+    );
+
+    if (!parsed.success)
+      return context.json(
+        { ok: false, error: z.prettifyError(parsed.error) },
+        400,
+      );
+
+    const apiKey = parsed.data.apiKey ?? (await input.settings.storedApiKey());
+
+    if (!apiKey)
+      return context.json({
+        ok: false,
+        message: "No key to check.",
+      } satisfies ReviewerKeyCheck);
+
+    return context.json(
+      await checkReviewerKey({ ...parsed.data, apiKey }, fetchImpl),
     );
   });
 

@@ -195,4 +195,91 @@ describe("admin settings", () => {
       agent: { provider: "anthropic", env: { ANTHROPIC_API_KEY: "sk-9" } },
     });
   });
+
+  it("check a reviewer key against the provider before it is trusted", async () => {
+    const { settings } = await open();
+
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const key = new Headers(init?.headers).get("authorization");
+
+      return key === "Bearer good"
+        ? Response.json({ data: [{ id: "gpt-5" }] })
+        : new Response("no", { status: 401 });
+    }) as typeof fetch;
+
+    const routes = adminSettingsRoutes({
+      auth: { authenticate },
+      admins: ["ada"],
+      settings,
+      fetchImpl,
+    });
+
+    const check = async (
+      user: string,
+      body: { provider: string; apiKey?: string; model?: string },
+    ) =>
+      routes.request("http://localhost/reviewer/check", {
+        method: "POST",
+        headers: { "x-user": user, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    expect((await check("bob", { provider: "openai" })).status).toBe(403);
+    expect(
+      await (await check("ada", { provider: "openai", apiKey: "bad" })).json(),
+    ).toMatchObject({ ok: false });
+    expect(
+      await (
+        await check("ada", {
+          provider: "openai",
+          apiKey: "good",
+          model: "gpt-5",
+        })
+      ).json(),
+    ).toMatchObject({ ok: true });
+    expect(
+      await (
+        await check("ada", {
+          provider: "openai",
+          apiKey: "good",
+          model: "gpt-0",
+        })
+      ).json(),
+    ).toMatchObject({ ok: false });
+
+    // Without a typed key, the stored one is tried.
+    await settings.update({ reviewer: { apiKey: "good" } }, "ada");
+    expect(
+      await (await check("ada", { provider: "openai" })).json(),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("list the admin's GitHub repositories with their own token", async () => {
+    const { settings } = await open();
+
+    const fetchImpl = (async (_url: string, init?: RequestInit) =>
+      new Headers(init?.headers).get("authorization") === "Bearer gho"
+        ? Response.json([{ full_name: "Acme/App", private: true }])
+        : new Response("no", { status: 401 })) as typeof fetch;
+
+    const routes = adminSettingsRoutes({
+      auth: {
+        authenticate: async (request: Request) =>
+          request.headers.get("x-user") === "ada"
+            ? { ...ada, githubToken: "gho" }
+            : authenticate(request),
+      },
+      admins: ["ada"],
+      settings,
+      fetchImpl,
+    });
+
+    expect(
+      await (
+        await routes.request("http://localhost/repositories", {
+          headers: { "x-user": "ada" },
+        })
+      ).json(),
+    ).toEqual({ repositories: [{ name: "acme/app", private: true }] });
+  });
 });
