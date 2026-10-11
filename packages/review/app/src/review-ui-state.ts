@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { ReviewClientConfig } from "./host/review-client";
 import { reviewPreferenceKey, reviewStorageKey } from "./host/review-client";
@@ -51,16 +51,27 @@ export function useReviewUiState<T>(
   // instead would store the caller's fallback for every panel and section a
   // reader merely looked at, which then shadows a later change to that
   // fallback — an authored `[collapsed]` section could never take effect again.
-  const changed = useRef(false);
+  // Tracked with the key it belongs to: when a mounted caller's key changes,
+  // the value is read again for the new key instead of carrying the old one
+  // over (and writing it under the new key).
+  const [tracked, setTracked] = useState({ key, changed: false });
+
+  if (tracked.key !== key) {
+    setTracked({ key, changed: false });
+    setValue(readReviewUiState<T>(scope, key) ?? fallback);
+  }
 
   const setStoredValue = useCallback<Dispatch<SetStateAction<T>>>((next) => {
-    changed.current = true;
+    setTracked((previous) =>
+      previous.changed ? previous : { ...previous, changed: true },
+    );
     setValue(next);
   }, []);
 
   useEffect(() => {
-    if (changed.current) writeReviewUiState(scope, key, value);
-  }, [key, scope, value]);
+    if (tracked.changed && tracked.key === key)
+      writeReviewUiState(scope, key, value);
+  }, [key, scope, tracked, value]);
 
   return [value, setStoredValue];
 }

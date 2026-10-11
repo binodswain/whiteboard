@@ -720,6 +720,26 @@ describe("CodePeek native editor", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("names both endpoints of an unresolved cross-side selection in a status region", async () => {
+    session = createTestSession("native-session");
+
+    const container = await renderWebCard(
+      {
+        file: "src/moved.ts",
+        start: { side: "base", line: 10 },
+        end: { side: "head", line: 20 },
+        pins: { repositoryId: "repo", base: "basesha", head: "headsha" },
+      },
+      { progress: null, error: "lens failed", resolve: () => [] },
+    );
+
+    const region = container.querySelector('[role="status"]');
+
+    expect(region?.textContent).toContain("Source unavailable");
+    expect(region?.textContent).toContain("base 10 → head 20");
+    expect(region?.textContent).toContain("repo@basesha → repo@headsha");
+  });
+
   it("copies disjoint ranges joined in source order, without the hidden lines", async () => {
     session = createTestSession("web-session", "web");
     const text = Array.from({ length: 40 }, (_, i) => `  l${i + 1}`).join("\n");
@@ -814,6 +834,55 @@ describe("CodePeek native editor", () => {
       expect(container.textContent).toContain("Source unavailable"),
     );
     expect(container.querySelectorAll("pre > div")).toHaveLength(0);
+  });
+
+  it("reads a step's own expansion when the same card switches steps", async () => {
+    session = createTestSession("web-session", "web");
+    const text = Array.from({ length: 30 }, (_, i) => `s${i + 1}`).join("\n");
+
+    vi.spyOn(session, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ text })),
+    );
+
+    const source = selectSource({
+      side: "head",
+      file: "src/current.ts",
+      fromLine: 10,
+      toLine: 11,
+    });
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    const show = async (stateScope: string) =>
+      act(async () =>
+        renderWithSession(
+          <CodePeekCard
+            source={source}
+            lenses={testLenses}
+            stateScope={stateScope}
+          />,
+        ),
+      );
+
+    await show("step-a");
+    await vi.waitFor(() => expect(container.textContent).toContain("s10"));
+
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((b) => b.textContent?.includes("Show surrounding context"))!
+        .click(),
+    );
+
+    expect(container.querySelectorAll("pre > div")).toHaveLength(12);
+
+    // The peek panel swaps anchors in place: the card is not remounted.
+    await show("step-b");
+    expect(container.querySelectorAll("pre > div")).toHaveLength(2);
+
+    await show("step-a");
+    expect(container.querySelectorAll("pre > div")).toHaveLength(12);
   });
 
   it("keeps context expansion to the step that opened it", async () => {

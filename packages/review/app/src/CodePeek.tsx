@@ -266,16 +266,17 @@ export function CodePeekCard({
 
   // A selection that never resolved has no lines to excerpt: say which
   // source was asked for instead of guessing one.
+  // The same status region as the native loading state below, so the
+  // failure is announced when it replaces "Loading…".
   if (!ranges.length && outcome !== "pending")
     return (
-      <section {...withClass("code-peek", styles.peek, drawStyles.blockChild)}>
+      <section
+        {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
+        role="status"
+      >
         <SourceUnavailableCard
-          file={anchor.file}
-          side={anchor.side}
-          revision={sourceRevision(anchor.side, source.pins)}
-          rangeLabel={formatLineRangeLabel([
-            { startLine: anchor.fromLine, endLine: anchor.toLine },
-          ])}
+          file={source.file}
+          {...requestedSource(source)}
           reason="The requested range could not be resolved at this revision."
         />
       </section>
@@ -842,6 +843,36 @@ function FileSnippetCard({
       </NativeCodePeekSection>
     </section>
   );
+}
+
+/** What an unresolved selection asked for, from both of its endpoints: a
+ * cross-side selection names each side, revision and line it spans. */
+function requestedSource(source: DiffSelection) {
+  const { start, end, pins } = source;
+
+  if (start.side === end.side)
+    return {
+      side: start.side,
+      revision: sourceRevision(start.side, pins),
+      rangeLabel: formatLineRangeLabel([
+        {
+          startLine: Math.min(start.line, end.line),
+          endLine: Math.max(start.line, end.line),
+        },
+      ]),
+    };
+
+  const startRevision = sourceRevision(start.side, pins);
+  const endRevision = sourceRevision(end.side, pins);
+
+  return {
+    side: `${start.side} → ${end.side}`,
+    revision:
+      startRevision && endRevision
+        ? `${startRevision} → ${endRevision}`
+        : undefined,
+    rangeLabel: `${start.side} ${start.line} → ${end.side} ${end.line}`,
+  };
 }
 
 /** The effective revision one side of a pinned source reads from: base for
