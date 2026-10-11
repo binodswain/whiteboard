@@ -479,6 +479,7 @@ export function ReviewHome({
                 {onOpenSettings ? (
                   <Button
                     variant="ghost"
+                    xstyle={styles.pageAction}
                     onClick={onOpenSettings}
                     aria-label="Open Settings"
                   >
@@ -488,6 +489,8 @@ export function ReviewHome({
                 <SearchBox query={query} onChange={changeQuery} />
                 {onCreateSession ? (
                   <Button
+                    variant="primary"
+                    xstyle={styles.pageAction}
                     disabled={!repositories?.length}
                     onClick={(event) => {
                       creationOpener.current = event.currentTarget;
@@ -910,8 +913,8 @@ function ReviewTable({
           <colgroup>
             <col {...stylex.props(styles.colPr)} />
             <col />
-            <col {...stylex.props(styles.colBranch)} />
-            <col {...stylex.props(styles.colDate)} />
+            <col {...stylex.props(styles.colBranch, styles.hideNarrow)} />
+            <col {...stylex.props(styles.colDate, styles.hideNarrow)} />
             <col {...stylex.props(styles.colDate)} />
             <col {...stylex.props(styles.colAction)} />
           </colgroup>
@@ -923,10 +926,10 @@ function ReviewTable({
               <th scope="col" {...stylex.props(styles.th)}>
                 Title
               </th>
-              <th scope="col" {...stylex.props(styles.th)}>
+              <th scope="col" {...stylex.props(styles.th, styles.hideNarrow)}>
                 Head branch
               </th>
-              <th scope="col" {...stylex.props(styles.th)}>
+              <th scope="col" {...stylex.props(styles.th, styles.hideNarrow)}>
                 Created
               </th>
               <th scope="col" {...stylex.props(styles.th)}>
@@ -984,7 +987,11 @@ function ReviewTable({
                     <ReviewTagEditor review={review} />
                   </td>
                   <td
-                    {...stylex.props(styles.td, last && styles.lastRowCell)}
+                    {...stylex.props(
+                      styles.td,
+                      styles.hideNarrow,
+                      last && styles.lastRowCell,
+                    )}
                     title={review.origin?.branch}
                   >
                     <MatchedText
@@ -995,6 +1002,7 @@ function ReviewTable({
                     {...stylex.props(
                       styles.td,
                       styles.dateCell,
+                      styles.hideNarrow,
                       last && styles.lastRowCell,
                     )}
                     title={review.firstCreatedAt}
@@ -1039,6 +1047,8 @@ function ReviewTable({
     </section>
   );
 }
+
+const narrowContainer = "@container review-canvas (max-width: 660px)";
 
 const TAG_SYNTAX =
   "1 to 40 letters, digits, dots, slashes, dashes or underscores, starting with a letter or digit.";
@@ -1721,9 +1731,14 @@ const narrow = "@container review-canvas (max-width: 660px)";
 const styles = stylex.create({
   headerTools: {
     display: "flex",
+    flexWrap: "wrap",
     minWidth: 0,
     alignItems: "center",
     gap: "8px",
+  },
+  // Page actions match the 38px search field; dense toolbars stay compact.
+  pageAction: {
+    height: "38px",
   },
   creationBackdrop: {
     position: "fixed",
@@ -1794,7 +1809,8 @@ const styles = stylex.create({
     display: "flex",
     minWidth: 0,
     alignItems: "center",
-    width: "256px",
+    flex: { default: "0 0 auto", [narrowContainer]: "1 1 160px" },
+    width: { default: "256px", [narrowContainer]: "auto" },
     height: "38px",
     padding: "0 14px",
     borderWidth: "1px",
@@ -2145,10 +2161,15 @@ const styles = stylex.create({
   },
   table: {
     width: "100%",
-    minWidth: "840px",
+    minWidth: { default: "840px", [narrowContainer]: "480px" },
     borderCollapse: "collapse",
     tableLayout: "fixed",
     font: `${fontSize.body}/18px ${tokens.fontMono}`,
+  },
+  // Branch and created date give way first in a narrow container, so the PR,
+  // title with its repository and tags, and updated time stay readable.
+  hideNarrow: {
+    display: { default: null, [narrowContainer]: "none" },
   },
   colPr: {
     width: "88px",

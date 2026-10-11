@@ -40,11 +40,15 @@ export const homeStyles = stylex.create({
     width: "min(1200px, 100%)",
     margin: "0 auto",
   },
+  // Heading and tools share a row until the container narrows, then stack so
+  // the search can take the full width and the actions wrap under it.
   header: {
     display: "flex",
-    alignItems: { default: "flex-start", [narrow]: "center" },
+    flexDirection: { default: "row", [narrow]: "column" },
+    flexWrap: "wrap",
+    alignItems: { default: "flex-start", [narrow]: "stretch" },
     justifyContent: "space-between",
-    gap: "32px",
+    gap: { default: "32px", [narrow]: "16px" },
   },
   heading: {
     margin: 0,
