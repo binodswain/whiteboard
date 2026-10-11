@@ -281,6 +281,15 @@ export function loadDeploymentConfig(
     if (config.jobs !== "queue")
       throw new Error("PR reviews require WHITEBOARD_JOBS=queue");
 
+    // Checkouts are fetched by a GitHub source that accepts github.com only.
+    if (config.repoSource !== "github")
+      throw new Error("PR reviews require WHITEBOARD_REPO_SOURCE=github");
+
+    if (config.github && config.github.webUrl !== "https://github.com")
+      throw new Error(
+        "PR reviews support github.com only, not GitHub Enterprise",
+      );
+
     const repos = (values.WHITEBOARD_PR_REVIEW_REPOS ?? "")
       .split(",")
       .map((repo) => repo.trim().toLowerCase())

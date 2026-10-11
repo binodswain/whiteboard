@@ -63,6 +63,8 @@ type RunRow = {
   review_url: string | null;
   check_run_id: string | null;
   superseded: number;
+  /** Why the run is not reviewed (`fork`), set when it is inserted. */
+  reason: string | null;
 };
 
 export interface PrReviews {
@@ -209,6 +211,30 @@ export function createPrReviews(input: {
   };
 
   const dispatch = async (run: RunRow, previous: PrReviewRunStatus) => {
+    if (run.reason === "fork") {
+      // Created already completed, in one call, so a check that exists is
+      // a check that is final.
+      if (!run.check_run_id) {
+        const checkRunId = await checks.create({
+          repo: run.repo,
+          headSha: run.head_sha,
+          status: "in_progress",
+          conclusion: "neutral",
+          output: {
+            title: "Fork pull requests are not supported",
+            summary:
+              "Whiteboard reviews only pull requests whose branch lives in the base repository.",
+          },
+        });
+
+        await setRun(run.id, { check_run_id: checkRunId });
+      }
+
+      await setRun(run.id, { status: "unsupported" });
+
+      return;
+    }
+
     const output = {
       title: "Queued",
       summary: "Whiteboard is preparing a review of this commit.",
@@ -263,7 +289,37 @@ export function createPrReviews(input: {
       );
   };
 
+  /** Claims a run and dispatches it; false when another owner has it. */
+  const runDispatch = async (run: RunRow) => {
+    const previous = run.status;
+
+    if (!(await claim(run))) return false;
+
+    try {
+      await dispatch((await getRun(run.id))!, previous);
+    } catch (cause) {
+      // Hand the run back so a retry can claim it.
+      await setRun(run.id, { status: previous }).catch(() => {});
+      throw cause;
+    }
+
+    return true;
+  };
+
   const reconcileOnce = async () => {
+    // A process that died after storing a run but before dispatching it
+    // leaves it queued or dispatching; GitHub does not redeliver, so the
+    // worker's own passes pick those up.
+    const abandoned = await meta.all<RunRow>(
+      `SELECT * FROM pr_review_runs WHERE superseded=0 AND status IN ('queued','dispatching') AND updated_at<?`,
+      new Date(Date.now() - DISPATCH_STALE_MS).toISOString(),
+    );
+
+    for (const run of abandoned)
+      await runDispatch(run).catch((cause: unknown) =>
+        log(`pr review ${run.id} could not resume: ${String(cause)}`),
+      );
+
     const pending = await meta.all<RunRow>(
       "SELECT * FROM pr_review_runs WHERE status='preparing' AND job_id IS NOT NULL",
     );
@@ -420,8 +476,8 @@ export function createPrReviews(input: {
 
       const run = await meta.transaction(async () => {
         await meta.run(
-          `INSERT INTO pr_review_runs(id,run_key,installation_id,repo,pr_number,base_sha,head_sha,status,created_at,updated_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_key) DO NOTHING`,
+          `INSERT INTO pr_review_runs(id,run_key,installation_id,repo,pr_number,base_sha,head_sha,status,reason,created_at,updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_key) DO NOTHING`,
           randomUUID(),
           runKey,
           String(installation),
@@ -429,7 +485,8 @@ export function createPrReviews(input: {
           payload.number,
           pr.base.sha,
           pr.head.sha,
-          fork ? "unsupported" : "queued",
+          "queued",
+          fork ? "fork" : null,
           now(),
           now(),
         );
@@ -449,45 +506,22 @@ export function createPrReviews(input: {
         ))!;
       });
 
-      if (run.status === "unsupported") {
-        if (!run.check_run_id) {
-          const checkRunId = await ensureCheck(run, {
-            title: "Not supported",
-            summary: "Whiteboard does not review pull requests from forks yet.",
-          });
+      if (!(await runDispatch(run))) {
+        await record(run.reason === "fork" ? "unsupported: fork" : "duplicate");
+        void reconcile().catch(() => {});
 
-          await checks.update({
-            repo: run.repo,
-            checkRunId,
-            conclusion: "neutral",
-            output: {
-              title: "Fork pull requests are not supported",
-              summary:
-                "Whiteboard reviews only pull requests whose branch lives in the base repository.",
-            },
-          });
-        }
+        return reply(
+          200,
+          run.reason === "fork"
+            ? { runId: run.id, unsupported: "fork" }
+            : { runId: run.id, duplicate: true },
+        );
+      }
 
+      if ((await getRun(run.id))?.status === "unsupported") {
         await record("unsupported: fork");
 
         return reply(200, { runId: run.id, unsupported: "fork" });
-      }
-
-      const previous = run.status;
-
-      if (!(await claim(run))) {
-        await record("duplicate");
-        void reconcile().catch(() => {});
-
-        return reply(200, { runId: run.id, duplicate: true });
-      }
-
-      try {
-        await dispatch((await getRun(run.id))!, previous);
-      } catch (cause) {
-        // Hand the run back so the redelivery that retries can claim it.
-        await setRun(run.id, { status: previous }).catch(() => {});
-        throw cause;
       }
 
       await record("queued");

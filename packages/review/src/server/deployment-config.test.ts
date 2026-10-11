@@ -147,6 +147,7 @@ describe("loadDeploymentConfig", () => {
       WHITEBOARD_PR_REVIEW_REPOS: "Octo/Repo, octo/other",
       WHITEBOARD_PUBLIC_URL: "https://whiteboard.example.com/",
       WHITEBOARD_JOBS: "queue",
+      WHITEBOARD_REPO_SOURCE: "github",
     };
 
     it("stays off without a webhook secret, whatever else is set", () => {
@@ -176,6 +177,8 @@ describe("loadDeploymentConfig", () => {
       [{ WHITEBOARD_PR_REVIEW_REPOS: undefined }],
       [{ WHITEBOARD_PR_REVIEW_REPOS: "not-a-slug" }],
       [{ WHITEBOARD_JOBS: "inline" }],
+      [{ WHITEBOARD_REPO_SOURCE: "local" }],
+      [{ GITHUB_WEB_URL: "https://github.example.com" }],
       [{ WHITEBOARD_PUBLIC_URL: undefined }],
       [{ WHITEBOARD_PUBLIC_URL: "not a url" }],
       [{ WHITEBOARD_PUBLIC_URL: "https://wb.example.com/#token=abc" }],

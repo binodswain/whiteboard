@@ -23,6 +23,7 @@ All of it is deployment environment, never repository files.
 | `WHITEBOARD_PR_REVIEW_DRAFTS`             | `true` to review draft PRs. Skipped by default.                                                                        |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | Required. The same App that checks repositories out. Set `GITHUB_APP_INSTALLATION_ID` to accept one installation only. |
 | `WHITEBOARD_PUBLIC_URL`                   | Required. The origin readers use to reach this deployment; check links are `<origin>/r/<review id>`, with no token.    |
+| `WHITEBOARD_REPO_SOURCE`                  | Must be `github` (the default for a remote deployment). github.com only: GitHub Enterprise is not supported.           |
 | `WHITEBOARD_JOBS`                         | Must be `queue`: a delivery is answered before its review is prepared.                                                 |
 
 Give the GitHub App the `pull_requests: read` and `checks: write` permissions,
@@ -60,8 +61,22 @@ newest head's result.
 ## Fork pull requests
 
 Fork PRs are not supported yet. Whiteboard fetches the pinned commits from the
-base repository, which does not reliably have a fork's commits. The check
-completes `neutral` and says so, and no review is created.
+base repository, which does not reliably have a fork's commits. The run is
+recorded as `unsupported` (see `github_deliveries.outcome`), no review is
+created, and a `neutral` check explaining this is created for the head commit
+in one call.
+
+GitHub's Checks API associates a check with a PR by pushes to the repository
+the check was created in, so that check may not appear on the fork PR's page.
+The delivery outcome is the dependable record until fork PRs are supported.
+
+## Recovery
+
+GitHub does not redeliver failed webhooks. A run stored but never dispatched
+(for example the process exited in between) is picked up by the next worker
+pass once it has been idle for a minute, and a prepared review whose check
+update GitHub rejected is retried by later passes. A failed run is retried by
+redelivering its webhook or pushing a new commit.
 
 ## Data flow
 

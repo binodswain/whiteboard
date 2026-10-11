@@ -16,6 +16,8 @@ export interface CheckRunsClient {
     repo: string;
     headSha: string;
     status: "queued" | "in_progress";
+    /** Creates the check already completed, in one call. */
+    conclusion?: "neutral";
     output: CheckOutput;
     detailsUrl?: string;
   }): Promise<string>;
@@ -46,14 +48,20 @@ export function createCheckRunsClient(input: {
     `Bearer ${await input.app.installationToken(repo, { checks: "write" })}`;
 
   return {
-    async create({ repo, headSha, status, output, detailsUrl }) {
+    async create({ repo, headSha, status, conclusion, output, detailsUrl }) {
       const response = await api.post(
         `/repos/${repo}/check-runs`,
         await authorization(repo),
         {
           name: CHECK_NAME,
           head_sha: headSha,
-          status,
+          ...(conclusion
+            ? {
+                status: "completed",
+                conclusion,
+                completed_at: new Date().toISOString(),
+              }
+            : { status }),
           output,
           ...(detailsUrl && { details_url: detailsUrl }),
         },

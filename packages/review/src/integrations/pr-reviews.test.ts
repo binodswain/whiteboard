@@ -49,6 +49,7 @@ async function harness(overrides: Overrides = {}) {
     fail: overrides.fail ?? false,
     mergeBaseFails: overrides.mergeBaseFails ?? false,
     updateFails: 0,
+    createFails: 0,
   };
 
   const jobs = createQueueJobRunner(
@@ -67,7 +68,12 @@ async function harness(overrides: Overrides = {}) {
     { maxAttempts: 1 },
   );
 
-  const created: { id: string; headSha: string }[] = [];
+  const created: {
+    id: string;
+    headSha: string;
+    conclusion?: string;
+    text: string;
+  }[] = [];
 
   const updates: {
     checkRunId: string;
@@ -78,9 +84,21 @@ async function harness(overrides: Overrides = {}) {
   }[] = [];
 
   const checks: CheckRunsClient = {
-    async create({ headSha }) {
+    async create({ headSha, conclusion, output }) {
+      if (state.createFails > 0) {
+        state.createFails--;
+
+        throw new Error("GitHub is unavailable");
+      }
+
       const id = `check-${created.length + 1}`;
-      created.push({ id, headSha });
+
+      created.push({
+        id,
+        headSha,
+        conclusion,
+        text: `${output.title} ${output.summary}`,
+      });
 
       return id;
     },
@@ -223,7 +241,7 @@ describe("PR review webhook", () => {
     expect(response.status).toBe(202);
     await h.settle();
 
-    expect(h.created).toEqual([{ id: "check-1", headSha: HEAD_A }]);
+    expect(h.created).toMatchObject([{ id: "check-1", headSha: HEAD_A }]);
     expect(h.prepared).toEqual([
       {
         repo: "https://github.com/octo/repo",
@@ -312,7 +330,7 @@ describe("PR review webhook", () => {
     await h.close();
   });
 
-  it("says fork PRs are unsupported instead of reviewing them", async () => {
+  it("says fork PRs are unsupported with one completed check, never reviewing them", async () => {
     const h = await harness();
 
     const response = await h.prReviews.handleWebhook(
@@ -321,12 +339,56 @@ describe("PR review webhook", () => {
 
     expect(await response.json()).toMatchObject({ unsupported: "fork" });
     expect(h.prepared).toEqual([]);
-    expect(h.updates).toHaveLength(1);
-    expect(h.updates[0]).toMatchObject({ conclusion: "neutral" });
-    expect(h.updates[0]!.text).toMatch(/fork/i);
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]).toMatchObject({ conclusion: "neutral" });
+    expect(h.created[0]!.text).toMatch(/fork/i);
+    expect((await h.runs())[0]).toMatchObject({ status: "unsupported" });
 
     await h.prReviews.handleWebhook(delivery({ forkOf: "stranger/repo" }));
     expect(h.created).toHaveLength(1);
+    await h.close();
+  });
+
+  it("makes one fork check when deliveries race, and finishes it after a GitHub error", async () => {
+    const h = await harness();
+    h.state.createFails = 1;
+
+    const failed = await h.prReviews.handleWebhook(
+      delivery({ id: "a", forkOf: "stranger/repo" }),
+    );
+
+    expect(failed.status).toBe(500);
+
+    await Promise.all([
+      h.prReviews.handleWebhook(delivery({ id: "a", forkOf: "stranger/repo" })),
+      h.prReviews.handleWebhook(delivery({ id: "b", forkOf: "stranger/repo" })),
+      h.prReviews.handleWebhook(delivery({ id: "c", forkOf: "stranger/repo" })),
+    ]);
+
+    expect(h.created).toHaveLength(1);
+    expect((await h.runs())[0]).toMatchObject({ status: "unsupported" });
+    await h.close();
+  });
+
+  it("resumes a run abandoned before it was dispatched", async () => {
+    const h = await harness({ mergeBaseFails: true });
+
+    expect((await h.prReviews.handleWebhook(delivery())).status).toBe(500);
+    expect(h.prepared).toEqual([]);
+
+    // GitHub does not redeliver; a worker pass has to pick the run up.
+    h.state.mergeBaseFails = false;
+    await h.prReviews.reconcile();
+    expect(h.prepared).toEqual([]);
+
+    await h.meta.run(
+      "UPDATE pr_review_runs SET updated_at='2000-01-01T00:00:00.000Z'",
+    );
+    await h.settle();
+
+    expect(h.prepared).toHaveLength(1);
+    expect(h.created).toHaveLength(1);
+    expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
     await h.close();
   });
 
