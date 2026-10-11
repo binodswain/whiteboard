@@ -299,8 +299,19 @@ export async function checkReviewerKey(
     return { ok: false, message: `Could not reach ${provider}.` };
   }
 
-  if (response.status === 401 || response.status === 403)
+  // Google answers a bad key with 400. A 403 can be a least-privilege key
+  // that may run models but not list them, so it does not block saving.
+  if (
+    response.status === 401 ||
+    (provider === "google" && response.status === 400)
+  )
     return { ok: false, message: `${provider} rejected this key.` };
+
+  if (response.status === 403)
+    return {
+      ok: true,
+      message: `Could not verify: this key may not list ${provider} models.`,
+    };
 
   if (!response.ok)
     return {
@@ -428,6 +439,18 @@ export function adminSettingsRoutes(input: {
           },
         },
       ).catch(() => undefined);
+
+      // GitHub App user tokens expire after eight hours; a fresh sign-in
+      // mints a new one.
+      if (response?.status === 401)
+        return context.json(
+          {
+            ok: false,
+            error:
+              "Your GitHub sign-in has expired; sign out and back in to list repositories.",
+          },
+          401,
+        );
 
       if (!response?.ok)
         return context.json(

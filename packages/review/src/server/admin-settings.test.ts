@@ -204,7 +204,9 @@ describe("admin settings", () => {
 
       return key === "Bearer good"
         ? Response.json({ data: [{ id: "gpt-5" }] })
-        : new Response("no", { status: 401 });
+        : key === "Bearer scoped"
+          ? new Response("no", { status: 403 })
+          : new Response("no", { status: 401 });
     }) as typeof fetch;
 
     const routes = adminSettingsRoutes({
@@ -246,6 +248,13 @@ describe("admin settings", () => {
         })
       ).json(),
     ).toMatchObject({ ok: false });
+
+    // A key that may not list models is not proof the key is bad.
+    expect(
+      await (
+        await check("ada", { provider: "openai", apiKey: "scoped" })
+      ).json(),
+    ).toMatchObject({ ok: true });
 
     // Without a typed key, the stored one is tried.
     await settings.update({ reviewer: { apiKey: "good" } }, "ada");
