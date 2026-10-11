@@ -16,6 +16,7 @@ import { ASK_TOKEN_PREFIX } from "@review/ask/runner/queue.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
 import {
   type AuthDriver,
+  type AuthPrincipal,
   canReadRepository,
   createAuthDriver,
 } from "@review/auth/index.js";
@@ -53,6 +54,12 @@ import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import { removeReviewManagedCheckouts } from "@review/review-head-checkout.js";
 import { reviewServerStateDir } from "@review/server-discovery.js";
+import {
+  type AdminSettings,
+  adminSettingsRoutes,
+  createAdminSettings,
+  isAdmin,
+} from "@review/server/admin-settings.js";
 import { maintainRepoCaches } from "@review/server/repo-cache-maintenance.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
@@ -135,6 +142,8 @@ export function createReviewServerApp(input: {
   askToken?: (
     token: string,
   ) => Promise<{ askId: string; reviewId: string } | undefined>;
+  /** Settings deployment admins edit from the settings page. */
+  adminSettings?: { admins: readonly string[]; settings: AdminSettings };
 }): Hono<ReviewHonoEnv> {
   const { auth } = input;
 
@@ -326,6 +335,10 @@ export function createReviewServerApp(input: {
       ran: (await input.runJob?.()) ?? false,
     });
   });
+
+  if (auth && input.adminSettings)
+    app.route("/admin", adminSettingsRoutes({ auth, ...input.adminSettings }));
+
   app.notFound(() => serverJson(404, { ok: false, error: "Not found." }));
   app.onError((error) => {
     const serverError = error instanceof ReviewServerError ? error : undefined;
@@ -607,6 +620,19 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
       ? createInlineJobRunner(store.metadataStore(), prepareReview)
       : createQueueJobRunner(store.metadataStore(), prepareReview);
 
+  const adminSettings =
+    deploymentConfig.authSecret && deploymentConfig.admins?.length
+      ? createAdminSettings({
+          meta: store.metadataStore(),
+          secret: deploymentConfig.authSecret,
+          defaults: {
+            repos: deploymentConfig.prReviews?.repos ?? [],
+            drafts: deploymentConfig.prReviews?.drafts ?? false,
+            authoring: deploymentConfig.prReviews?.authoring ?? false,
+          },
+        })
+      : undefined;
+
   const prReviews =
     deploymentConfig.prReviews && githubApp
       ? createPrReviews({
@@ -615,20 +641,19 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           webUrl: deploymentConfig.github?.webUrl ?? "https://github.com",
           meta: store.metadataStore(),
           jobs,
-          authoring: deploymentConfig.prReviews.authoring
-            ? {
-                enqueue: (ask) => store.askQueue.create(ask),
-                status: (id) => store.askQueue.get(id),
-                cancel: (id) => store.askQueue.cancel(id),
-                summary: async (reviewId, marker) =>
-                  (await store.comments.list(reviewId)).find(
-                    (comment) =>
-                      !comment.parentId &&
-                      !comment.anchor &&
-                      comment.body.startsWith(marker),
-                  )?.body,
-              }
-            : undefined,
+          settings: adminSettings?.prReviews,
+          authoring: {
+            enqueue: (ask) => store.askQueue.create(ask),
+            status: (id) => store.askQueue.get(id),
+            cancel: (id) => store.askQueue.cancel(id),
+            summary: async (reviewId, marker) =>
+              (await store.comments.list(reviewId)).find(
+                (comment) =>
+                  !comment.parentId &&
+                  !comment.anchor &&
+                  comment.body.startsWith(marker),
+              )?.body,
+          },
           mergeBase: createMergeBaseResolver({
             app: githubApp,
             apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
@@ -669,20 +694,17 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   maintenanceTimer?.unref();
 
   // An ask finishes on a runner, not here, so nothing else would notice it.
-  const authoringTimer =
-    prReviews && deploymentConfig.prReviews?.authoring
-      ? setInterval(
-          () =>
-            void prReviews
-              .reconcile()
-              .catch((cause: unknown) =>
-                console.error(
-                  `[pr-reviews] reconcile failed: ${String(cause)}`,
-                ),
-              ),
-          30_000,
-        )
-      : undefined;
+  const authoringTimer = prReviews
+    ? setInterval(
+        () =>
+          void prReviews
+            .reconcile()
+            .catch((cause: unknown) =>
+              console.error(`[pr-reviews] reconcile failed: ${String(cause)}`),
+            ),
+        30_000,
+      )
+    : undefined;
 
   authoringTimer?.unref();
 
@@ -704,6 +726,10 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     githubWebhook: prReviews?.handleWebhook,
     auth: auth ?? undefined,
     askToken: (token) => store.askQueue.authenticateToken(token),
+    adminSettings: adminSettings && {
+      admins: deploymentConfig.admins ?? [],
+      settings: adminSettings,
+    },
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -745,6 +771,13 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
                 }
               : null;
           },
+          ...(adminSettings && {
+            canRunPrReviews: (principal: AuthPrincipal) =>
+              isAdmin(principal, deploymentConfig.admins ?? [], {
+                tokens: true,
+              }),
+            reviewerAgent: () => adminSettings.reviewerAgent(),
+          }),
           canReadRepo: async (principal, repoPath) => {
             // An ask principal reaches its one review, checked by review id.
             if (principal.via === "ask") return false;

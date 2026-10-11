@@ -21,6 +21,7 @@ import {
 } from "react";
 
 import { AccessTokensSection } from "./access-tokens-section";
+import { AdminSettingsSection } from "./admin-settings-section";
 import { ConnectCard, LegacySkillsRow } from "./connect-card";
 import { DiffrConfigSection } from "./diffr-config-section";
 import { homeStyles } from "./home-styles";
@@ -241,6 +242,15 @@ export function SettingsPage({
               <Section label="API tokens">
                 <AccessTokensSection tokens={settings.accessTokens} />
               </Section>
+            ) : null}
+
+            {settings.adminSettings ? (
+              <AdminSettingsSection
+                actions={settings.adminSettings}
+                frame={(body) => (
+                  <Section label="Pull request reviews">{body}</Section>
+                )}
+              />
             ) : null}
 
             {!web ? (

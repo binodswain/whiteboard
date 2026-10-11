@@ -41,6 +41,7 @@ const envSchema = z.object({
   GITHUB_API_URL: optionalEnv,
   WHITEBOARD_GITHUB_WEBHOOK_SECRET: optionalEnv,
   WHITEBOARD_PR_REVIEW_REPOS: optionalEnv,
+  WHITEBOARD_ADMINS: optionalEnv,
   WHITEBOARD_PUBLIC_URL: optionalEnv,
   WHITEBOARD_PR_REVIEW_DRAFTS: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -71,6 +72,8 @@ export interface DeploymentConfig {
   };
   /** Signs remote sessions and OAuth state; required when auth is `oauth`. */
   authSecret?: string;
+  /** Lowercase GitHub logins that may edit deployment settings. */
+  admins?: string[];
   /** GitHub OAuth App credentials for viewer sign-in. */
   oauth?: { clientId: string; clientSecret: string };
   /** Trusts an upstream identity proxy (IAP, Cloudflare Access): `header`
@@ -85,7 +88,8 @@ export interface DeploymentConfig {
   /** Automatic PR reviews: present only when a webhook secret is set. */
   prReviews?: {
     webhookSecret: string;
-    /** Lowercase `owner/repo` slugs that opted in. */
+    /** Lowercase `owner/repo` slugs that opted in. With an admin, this and
+     * the two switches below are defaults the settings page overrides. */
     repos: string[];
     /** Whether draft PRs are reviewed; skipped by default. */
     drafts: boolean;
@@ -204,6 +208,10 @@ export function loadDeploymentConfig(
     auth:
       values.WHITEBOARD_AUTH ??
       (values.WHITEBOARD_MODE === "local" ? "local-token" : "oauth"),
+    admins: (values.WHITEBOARD_ADMINS ?? "")
+      .split(",")
+      .map((login) => login.trim().toLowerCase())
+      .filter(Boolean),
   };
 
   if (postgresUrl) config.postgresUrl = postgresUrl;
@@ -279,6 +287,15 @@ export function loadDeploymentConfig(
       ),
     };
 
+  for (const login of config.admins ?? [])
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,38})$/.test(login))
+      throw new Error(
+        "WHITEBOARD_ADMINS must list GitHub logins separated by commas",
+      );
+
+  if (config.admins?.length && config.auth !== "oauth")
+    throw new Error("WHITEBOARD_ADMINS requires WHITEBOARD_AUTH=oauth");
+
   if (values.WHITEBOARD_GITHUB_WEBHOOK_SECRET) {
     if (!config.githubApp)
       throw new Error(
@@ -302,9 +319,10 @@ export function loadDeploymentConfig(
       .map((repo) => repo.trim().toLowerCase())
       .filter(Boolean);
 
-    if (!repos.length)
+    // Admins can list repositories from the settings page instead.
+    if (!repos.length && !config.admins?.length)
       throw new Error(
-        "WHITEBOARD_GITHUB_WEBHOOK_SECRET requires WHITEBOARD_PR_REVIEW_REPOS",
+        "WHITEBOARD_GITHUB_WEBHOOK_SECRET requires WHITEBOARD_PR_REVIEW_REPOS or WHITEBOARD_ADMINS",
       );
 
     for (const repo of repos)

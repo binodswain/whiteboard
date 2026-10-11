@@ -148,4 +148,10 @@ export const POSTGRES_MIGRATIONS: {
       ALTER TABLE asks ADD COLUMN token_hash TEXT;
       CREATE INDEX asks_token ON asks(token_hash);`,
   },
+  {
+    version: 12,
+    name: "admin_settings",
+    sql: `CREATE TABLE admin_settings(
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT);`,
+  },
 ];

@@ -39,6 +39,7 @@ import type { AuthPrincipal } from "@review/auth/index.js";
 import { fuzzyRank } from "@review/fuzzy-match.js";
 import type { JobRunner } from "@review/jobs/job-runner.js";
 import { resolveReviewStackLayers } from "@review/review-stack.js";
+import type { ReviewerAgentConfig } from "@review/server/admin-settings.js";
 import { readBoundedRequestJson } from "@review/server/hono-http.js";
 import { HttpJsonError } from "@review/server/http-json.js";
 import {
@@ -210,6 +211,12 @@ export interface ReviewApiAccess {
   /** The canonical remote URL a `repositoryPath` input names, or undefined
    * for a path that is not a repository on the remote host. */
   normalizeRepoPath?(repoPath: string): string | undefined;
+  /** Whether a caller may see and claim pull request asks; when absent,
+   * anyone who can read the review may. */
+  canRunPrReviews?(principal: AuthPrincipal): boolean;
+  /** The provider, model and key a pull request runner's agent gets at
+   * claim, when an admin stored them on the settings page. */
+  reviewerAgent?(): Promise<ReviewerAgentConfig | undefined>;
 }
 
 export type ReviewApiApp = Hono & {
@@ -366,6 +373,8 @@ export function createReviewApi(
 
     const visible = await Promise.all(
       asks.map(async (ask) => {
+        if (ask.kind === "pr-review" && !mayRunPrReviews()) return null;
+
         try {
           await assertRepoAccess(ask.reviewId);
 
@@ -390,17 +399,27 @@ export function createReviewApi(
       await readBoundedRequestJson(context.req.raw),
     );
 
-    await assertAskAccess(context.req.param("askId"));
+    const ask = await assertAskAccess(context.req.param("askId"));
+    const prReview = ask?.kind === "pr-review";
+
+    if (prReview && !mayRunPrReviews())
+      return context.json(
+        { error: "Only deployment admins can run pull request asks." },
+        403,
+      );
 
     const claimed = await store.askQueue.claim(
       context.req.param("askId"),
       runnerId,
     );
 
-    // The token is the agent's only credential; it is shown once, here.
-    return claimed
-      ? context.json(claimed)
-      : context.json({ error: "Ask is not claimable." }, 409);
+    if (!claimed) return context.json({ error: "Ask is not claimable." }, 409);
+
+    const agent = prReview ? await access?.reviewerAgent?.() : undefined;
+
+    // The token is the agent's only credential, and the reviewer's provider
+    // key goes to runners admins hold; both are shown once, here.
+    return context.json(agent ? { ...claimed, agent } : claimed);
   });
   app.post("/asks/:askId/complete", async (context) => {
     const input = completeAskSchema.parse(
@@ -588,6 +607,14 @@ export function createReviewApi(
       ).some((allowed) => !allowed)
     )
       throw new ReviewInputError("Review not found.", 404);
+  };
+
+  const mayRunPrReviews = () => {
+    const principal = authScope?.getStore();
+
+    return !access?.canRunPrReviews || !principal
+      ? true
+      : access.canRunPrReviews(principal);
   };
 
   const assertAskAccess = async (askId: string) => {

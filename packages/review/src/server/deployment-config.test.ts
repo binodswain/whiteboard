@@ -16,6 +16,7 @@ describe("loadDeploymentConfig", () => {
       repoSource: "local",
       jobs: "inline",
       auth: "local-token",
+      admins: [],
     });
   });
 
@@ -104,6 +105,7 @@ describe("loadDeploymentConfig", () => {
       repoSource: "local",
       jobs: "inline",
       auth: "local-token",
+      admins: [],
     });
   });
 
@@ -179,9 +181,27 @@ describe("loadDeploymentConfig", () => {
       ).toBe(true);
     });
 
+    it("leaves the repository list to admins when there are some", () => {
+      expect(
+        loadDeploymentConfig({
+          ...base,
+          WHITEBOARD_AUTH: "oauth",
+          WHITEBOARD_AUTH_SECRET: "s".repeat(32),
+          GITHUB_OAUTH_CLIENT_ID: "id",
+          GITHUB_OAUTH_CLIENT_SECRET: "secret",
+          WHITEBOARD_ADMINS: "Octocat, hubot",
+          WHITEBOARD_PR_REVIEW_REPOS: undefined,
+        }),
+      ).toMatchObject({
+        admins: ["octocat", "hubot"],
+        prReviews: { repos: [] },
+      });
+    });
+
     it.each([
       [{ GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined }],
       [{ WHITEBOARD_PR_REVIEW_REPOS: undefined }],
+      [{ WHITEBOARD_ADMINS: "not a login" }],
       [{ WHITEBOARD_PR_REVIEW_REPOS: "not-a-slug" }],
       [{ WHITEBOARD_JOBS: "inline" }],
       [{ WHITEBOARD_REPO_SOURCE: "local" }],

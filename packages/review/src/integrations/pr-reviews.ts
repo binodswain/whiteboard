@@ -219,12 +219,19 @@ export function createPrReviews(input: {
   jobs: JobRunner;
   checks: CheckRunsClient;
   mergeBase: MergeBaseResolver;
-  /** Set when `config.authoring` is on and a runner can pick up asks. */
+  /** How to hand summaries to a runner; used while `authoring` is on. */
   authoring?: PrReviewAuthoring;
   log?: (message: string) => void;
   /** Frees a finished run's checkouts; they are rebuilt if the review is
    * read again. */
   release?: (run: { repo: string; reviewId: string }) => Promise<void>;
+  /** The repositories and switches in effect, read on each use so the
+   * settings page applies without a restart; `config` when absent. */
+  settings?: () => Promise<{
+    repos: string[];
+    drafts: boolean;
+    authoring: boolean;
+  }>;
 }): PrReviews {
   const { meta, jobs, checks, config } = input;
   const log = input.log ?? (() => {});
@@ -232,6 +239,14 @@ export function createPrReviews(input: {
   const publicUrl = config.publicUrl.replace(/\/$/, "");
 
   const now = () => new Date().toISOString();
+
+  const settings =
+    input.settings ??
+    (async () => ({
+      repos: config.repos,
+      drafts: config.drafts,
+      authoring: config.authoring ?? false,
+    }));
 
   const getRun = (id: string) =>
     meta.get<RunRow>("SELECT * FROM pr_review_runs WHERE id=?", id);
@@ -505,7 +520,7 @@ export function createPrReviews(input: {
             ? `${publicUrl}/r/${encodeURIComponent(job.reviewId)}`
             : null;
 
-          if (input.authoring && config.authoring && job.reviewId) {
+          if (input.authoring && (await settings()).authoring && job.reviewId) {
             // Claim the run before queuing, so two passes over the same
             // finished job cannot each queue an ask.
             const claimed = await setRun(
@@ -652,7 +667,9 @@ export function createPrReviews(input: {
     const repo = payload.repository.full_name.toLowerCase();
     const pr = payload.pull_request;
 
-    if (!config.repos.includes(repo)) return ignore("repository not enabled");
+    const enabled = await settings();
+
+    if (!enabled.repos.includes(repo)) return ignore("repository not enabled");
 
     const installation = payload.installation?.id;
 
@@ -662,7 +679,7 @@ export function createPrReviews(input: {
     )
       return ignore("installation not allowed");
 
-    if (pr.draft && !config.drafts) return ignore("draft pull request");
+    if (pr.draft && !enabled.drafts) return ignore("draft pull request");
 
     if (!SHA.test(pr.head.sha) || !SHA.test(pr.base.sha))
       return reply(400, { error: "Malformed payload." });

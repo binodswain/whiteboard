@@ -88,6 +88,9 @@ const HOSTED_BASE_ENV = [
 export interface AskHostedLaunch {
   provider?: string;
   model?: string;
+  /** Provider keys from the server's settings, over the runner's own. Only
+   * names in the agent's `keyEnv` are used. */
+  env?: Record<string, string>;
 }
 
 /** Provider and model names reach an argument list, so they stay plain. */
@@ -97,11 +100,15 @@ const HOSTED_NAME = /^[\w.:/@-]{1,200}$/u;
 export function hostedAgentEnv(
   hosted: AskAgentHosted,
   env: NodeJS.ProcessEnv = process.env,
+  keys: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
   const kept: NodeJS.ProcessEnv = {};
 
   for (const name of [...HOSTED_BASE_ENV, ...hosted.keyEnv])
     if (env[name] !== undefined) kept[name] = env[name];
+
+  for (const name of hosted.keyEnv)
+    if (keys[name] !== undefined) kept[name] = keys[name];
 
   return kept;
 }
@@ -111,6 +118,8 @@ export async function hostedAgentProblem(
   agent: AskAgentId,
   launch: AskHostedLaunch = {},
   env: NodeJS.ProcessEnv = process.env,
+  /** False before any ask is claimed: the server may still send the key. */
+  { keys = true }: { keys?: boolean } = {},
 ): Promise<string | undefined> {
   const spec = askAgents[agent];
 
@@ -128,7 +137,10 @@ export async function hostedAgentProblem(
   if (spec.mcp && !(await spec.mcp.supported(executable)))
     return `This ${spec.name} install cannot take Whiteboard's MCP tools; update it.`;
 
-  if (!spec.hosted.keyEnv.some((name) => env[name]))
+  if (
+    keys &&
+    !spec.hosted.keyEnv.some((name) => env[name] || launch.env?.[name])
+  )
     return `Set one of ${spec.hosted.keyEnv.join(", ")} for ${spec.name}.`;
 
   return undefined;
@@ -396,7 +408,7 @@ export const launchAskAgent: AskAgentLauncher = async (
   }
 
   const env: NodeJS.ProcessEnv = hosted
-    ? hostedAgentEnv(spec.hosted!)
+    ? hostedAgentEnv(spec.hosted!, process.env, hosted.env)
     : {
         ...process.env,
         ...((bypass && spec.bypass?.env) || spec.env),

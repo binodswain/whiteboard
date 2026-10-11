@@ -14,6 +14,7 @@ import type { AskKind } from "@review/ask/runner/queue.js";
 import type { AskAgentId } from "@review/ask/thread-state.js";
 import type { AskMcpServers } from "@review/ask/thread.js";
 import { AskThreads } from "@review/ask/threads.js";
+import { z } from "zod";
 
 import { writePullRequestContext } from "./workdir.js";
 
@@ -53,6 +54,15 @@ class WhiteboardHttpError extends Error {
 
 const ASK_LEASE_MS = 2 * 60_000;
 
+/** The reviewer settings a server sends with a pull request ask. */
+const claimedAgentSchema = z.object({
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  env: z.record(z.string(), z.string()),
+});
+
+type ClaimedAgent = z.infer<typeof claimedAgentSchema>;
+
 /** Polls, claims and runs one hosted ask at a time. The lease is owned by the
  * connector process, so a crash leaves the ask reclaimable after expiry. */
 export async function runAskConnector(
@@ -67,6 +77,8 @@ export async function runAskConnector(
     const problem = await (options.preflight ?? hostedAgentProblem)(
       options.agent,
       options.hosted,
+      process.env,
+      { keys: false },
     );
 
     if (problem) throw new Error(`Cannot review pull requests: ${problem}`);
@@ -93,11 +105,22 @@ export async function runAskConnector(
 
   const launch = options.launch ?? launchAskAgent;
 
-  const launcher: AskAgentLauncher = (agent, cwd, launchOptions) =>
-    launch(agent, cwd, {
-      ...launchOptions,
-      ...(unattended && { hosted: options.hosted ?? {} }),
-    });
+  // The server's reviewer settings, when an admin stored them, pick the
+  // provider, model and key over the runner's own.
+  const launcher =
+    (agent?: ClaimedAgent): AskAgentLauncher =>
+    (id, cwd, launchOptions) =>
+      launch(id, cwd, {
+        ...launchOptions,
+        ...(unattended && {
+          hosted: {
+            ...options.hosted,
+            ...(agent?.provider && { provider: agent.provider }),
+            ...(agent?.model && { model: agent.model }),
+            ...(agent && { env: agent.env }),
+          },
+        }),
+      });
 
   const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const headers = new Headers(init?.headers);
@@ -142,13 +165,14 @@ export async function runAskConnector(
       continue;
     }
 
-    const claimed = await request<{ ask: PendingAsk; token?: string }>(
-      `/asks/${encodeURIComponent(pending.id)}/claim`,
-      {
-        method: "POST",
-        body: JSON.stringify({ runnerId }),
-      },
-    ).catch(() => undefined);
+    const claimed = await request<{
+      ask: PendingAsk;
+      token?: string;
+      agent?: unknown;
+    }>(`/asks/${encodeURIComponent(pending.id)}/claim`, {
+      method: "POST",
+      body: JSON.stringify({ runnerId }),
+    }).catch(() => undefined);
 
     if (!claimed) continue;
     options.onStatus?.(`Running ask ${pending.id}.`);
@@ -166,7 +190,9 @@ export async function runAskConnector(
       continue;
     }
 
-    const threads = new AskThreads(launcher, {
+    const agent = claimedAgentSchema.safeParse(claimed.agent);
+
+    const threads = new AskThreads(launcher(agent.data), {
       mcpServers: mcpServers(claimed.token ?? options.token),
     });
 
