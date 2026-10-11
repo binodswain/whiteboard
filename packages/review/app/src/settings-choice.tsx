@@ -12,13 +12,13 @@ export function Choice<T extends string>({
   label,
   value,
   labels,
-  disabled,
+  disabled = false,
   onChange,
 }: {
   label: string;
   value: T;
   labels: Record<T, string>;
-  disabled: boolean;
+  disabled?: boolean;
   onChange: (choice: T) => void;
 }) {
   // SAFETY: `labels` is declared as Record<T, string>, so its own keys are

@@ -16,6 +16,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -117,8 +118,8 @@ export function SettingsPage({
     ReviewCliInstallStatus | undefined
   >(settings.install?.status);
 
-  // Each setting reports its own save: only that row is disabled while it
-  // saves, and a failure is explained beside it with its last saved value kept.
+  // Each setting reports its own save: only that row shows it is saving, and
+  // a failure is explained beside it with its last saved value kept.
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
@@ -132,11 +133,18 @@ export function SettingsPage({
       ? { ...settings.install, status: installStatus }
       : settings.install;
 
+  // Controls stay enabled while a save runs so keyboard focus is not dropped;
+  // a second change to the same setting waits for the first instead.
+  const inFlight = useRef(new Set<string>());
+
   const run = async <T,>(
     key: string,
     action: () => Promise<T>,
     adopt: (value: T) => void,
   ) => {
+    if (inFlight.current.has(key)) return;
+
+    inFlight.current.add(key);
     setPending((current) => new Set(current).add(key));
     setErrors((current) => {
       const next = new Map(current);
@@ -156,6 +164,7 @@ export function SettingsPage({
         ),
       );
     } finally {
+      inFlight.current.delete(key);
       setPending((current) => {
         const next = new Set(current);
 
@@ -210,7 +219,6 @@ export function SettingsPage({
                 >
                   {install.status.shim.installer ? null : (
                     <Button
-                      disabled={pending.has("command")}
                       onClick={() =>
                         void run(
                           "command",
@@ -252,7 +260,6 @@ export function SettingsPage({
                       {...stylex.props(styles.checkbox)}
                       type="checkbox"
                       checked={telemetryEnabled}
-                      disabled={pending.has("telemetry")}
                       onChange={(event) => {
                         const enabled = event.target.checked;
                         void run(
@@ -277,7 +284,6 @@ export function SettingsPage({
                   label="Theme"
                   value={theme}
                   labels={THEME_LABELS}
-                  disabled={pending.has("theme")}
                   onChange={(choice) =>
                     void run("theme", () => settings.setTheme(choice), setTheme)
                   }
@@ -292,7 +298,6 @@ export function SettingsPage({
                   label="Document width"
                   value={documentWidth}
                   labels={DOCUMENT_WIDTH_LABELS}
-                  disabled={pending.has("document-width")}
                   onChange={(choice) =>
                     void run(
                       "document-width",
@@ -311,7 +316,6 @@ export function SettingsPage({
                   label="Code font size"
                   value={String(codeFontSize)}
                   labels={codeFontSizeLabels(codeFontSize)}
-                  disabled={pending.has("code-font-size")}
                   onChange={(choice) =>
                     void run(
                       "code-font-size",
@@ -331,7 +335,6 @@ export function SettingsPage({
                     label="Keymap"
                     value={keymap}
                     labels={KEYMAP_LABELS}
-                    disabled={pending.has("keymap")}
                     onChange={(choice) => {
                       void run(
                         "keymap",
@@ -352,7 +355,6 @@ export function SettingsPage({
                     label="Ctrl+Tab"
                     value={ctrlTab}
                     labels={CTRL_TAB_LABELS}
-                    disabled={pending.has("ctrl-tab")}
                     onChange={(choice) =>
                       void run(
                         "ctrl-tab",
@@ -376,7 +378,6 @@ export function SettingsPage({
                     label="Review ready"
                     value={readyNotification}
                     labels={READY_NOTIFICATION_LABELS}
-                    disabled={pending.has("ready-notification")}
                     onChange={(choice) =>
                       void run(
                         "ready-notification",
@@ -422,7 +423,6 @@ export function SettingsPage({
                     type="checkbox"
                     aria-label="Structural Diffs"
                     checked={structuralDiffEnabled}
-                    disabled={pending.has("structural-diff")}
                     onChange={(event) => {
                       const enabled = event.target.checked;
                       void run(
@@ -470,7 +470,6 @@ export function SettingsPage({
                     type="checkbox"
                     aria-label="Software Map"
                     checked={softwareMapEnabled}
-                    disabled={pending.has("software-map")}
                     onChange={(event) => {
                       const enabled = event.target.checked;
                       void run(
@@ -495,7 +494,6 @@ export function SettingsPage({
                     type="checkbox"
                     aria-label="Scratchpad"
                     checked={scratchpadEnabled}
-                    disabled={pending.has("scratchpad")}
                     onChange={(event) => {
                       const enabled = event.target.checked;
                       void run(
