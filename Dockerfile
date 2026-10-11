@@ -39,7 +39,23 @@ ENV WHITEBOARD_LOCAL_BROWSER_AUTH=0
 CMD ["sh", "-c", "exec whiteboard server start --host 0.0.0.0 --port ${WHITEBOARD_PORT:-7421} --web /app/web"]
 
 FROM runtime-base AS runtime
+# AGENTS is a comma- or space-separated list of agent CLIs to install, at
+# pinned versions; AGENT is the older single-agent form.
 ARG AGENT=none
+ARG AGENTS=
+ARG CLAUDE_CODE_VERSION=2.1.296
+ARG CODEX_VERSION=0.162.1
+ARG PI_VERSION=1.1.0
 USER root
-RUN if [ "$AGENT" = claude ]; then npm install -g @anthropic-ai/claude-code; elif [ "$AGENT" = codex ]; then npm install -g @openai/codex; elif [ "$AGENT" != none ]; then echo "AGENT must be claude, codex, or none" >&2; exit 1; fi
+RUN set -e; \
+    for agent in $(echo "${AGENTS:-$AGENT}" | tr ',' ' '); do \
+      case "$agent" in \
+        none) ;; \
+        claude) npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION" ;; \
+        codex) npm install -g "@openai/codex@$CODEX_VERSION" ;; \
+        pi) npm install -g "@earendil-works/pi-coding-agent@$PI_VERSION" ;; \
+        *) echo "AGENTS entries must be claude, codex, pi, or none" >&2; exit 1 ;; \
+      esac; \
+    done; \
+    npm cache clean --force
 USER node

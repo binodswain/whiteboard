@@ -7,19 +7,27 @@ exact head commit and links it from a GitHub check run.
 This is opt-in and remote-only. A deployment without
 `WHITEBOARD_GITHUB_WEBHOOK_SECRET` mounts nothing, and local mode is unchanged.
 
-**What exists today:** the webhook receiver, one prepared review per head, and
-the check run that links it. The AI authoring step (a hosted Pi worker writing
-the summary and diagrams) is not wired in yet, so the completed check is
-`neutral` and says the review is ready without an authored summary.
+**What exists today:** the webhook receiver, one prepared review per head, the
+check run that links it, and an opt-in written summary from a locked-down ask
+runner (see below). Without it, the completed check is `neutral` and says the
+review is ready without an authored summary.
 
 ## Configuration
 
-All of it is deployment environment, never repository files.
+Secrets and how the server is reached are deployment environment. Which
+repositories are reviewed, and the model that writes summaries, can instead be
+set by an admin in the app: list GitHub logins in `WHITEBOARD_ADMINS` (OAuth
+sign-in required), and they get a **Pull request reviews** section on the
+settings page. What they save is kept in the `admin_settings` table and wins
+over the environment values, which stay the defaults; it applies to the next
+delivery without a restart. The reviewer's API key is encrypted with
+`WHITEBOARD_AUTH_SECRET` and never sent back to a browser.
 
 | Variable                                  | Meaning                                                                                                                |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `WHITEBOARD_GITHUB_WEBHOOK_SECRET`        | Turns the feature on. Must match the App's webhook secret.                                                             |
-| `WHITEBOARD_PR_REVIEW_REPOS`              | Comma-separated `owner/repo` allowlist. Required.                                                                      |
+| `WHITEBOARD_PR_REVIEW_REPOS`              | Comma-separated `owner/repo` allowlist. Required unless `WHITEBOARD_ADMINS` is set.                                    |
+| `WHITEBOARD_ADMINS`                       | Comma-separated GitHub logins who edit these settings in the app.                                                      |
 | `WHITEBOARD_PR_REVIEW_DRAFTS`             | `true` to review draft PRs. Skipped by default.                                                                        |
 | `WHITEBOARD_PR_REVIEW_AUTHORING`          | `true` to have an ask runner write a summary of each prepared review (see below). Off by default.                      |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | Required. The same App that checks repositories out. Set `GITHUB_APP_INSTALLATION_ID` to accept one installation only. |
@@ -57,7 +65,8 @@ narrowed to `checks: write` on the one repository.
 
 ## Written summary (opt-in)
 
-With `WHITEBOARD_PR_REVIEW_AUTHORING=true`, a prepared review is not completed
+With `WHITEBOARD_PR_REVIEW_AUTHORING=true` (or the summary switch on the
+settings page), a prepared review is not completed
 at once. The run moves to `authoring` and a hosted ask is queued with a fixed,
 server-owned prompt: read the change through the review's Whiteboard tools, and
 post one whole-review comment whose first line is `## Pull request summary [<code>]`.
@@ -75,12 +84,63 @@ cancelled so a runner arriving later does not run it. Turning the setting off
 also completes runs still waiting. The server checks for finished asks every
 30 seconds.
 
-An ask runner (`whiteboard ask connect`) must be running for this to do
-anything. The runner currently uses the deployment's general token, so the
-agent can reach every review on the server, not only this one; scoping it to a
-single review, isolating the worker and pinning the agent's provider and model
-are not done yet. Enable this only on a deployment where that trust is
-acceptable.
+These asks have kind `pr-review`. A connector takes only `interactive` asks
+unless started with `--kind pr-review`, so a laptop connector never runs them.
+
+### The pull request runner
+
+```sh
+whiteboard connect --server https://whiteboard.example.com --agent pi \
+  --kind pr-review --once --model <model> [--provider <provider>]
+```
+
+`--model` and `--provider` default to `WHITEBOARD_PR_MODEL` and
+`WHITEBOARD_PR_PROVIDER`. When admins are configured, only an admin's API
+token can see or claim pull request asks, and the claim carries the provider,
+model and key saved on the settings page; those win over the runner's own.
+With `--kind pr-review` the runner:
+
+- refuses to start unless the agent has a locked-down mode, is installed and
+  can take Whiteboard's MCP tools, and fails an ask when neither the server
+  nor its environment gives it a provider key. Only Pi has one today:
+  it runs with read-only local tools (`read,grep,find,ls`), no extensions and
+  no saved session;
+- starts the agent with only `PATH`, `HOME`, locale and CA variables and the
+  provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+  `GEMINI_API_KEY`). The runner's own token and other secrets are not passed;
+- gives the agent a per-ask token (`wba_…`) issued at claim. It reaches only
+  that ask's review — its reads, comments, progress, activity and edits — and
+  stops working when the ask ends or its lease runs out. Other reviews,
+  listings, the ask queue and settings answer `403`;
+- runs the agent in a fresh temporary directory holding `PR_DIFF.patch`,
+  `CHANGED_FILES.txt` and the changed files' head contents under `head/`
+  (fetched through the per-ask token and size-capped), and deletes it after;
+- fails an ask that runs past `--max-runtime` minutes (15 by default);
+- with `--once`, exits after one ask so nothing carries over between PRs.
+
+The production compose file has a `reviewer` service for this, off unless
+started with `--profile reviewer`. It reads `.env.reviewer` (an admin's API
+token as `WHITEBOARD_TOKEN`), runs read-only with dropped
+capabilities and a `/tmp` tmpfs, and mounts no data volume or GitHub key.
+Build its image with `AGENTS=pi`; the Dockerfile installs pinned agent
+versions.
+
+The VM deploy workflow builds with `AGENTS=pi` and starts the reviewer when
+the `WHITEBOARD_REVIEWER_TOKEN` secret is set, writing `.env.reviewer` from it
+alone; the provider and key are set on the settings page. It passes the
+`WHITEBOARD_ADMINS` repository variable to the server. Without the token it
+stops any reviewer left running.
+
+## Cleanup
+
+When a run finishes, its review's pinned checkouts are removed; they are
+rebuilt if someone opens the review's files later. Once a day the server
+deletes `github_deliveries` rows older than seven days and runs
+`git worktree prune` and `git gc --auto` on each cached clone, skipping a clone
+that is being prepared. Clones themselves are kept: reviews read from them.
+
+Preparations of one repository take turns on its clone through a file lock
+that is renewed while held, so a long preparation is not taken over.
 
 A `synchronize` marks the PR's older runs `superseded`. Each run only ever
 updates its own check run, so an old head finishing late cannot change the
@@ -111,4 +171,6 @@ redelivering its webhook or pushing a new commit.
 Webhook payloads are read for identifiers (repository, PR number, SHAs,
 installation) only; PR titles, descriptions and branch names are not stored or
 used. The review itself is prepared from the repository checkout as for any
-hosted review. Nothing is sent to a model provider by this step.
+hosted review. Preparing sends nothing to a model provider. With the written
+summary on, the runner sends the PR's diff, changed files and review content
+to the configured provider.

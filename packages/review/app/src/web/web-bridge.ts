@@ -3,6 +3,7 @@ import {
   type JsonValue,
   REVIEW_DISCORD_URL,
   type ReviewAccessTokens,
+  type ReviewAdminSettings,
   type ReviewCanvasBridge,
   ReviewDiffFileSchema,
   type ReviewDiffFileWire,
@@ -97,6 +98,69 @@ function accessTokens(
 
       if (!response.ok)
         throw new Error(`Could not revoke the API token (${response.status}).`);
+    },
+  };
+}
+
+const adminSettingsViewSchema = z.object({
+  prReviews: z.object({
+    repos: z.array(z.string()),
+    drafts: z.boolean(),
+    authoring: z.boolean(),
+  }),
+  reviewer: z.object({
+    provider: z.string().nullable(),
+    model: z.string().nullable(),
+    apiKeySet: z.boolean(),
+  }),
+  providers: z.array(z.string()),
+  updatedAt: z.string().nullable(),
+  updatedBy: z.string().nullable(),
+});
+
+/** The server answers 403 to anyone but a deployment admin; the page then
+ * shows nothing. */
+function adminSettings(
+  request: (url: string, init?: RequestInit) => Promise<Response>,
+  serverUrl: string,
+  session: { authenticated: boolean; user?: { via?: string } },
+): ReviewAdminSettings | undefined {
+  if (!session.authenticated || session.user?.via === "api-token")
+    return undefined;
+
+  const url = `${serverUrl}/admin/settings`;
+
+  return {
+    async read() {
+      const response = await request(url);
+
+      if (response.status === 403 || response.status === 404) return null;
+
+      if (!response.ok)
+        throw new Error(`Could not read settings (${response.status}).`);
+
+      return adminSettingsViewSchema.parse(await response.json());
+    },
+    async update(patch) {
+      const response = await request(url, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+
+      if (!response.ok) {
+        const body = z
+          .object({ error: z.string() })
+          .safeParse(await response.json().catch(() => null));
+
+        throw new Error(
+          body.success
+            ? body.data.error
+            : `Could not save settings (${response.status}).`,
+        );
+      }
+
+      return adminSettingsViewSchema.parse(await response.json());
     },
   };
 }
@@ -271,6 +335,7 @@ export async function loadWebSettings(
     importVsCodeSettings: () => {},
     web: true,
     accessTokens: accessTokens(request, config.serverUrl, session),
+    adminSettings: adminSettings(request, config.serverUrl, session),
   } satisfies ReviewCanvasSettingsContent;
 }
 

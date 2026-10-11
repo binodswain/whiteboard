@@ -24,6 +24,7 @@ import {
 } from "@review/ask/build-prompt.js";
 import { checkoutFiles, mentionableFiles } from "@review/ask/checkout-files.js";
 import { parseFileRef, resolveFileRefs } from "@review/ask/file-refs.js";
+import { askKinds } from "@review/ask/runner/queue.js";
 import {
   type AskAgentId,
   type AskThreadState,
@@ -38,6 +39,7 @@ import type { AuthPrincipal } from "@review/auth/index.js";
 import { fuzzyRank } from "@review/fuzzy-match.js";
 import type { JobRunner } from "@review/jobs/job-runner.js";
 import { resolveReviewStackLayers } from "@review/review-stack.js";
+import type { ReviewerAgentConfig } from "@review/server/admin-settings.js";
 import { readBoundedRequestJson } from "@review/server/hono-http.js";
 import { HttpJsonError } from "@review/server/http-json.js";
 import {
@@ -209,6 +211,12 @@ export interface ReviewApiAccess {
   /** The canonical remote URL a `repositoryPath` input names, or undefined
    * for a path that is not a repository on the remote host. */
   normalizeRepoPath?(repoPath: string): string | undefined;
+  /** Whether a caller may see and claim pull request asks; when absent,
+   * anyone who can read the review may. */
+  canRunPrReviews?(principal: AuthPrincipal): boolean;
+  /** The provider, model and key a pull request runner's agent gets at
+   * claim, when an admin stored them on the settings page. */
+  reviewerAgent?(): Promise<ReviewerAgentConfig | undefined>;
 }
 
 export type ReviewApiApp = Hono & {
@@ -352,12 +360,21 @@ export function createReviewApi(
     return context.json({ askId }, 202);
   });
   app.get("/asks/pending", async (context) => {
+    const kind = context.req.query("kind");
+
+    if (kind !== undefined && !askKinds.some((known) => known === kind))
+      return context.json({ error: "Unknown ask kind." }, 400);
+
     await store.askQueue.reapExpired();
 
-    const asks = await store.askQueue.pending();
+    const asks = await store.askQueue.pending({
+      kind: askKinds.find((known) => known === kind),
+    });
 
     const visible = await Promise.all(
       asks.map(async (ask) => {
+        if (ask.kind === "pr-review" && !mayRunPrReviews()) return null;
+
         try {
           await assertRepoAccess(ask.reviewId);
 
@@ -382,16 +399,27 @@ export function createReviewApi(
       await readBoundedRequestJson(context.req.raw),
     );
 
-    await assertAskAccess(context.req.param("askId"));
+    const ask = await assertAskAccess(context.req.param("askId"));
+    const prReview = ask?.kind === "pr-review";
 
-    const ask = await store.askQueue.claim(
+    if (prReview && !mayRunPrReviews())
+      return context.json(
+        { error: "Only deployment admins can run pull request asks." },
+        403,
+      );
+
+    const claimed = await store.askQueue.claim(
       context.req.param("askId"),
       runnerId,
     );
 
-    return ask
-      ? context.json({ ask })
-      : context.json({ error: "Ask is not claimable." }, 409);
+    if (!claimed) return context.json({ error: "Ask is not claimable." }, 409);
+
+    const agent = prReview ? await access?.reviewerAgent?.() : undefined;
+
+    // The token is the agent's only credential, and the reviewer's provider
+    // key goes to runners admins hold; both are shown once, here.
+    return context.json(agent ? { ...claimed, agent } : claimed);
   });
   app.post("/asks/:askId/complete", async (context) => {
     const input = completeAskSchema.parse(
@@ -560,6 +588,12 @@ export function createReviewApi(
 
     if (!caller) return;
 
+    if (caller.via === "ask") {
+      if (caller.askReviewId === id) return;
+
+      throw new ReviewInputError("Review not found.", 404);
+    }
+
     const found = await reviewRepoPaths(id);
 
     if (found.missing) return;
@@ -573,6 +607,14 @@ export function createReviewApi(
       ).some((allowed) => !allowed)
     )
       throw new ReviewInputError("Review not found.", 404);
+  };
+
+  const mayRunPrReviews = () => {
+    const principal = authScope?.getStore();
+
+    return !access?.canRunPrReviews || !principal
+      ? true
+      : access.canRunPrReviews(principal);
   };
 
   const assertAskAccess = async (askId: string) => {

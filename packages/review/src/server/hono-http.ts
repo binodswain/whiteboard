@@ -104,14 +104,20 @@ export function corsPreflightResponse(request: Request): Response {
   return applyCorsHeaders(request, new Response(null, { status: 204 }));
 }
 
+/** The credential a request carries, in the places a browser or CLI sends it. */
+export function suppliedRequestToken(request: Request): string | null {
+  return (
+    request.headers.get("x-review-token") ??
+    request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ??
+    new URL(request.url).searchParams.get("token")
+  );
+}
+
 export function isAuthorizedRequest(
   request: Request,
   expectedToken: string,
 ): boolean {
-  const supplied =
-    request.headers.get("x-review-token") ??
-    request.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ??
-    new URL(request.url).searchParams.get("token");
+  const supplied = suppliedRequestToken(request);
 
   if (!supplied) return false;
   const expected = Buffer.from(expectedToken);

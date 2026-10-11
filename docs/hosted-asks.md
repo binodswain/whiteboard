@@ -13,7 +13,8 @@ whiteboard connect --server https://whiteboard.example.com --token "$WHITEBOARD_
 ```
 
 Use `--agent codex`, `--agent cursor`, `--agent opencode`, or `--agent pi` to
-select another installed CLI. `WHITEBOARD_TOKEN` is an existing server token
+select another installed CLI. The connector takes interactive asks; pull
+request summaries need `--kind pr-review` (see [Automatic PR reviews](pr-reviews.md)). `WHITEBOARD_TOKEN` is an existing server token
 setting; the connector also accepts it through `--token`. Each claim has a
 two-minute lease, renewed by `POST /asks/:id/heartbeat`. If a connector exits
 during a run, the server makes the ask available again after the lease
@@ -26,8 +27,11 @@ The queue API is mounted under `/reviews-api`:
   with a build preamble so the agent builds a new session instead of only
   answering.
 - `GET /asks/:id` returns status and result references.
-- `GET /asks/pending` lists work available to connectors.
-- `POST /asks/:id/claim` with `{ runnerId }` claims one ask atomically.
+- `GET /asks/pending` lists work available to connectors; `?kind=interactive`
+  or `?kind=pr-review` narrows it.
+- `POST /asks/:id/claim` with `{ runnerId }` claims one ask atomically and
+  returns `{ ask, token }`; `token` is a per-ask token bound to the ask's
+  review (see [Automatic PR reviews](pr-reviews.md)).
 - `POST /asks/:id/complete` with `{ runnerId, resultRefs }` records success.
 - `POST /asks/:id/heartbeat` with `{ runnerId }` renews the lease.
 - `POST /asks/:id/fail` with `{ runnerId, error }` records failure.

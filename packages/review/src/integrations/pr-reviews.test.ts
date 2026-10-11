@@ -149,8 +149,13 @@ async function harness(overrides: Overrides = {}) {
       asks.summary?.startsWith(marker) ? asks.summary : undefined,
   };
 
+  const released: { repo: string; reviewId: string }[] = [];
+
   const prReviews = createPrReviews({
     ...(overrides.authoring && { authoring }),
+    release: async (run) => {
+      released.push(run);
+    },
     config: {
       webhookSecret: SECRET,
       repos: ["octo/repo"],
@@ -203,6 +208,7 @@ async function harness(overrides: Overrides = {}) {
     runs,
     settle,
     state,
+    released,
     close: () => meta.close(),
   };
 }
@@ -297,6 +303,11 @@ describe("PR review webhook", () => {
     expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
     // The checkout source only accepts what it can normalize.
     expect(normalizeGitHubRemote(h.prepared[0]!.repo)).toBeTruthy();
+    // The finished run's checkouts are freed once, for its own review.
+    await h.prReviews.reconcile();
+    expect(h.released).toEqual([
+      { repo: "octo/repo", reviewId: "review-aaaaaaa" },
+    ]);
     await h.close();
   });
 
@@ -656,6 +667,29 @@ describe("PR review webhook", () => {
     expect(await h.runs()).toHaveLength(1);
     expect(h.created).toHaveLength(1);
     expect(h.prepared).toHaveLength(1);
+    await h.close();
+  });
+
+  it("forgets delivery records after a week", async () => {
+    const h = await harness();
+
+    await h.meta.run(
+      "INSERT INTO github_deliveries(delivery_id,outcome,received_at) VALUES(?,?,?),(?,?,?)",
+      "old",
+      "queued",
+      new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+      "recent",
+      "queued",
+      new Date().toISOString(),
+    );
+
+    await h.prReviews.prune();
+
+    expect(
+      await h.meta.all<{ delivery_id: string }>(
+        "SELECT delivery_id FROM github_deliveries",
+      ),
+    ).toEqual([{ delivery_id: "recent" }]);
     await h.close();
   });
 });

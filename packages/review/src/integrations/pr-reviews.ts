@@ -78,6 +78,7 @@ export interface PrReviewAuthoring {
   /** Queues the summary ask; resolves with its id. */
   enqueue(input: {
     reviewId: string;
+    kind: "pr-review";
     prompt: string;
     createdBy: string;
   }): Promise<string>;
@@ -135,7 +136,12 @@ export interface PrReviews {
   handleWebhook(request: Request): Promise<Response>;
   /** Moves runs whose prepare job has finished to their terminal state. */
   reconcile(): Promise<void>;
+  /** Deletes delivery records past their retention. */
+  prune(): Promise<void>;
 }
+
+/** How long a webhook delivery's outcome is kept for diagnosis. */
+export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 function reply(status: number, body: JsonObject): Response {
   return Response.json(
@@ -213,9 +219,19 @@ export function createPrReviews(input: {
   jobs: JobRunner;
   checks: CheckRunsClient;
   mergeBase: MergeBaseResolver;
-  /** Set when `config.authoring` is on and a runner can pick up asks. */
+  /** How to hand summaries to a runner; used while `authoring` is on. */
   authoring?: PrReviewAuthoring;
   log?: (message: string) => void;
+  /** Frees a finished run's checkouts; they are rebuilt if the review is
+   * read again. */
+  release?: (run: { repo: string; reviewId: string }) => Promise<void>;
+  /** The repositories and switches in effect, read on each use so the
+   * settings page applies without a restart; `config` when absent. */
+  settings?: () => Promise<{
+    repos: string[];
+    drafts: boolean;
+    authoring: boolean;
+  }>;
 }): PrReviews {
   const { meta, jobs, checks, config } = input;
   const log = input.log ?? (() => {});
@@ -223,6 +239,14 @@ export function createPrReviews(input: {
   const publicUrl = config.publicUrl.replace(/\/$/, "");
 
   const now = () => new Date().toISOString();
+
+  const settings =
+    input.settings ??
+    (async () => ({
+      repos: config.repos,
+      drafts: config.drafts,
+      authoring: config.authoring ?? false,
+    }));
 
   const getRun = (id: string) =>
     meta.get<RunRow>("SELECT * FROM pr_review_runs WHERE id=?", id);
@@ -397,11 +421,18 @@ export function createPrReviews(input: {
         ...(reviewUrl && { detailsUrl: reviewUrl }),
       });
 
-    await setRun(
+    const finished = await setRun(
       run.id,
       { status: "prepared", review_id: reviewId, review_url: reviewUrl },
       from,
     );
+
+    if (finished.changes && reviewId && input.release)
+      await input
+        .release({ repo: run.repo, reviewId })
+        .catch((cause: unknown) =>
+          log(`pr review ${run.id} checkouts not freed: ${String(cause)}`),
+        );
   };
 
   /** Finishes runs whose summary ask ended or timed out, or whose summary
@@ -489,7 +520,7 @@ export function createPrReviews(input: {
             ? `${publicUrl}/r/${encodeURIComponent(job.reviewId)}`
             : null;
 
-          if (input.authoring && config.authoring && job.reviewId) {
+          if (input.authoring && (await settings()).authoring && job.reviewId) {
             // Claim the run before queuing, so two passes over the same
             // finished job cannot each queue an ask.
             const claimed = await setRun(
@@ -513,6 +544,7 @@ export function createPrReviews(input: {
                   prNumber: run.pr_number,
                   marker: summaryMarker(config.webhookSecret, run.id),
                 }),
+                kind: "pr-review",
                 createdBy: `github-app:${run.installation_id}`,
               });
 
@@ -635,7 +667,9 @@ export function createPrReviews(input: {
     const repo = payload.repository.full_name.toLowerCase();
     const pr = payload.pull_request;
 
-    if (!config.repos.includes(repo)) return ignore("repository not enabled");
+    const enabled = await settings();
+
+    if (!enabled.repos.includes(repo)) return ignore("repository not enabled");
 
     const installation = payload.installation?.id;
 
@@ -645,7 +679,7 @@ export function createPrReviews(input: {
     )
       return ignore("installation not allowed");
 
-    if (pr.draft && !config.drafts) return ignore("draft pull request");
+    if (pr.draft && !enabled.drafts) return ignore("draft pull request");
 
     if (!SHA.test(pr.head.sha) || !SHA.test(pr.base.sha))
       return reply(400, { error: "Malformed payload." });
@@ -718,5 +752,12 @@ export function createPrReviews(input: {
     }
   };
 
-  return { handleWebhook, reconcile };
+  const prune = async () => {
+    await meta.run(
+      "DELETE FROM github_deliveries WHERE received_at<?",
+      new Date(Date.now() - DELIVERY_RETENTION_MS).toISOString(),
+    );
+  };
+
+  return { handleWebhook, reconcile, prune };
 }

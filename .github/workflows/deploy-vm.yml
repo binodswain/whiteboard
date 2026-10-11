@@ -40,6 +40,9 @@ jobs:
         with:
           context: .
           target: runtime
+          # Pi runs the optional pull request reviewer service.
+          build-args: |
+            AGENTS=pi
           platforms: linux/arm64
           tags: whiteboard:${{ env.IMAGE_TAG }}
           outputs: type=docker,dest=${{ runner.temp }}/whiteboard.tar
@@ -105,6 +108,11 @@ jobs:
           GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
           GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
           GH_TOKEN: ${{ secrets.WHITEBOARD_GH_TOKEN }}
+          # GitHub logins that edit PR review settings in the app.
+          WHITEBOARD_ADMINS: ${{ vars.WHITEBOARD_ADMINS }}
+          # Optional: with a reviewer token set, the reviewer service runs. Its
+          # provider, model and key come from the admins' settings page.
+          REVIEWER_TOKEN: ${{ secrets.WHITEBOARD_REVIEWER_TOKEN }}
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
@@ -115,7 +123,8 @@ jobs:
             IMAGE_TAG,WHITEBOARD_DB,WHITEBOARD_DB_TOKEN,WHITEBOARD_BLOBS,
             WHITEBOARD_S3_ENDPOINT,WHITEBOARD_S3_KEY,WHITEBOARD_S3_SECRET,
             WHITEBOARD_AUTH_SECRET,GITHUB_OAUTH_CLIENT_ID,
-            GITHUB_OAUTH_CLIENT_SECRET,GH_TOKEN
+            GITHUB_OAUTH_CLIENT_SECRET,GH_TOKEN,WHITEBOARD_ADMINS,
+            REVIEWER_TOKEN
           script: |
             set -euo pipefail
             cd ~/services/whiteboard
@@ -133,13 +142,26 @@ jobs:
               printf 'GITHUB_OAUTH_CLIENT_ID=%s\n' "$GITHUB_OAUTH_CLIENT_ID"
               printf 'GITHUB_OAUTH_CLIENT_SECRET=%s\n' "$GITHUB_OAUTH_CLIENT_SECRET"
               printf 'GH_TOKEN=%s\nGITHUB_TOKEN=%s\n' "$GH_TOKEN" "$GH_TOKEN"
+              [ -z "${WHITEBOARD_ADMINS:-}" ] || printf 'WHITEBOARD_ADMINS=%s\n' "$WHITEBOARD_ADMINS"
             } > .env.prod
+
+            # The reviewer gets only its token; the server sends the provider
+            # key with each pull request ask it claims.
+            profiles=()
+            if [ -n "${REVIEWER_TOKEN:-}" ]; then
+              printf 'WHITEBOARD_TOKEN=%s\n' "$REVIEWER_TOKEN" > .env.reviewer
+              profiles=(--profile reviewer)
+            else
+              # Stop a reviewer left from an earlier deploy.
+              touch .env.reviewer
+              docker compose -f docker-compose.prod.yml --profile reviewer rm -sf reviewer || true
+            fi
 
             gunzip -c whiteboard.tar.gz | docker load
             rm -f whiteboard.tar.gz
 
             export WHITEBOARD_IMAGE_TAG="$IMAGE_TAG"
-            docker compose -f docker-compose.prod.yml up -d --wait --wait-timeout 180
+            docker compose -f docker-compose.prod.yml ${profiles[@]+"${profiles[@]}"} up -d --wait --wait-timeout 180
 
             # Keep only the running image so old builds do not fill the disk.
             docker images whiteboard --format '{{.Tag}}' \

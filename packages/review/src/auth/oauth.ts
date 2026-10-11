@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import type { AuthDriver, AuthPrincipal } from "./index.js";
 import { createGitHubAppCredentials, createRepoAccess } from "./repo-access.js";
+import { createSealer } from "./seal.js";
 import { createApiTokens } from "./tokens.js";
 
 const SESSION_COOKIE = "wb_session";
@@ -96,36 +97,7 @@ export function createOAuthDriver(input: {
 
   // The GitHub OAuth token is the user's proof of repository access; it is
   // sealed at rest so a database dump alone cannot spend it.
-  const sealKey = createHash("sha256")
-    .update(`${secret}:github-token`)
-    .digest();
-
-  const seal = (value: string): string => {
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", sealKey, iv);
-    const data = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-
-    return `${iv.toString("base64")}.${cipher.getAuthTag().toString("base64")}.${data.toString("base64")}`;
-  };
-
-  const unseal = (sealed: string): string | undefined => {
-    const [iv, tag, data] = sealed
-      .split(".")
-      .map((part) => Buffer.from(part, "base64"));
-
-    if (!iv?.length || !tag?.length || !data?.length) return undefined;
-
-    try {
-      const decipher = createDecipheriv("aes-256-gcm", sealKey, iv);
-      decipher.setAuthTag(tag);
-
-      return Buffer.concat([decipher.update(data), decipher.final()]).toString(
-        "utf8",
-      );
-    } catch {
-      return undefined;
-    }
-  };
+  const { seal, unseal } = createSealer(secret, "github-token");
 
   // OAuth state carries its own expiry, the post-sign-in destination and a
   // nonce the callback must read back from this browser's cookie — a signed

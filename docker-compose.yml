@@ -8,6 +8,7 @@ services:
       target: runtime
       args:
         AGENT: ${AGENT:-none}
+        AGENTS: ${AGENTS:-}
     user: "${UID:-1000}:${GID:-1000}"
     init: true
     stop_grace_period: 30s

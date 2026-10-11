@@ -563,11 +563,45 @@ export interface ReviewAccessTokens {
   revoke(id: string): Promise<void>;
 }
 
+/** Deployment settings as an admin sees them: the reviewer's API key is
+ * never sent back, only whether one is stored. */
+export interface ReviewAdminSettingsView {
+  prReviews: { repos: string[]; drafts: boolean; authoring: boolean };
+  reviewer: {
+    provider: string | null;
+    model: string | null;
+    apiKeySet: boolean;
+  };
+  providers: string[];
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** A change to them. `apiKey`: a string sets it, null clears it, absent
+ * keeps it. */
+export interface ReviewAdminSettingsPatch {
+  prReviews?: { repos?: string[]; drafts?: boolean; authoring?: boolean };
+  reviewer?: {
+    provider?: string | null;
+    model?: string | null;
+    apiKey?: string | null;
+  };
+}
+
+/** Pull request review settings for deployment admins. */
+export interface ReviewAdminSettings {
+  /** Null when the viewer is not an admin. */
+  read(): Promise<ReviewAdminSettingsView | null>;
+  update(patch: ReviewAdminSettingsPatch): Promise<ReviewAdminSettingsView>;
+}
+
 export interface ReviewCanvasSettingsContent {
   /** True when rendered by the authenticated headless web canvas. */
   web?: boolean;
   /** Hosted deployments only: manage personal API tokens for CLI/MCP. */
   accessTokens?: ReviewAccessTokens;
+  /** Hosted deployments only: settings for deployment admins. */
+  adminSettings?: ReviewAdminSettings;
   // Backed by the `review.telemetry.enabled` workbench setting, which the
   // review server and the CLI both read.
   telemetryEnabled: boolean;
