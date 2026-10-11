@@ -977,7 +977,7 @@ it("offers to dismiss a review whose worktree is gone, without reading its diff"
     });
     await act(async () =>
       vi.waitFor(() =>
-        expect(container.textContent).toContain("Diff selection unavailable"),
+        expect(container.textContent).toContain("Source unavailable"),
       ),
     );
     await act(async () =>

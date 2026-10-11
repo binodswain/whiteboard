@@ -50,6 +50,8 @@ export interface CodeExcerptCardProps {
   segments: readonly CodeExcerptCardSegment[];
   /** A hidden-lines divider rendered after `segments[gap.afterIndex]`. */
   gaps?: readonly LineRangeGap[];
+  /** Lines left out after the last segment — a bounded preview's tail. */
+  omittedAfter?: number;
   /** When set, a segment line outside these absolute line numbers renders
    * as dimmed, revealed context rather than the authored selection. */
   relevantRanges?: readonly LineRange[];
@@ -61,6 +63,8 @@ export interface CodeExcerptCardProps {
   footer?: ReactNode;
   ariaLabel: string;
   scrollKey?: string;
+  /** The code region's id, for an expansion control's `aria-controls`. */
+  bodyId?: string;
   className?: string;
 }
 
@@ -72,6 +76,7 @@ export function CodeExcerptCard({
   rangeLabel,
   segments,
   gaps = [],
+  omittedAfter = 0,
   relevantRanges,
   copyLabel = "Copy excerpt",
   copyText,
@@ -79,6 +84,7 @@ export function CodeExcerptCard({
   footer,
   ariaLabel,
   scrollKey,
+  bodyId,
   className,
 }: CodeExcerptCardProps): ReactElement {
   const normalizedLanguage = normalizeMarkdownCodeLanguage(language ?? "");
@@ -112,6 +118,7 @@ export function CodeExcerptCard({
       />
       <pre
         ref={bodyRef}
+        id={bodyId}
         {...stylex.props(styles.body)}
         style={{
           ...(heightCapPx ? { maxHeight: heightCapPx } : undefined),
@@ -129,6 +136,11 @@ export function CodeExcerptCard({
             gapAfter={gaps.find((gap) => gap.afterIndex === index)}
           />
         ))}
+        {omittedAfter > 0 && (
+          <OmissionMarker
+            text={`${omittedAfter} more ${omittedAfter === 1 ? "line" : "lines"} hidden`}
+          />
+        )}
       </pre>
       {!hasLines && (
         <p {...stylex.props(styles.empty)} role="status">
@@ -187,12 +199,24 @@ function CodeExcerptSegmentLines({
         );
       })}
       {gapAfter && (
-        <div {...stylex.props(styles.omission)}>
-          ⋯ {gapAfter.endLine - gapAfter.startLine + 1}{" "}
-          {gapAfter.endLine === gapAfter.startLine ? "line" : "lines"} hidden
-        </div>
+        <OmissionMarker
+          text={`${gapAfter.endLine - gapAfter.startLine + 1} ${
+            gapAfter.endLine === gapAfter.startLine ? "line" : "lines"
+          } hidden`}
+        />
       )}
     </>
+  );
+}
+
+/** "⋯ N lines hidden": read once by a screen reader, never selected or
+ * copied along with the code around it. */
+function OmissionMarker({ text }: { text: string }): ReactElement {
+  return (
+    <div {...stylex.props(styles.omission)} data-code-omission>
+      <span aria-hidden="true">⋯ </span>
+      {text}
+    </div>
   );
 }
 
@@ -239,19 +263,27 @@ export function CodeFullViewerDialog({
   useEffect(() => {
     if (!open) return;
 
-    dialogRef.current?.focus();
+    dialogRef.current?.focus({ preventScroll: true });
 
+    // Capture on window runs before the side panel's own Escape listener on
+    // document, so closing the viewer never also closes the walkthrough.
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      onCloseRef.current();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+      } else if (event.key === "Tab") {
+        trapTab(event, dialogRef.current);
+      }
     };
 
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
 
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      triggerRef.current?.focus();
+      window.removeEventListener("keydown", onKeyDown, true);
+      // The trigger sits in the step feed; focusing it must not scroll the
+      // panel away from where the reader left it.
+      triggerRef.current?.focus({ preventScroll: true });
     };
   }, [open, triggerRef]);
 
@@ -305,6 +337,35 @@ export function CodeFullViewerDialog({
     </div>,
     portalTarget,
   );
+}
+
+/** Keeps Tab and Shift+Tab cycling within the open dialog. */
+function trapTab(event: KeyboardEvent, dialog: HTMLElement | null): void {
+  if (!dialog) return;
+
+  const focusable = [
+    ...dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ];
+
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  const active = document.activeElement;
+
+  if (!first || !last) {
+    event.preventDefault();
+    dialog.focus();
+  } else if (!dialog.contains(active)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && (active === first || active === dialog)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 /** The full-viewer body for an already-loaded excerpt or file: highlighted,
@@ -458,6 +519,7 @@ const styles = stylex.create({
     padding: "2px 0 2px 42px",
     color: tokens.ghost,
     fontStyle: "italic",
+    userSelect: "none",
   },
   empty: {
     padding: "8px 14px",

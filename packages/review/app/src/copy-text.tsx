@@ -2,7 +2,7 @@ import { IconButton } from "@canvas/ui/button";
 import * as stylex from "@stylexjs/stylex";
 import { type ReactElement, useEffect, useState } from "react";
 
-import { CheckIcon, CopyIcon as CopyGlyph } from "./icons";
+import { CheckIcon, CloseIcon, CopyIcon as CopyGlyph } from "./icons";
 import { useTooltip } from "./use-tooltip";
 
 export async function copyText(text: string): Promise<boolean> {
@@ -72,7 +72,8 @@ export function CopyIcon() {
 
 const COPIED_FOR_MS = 1200;
 
-/** An icon button that copies `text` and shows a check while it is copied. */
+/** An icon button that copies `text` and shows a check while it is copied,
+ * or a cross when the copy failed; either outcome is also announced. */
 export function CopyButton({
   text,
   label,
@@ -86,41 +87,61 @@ export function CopyButton({
   xstyle?: stylex.StyleXStyles;
   iconStyle: stylex.StyleXStyles;
 }): ReactElement {
-  const [copied, setCopied] = useState(false);
+  const [outcome, setOutcome] = useState<"copied" | "failed" | null>(null);
   const tooltip = useTooltip(label);
 
   useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), COPIED_FOR_MS);
+    if (!outcome) return;
+    const timer = setTimeout(() => setOutcome(null), COPIED_FOR_MS);
 
     return () => clearTimeout(timer);
-  }, [copied]);
+  }, [outcome]);
 
   return (
-    <IconButton
-      ref={tooltip}
-      className={className}
-      xstyle={xstyle}
-      aria-label={label}
-      data-copied={copied ? "" : undefined}
-      onClick={() => {
-        // The workbench denies DOM clipboard requests; copyText falls back to
-        // execCommand and reports whether anything was copied.
-        void copyText(text).then((ok) => {
-          if (ok) setCopied(true);
-        });
-      }}
-    >
-      {copied ? (
-        <CheckIcon xstyle={iconStyle} />
-      ) : (
-        <CopyGlyph xstyle={iconStyle} />
-      )}
-    </IconButton>
+    <>
+      <IconButton
+        ref={tooltip}
+        className={className}
+        xstyle={xstyle}
+        aria-label={label}
+        data-copied={outcome === "copied" ? "" : undefined}
+        data-copy-failed={outcome === "failed" ? "" : undefined}
+        onClick={() => {
+          // The workbench denies DOM clipboard requests; copyText falls back
+          // to execCommand and reports whether anything was copied.
+          void copyText(text).then((ok) => {
+            setOutcome(ok ? "copied" : "failed");
+          });
+        }}
+      >
+        {outcome === "copied" ? (
+          <CheckIcon xstyle={iconStyle} />
+        ) : outcome === "failed" ? (
+          <CloseIcon xstyle={iconStyle} />
+        ) : (
+          <CopyGlyph xstyle={iconStyle} />
+        )}
+      </IconButton>
+      <span role="status" {...stylex.props(styles.visuallyHidden)}>
+        {outcome === "copied"
+          ? "Copied"
+          : outcome === "failed"
+            ? "Copy failed"
+            : ""}
+      </span>
+    </>
   );
 }
 
 const styles = stylex.create({
+  visuallyHidden: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+  },
   icon: {
     width: "12px",
     height: "12px",

@@ -14,6 +14,7 @@ import {
 } from "./review-panel";
 import type { PeekAnchor } from "./review-panel-model";
 import type { GuidedTour } from "./review-panel-model";
+import { ReviewRootsProvider } from "./review-root-context";
 import { testReviewSession } from "./review-session-test-utils";
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -268,6 +269,135 @@ describe("Guided tour panel", () => {
   });
 });
 
+describe("Guided tour code cards", () => {
+  const longSnippet = Array.from(
+    { length: 40 },
+    (_, index) => `step(${index});`,
+  ).join("\n");
+
+  function longTour(): GuidedTour {
+    return {
+      id: "long-tour",
+      stops: ["first", "second"].map((id) => ({
+        anchor: { id, title: id } as PeekAnchor,
+        label: id,
+        content: { kind: "inline-code", text: longSnippet },
+      })),
+    };
+  }
+
+  async function renderLongTour(onClose = vi.fn<() => void>()) {
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    const roots = {
+      appRef: { current: container },
+      shellRef: { current: null },
+      scrollRegionRef: { current: null },
+      articleRef: { current: null },
+    };
+
+    await act(async () => {
+      renderWithSession(
+        <ReviewRootsProvider roots={roots}>
+          <ReviewDebugSettingsProvider>
+            <ReviewProvider>
+              <ReviewPanelProvider>
+                <TourPanel tour={longTour()} onClose={onClose} />
+              </ReviewPanelProvider>
+            </ReviewProvider>
+          </ReviewDebugSettingsProvider>
+        </ReviewRootsProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    return container;
+  }
+
+  const stops = (container: HTMLElement) => [
+    ...container.querySelectorAll<HTMLElement>(
+      "section[data-review-anchor-id]",
+    ),
+  ];
+
+  const buttonIn = (scope: ParentNode, text: string) =>
+    [...scope.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith(text),
+    )!;
+
+  it("closes a step's full viewer on Escape without closing the walkthrough", async () => {
+    const onClose = vi.fn<() => void>();
+    const container = await renderLongTour(onClose);
+    const second = stops(container)[1]!;
+
+    await act(async () => buttonIn(second, "Expand snippet").click());
+
+    const footer = container.querySelector<HTMLElement>(
+      ".side-panel > :last-child",
+    )!;
+
+    await act(async () =>
+      footer.querySelector<HTMLButtonElement>("button")!.click(),
+    );
+
+    const open = buttonIn(second, "Open full snippet");
+
+    await act(async () => open.click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    await act(async () =>
+      document
+        .querySelector('[role="dialog"]')!
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        ),
+    );
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(open);
+    expect(
+      container.querySelector("[data-active-tour-anchor]")?.textContent,
+    ).toBe("second");
+    expect(buttonIn(second, "Show less").getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+
+    // With no viewer open, Escape still closes the panel as before.
+    await act(async () =>
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps each step's expansion to that step for the session", async () => {
+    let container = await renderLongTour();
+    const [first, second] = stops(container);
+
+    await act(async () => buttonIn(first!, "Expand snippet").click());
+
+    expect(first!.querySelectorAll("pre > div")).toHaveLength(40);
+    expect(buttonIn(second!, "Expand snippet")).toBeDefined();
+    expect(
+      second!.querySelector("[data-code-omission]")?.textContent,
+    ).toContain("28 more lines hidden");
+
+    await act(async () => root?.unmount());
+    document.body.replaceChildren();
+    container = await renderLongTour();
+
+    const [revisitedFirst, revisitedSecond] = stops(container);
+
+    expect(revisitedFirst!.querySelectorAll("pre > div")).toHaveLength(40);
+    expect(buttonIn(revisitedSecond!, "Expand snippet")).toBeDefined();
+  });
+});
+
 function OpenReplacingPanel() {
   const openPeek = useReviewPanel((state) => state.openPeek);
   useEffect(() => {
@@ -338,13 +468,19 @@ function ResumeMotionListener() {
   return <div ref={appRef} />;
 }
 
-function TourPanel() {
+function TourPanel({
+  tour: fixture = tourFixture(),
+  onClose = () => {},
+}: {
+  tour?: GuidedTour;
+  onClose?: () => void;
+} = {}) {
   const [tour, setTour] = useState({ anchor: "first", revealRequest: 1 });
 
   return (
     <>
       <GuidedTourPanel
-        tour={tourFixture()}
+        tour={fixture}
         activeAnchor={tour.anchor}
         revealRequest={tour.revealRequest}
         onActiveAnchorChange={(anchor, { reveal }) =>
@@ -353,7 +489,7 @@ function TourPanel() {
             revealRequest: previous.revealRequest + Number(reveal),
           }))
         }
-        onClose={() => {}}
+        onClose={onClose}
       />
       <output data-active-tour-anchor>{tour.anchor}</output>
     </>
