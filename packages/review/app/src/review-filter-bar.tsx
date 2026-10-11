@@ -1,4 +1,5 @@
-import { fontSize, radius } from "@canvas/scale.stylex";
+import { Button } from "@canvas/ui/button";
+import { TextField, fieldStyles } from "@canvas/ui/text-field";
 import type { ReviewFilter } from "@review/review-api/review-filter";
 import * as stylex from "@stylexjs/stylex";
 import { useState } from "react";
@@ -55,26 +56,26 @@ export function ReviewFilterBar({
       {...stylex.props(styles.bar)}
       onSubmit={(event) => event.preventDefault()}
     >
-      <button
-        type="button"
-        {...stylex.props(styles.chip)}
+      <Button
+        xstyle={filter.branch === trunkBranch && styles.pressed}
         aria-pressed={filter.branch === trunkBranch}
         onClick={() => toggleBranch(trunkBranch)}
       >
         On {trunkBranch}
-      </button>
-      <button
-        type="button"
-        {...stylex.props(styles.chip)}
+      </Button>
+      <Button
+        xstyle={
+          Boolean(myBranch) && filter.branch === myBranch && styles.pressed
+        }
         aria-pressed={Boolean(myBranch) && filter.branch === myBranch}
         disabled={!myBranch}
         title={myBranch ? undefined : "Set your branch below first"}
         onClick={() => toggleBranch(myBranch)}
       >
         On my branch
-      </button>
+      </Button>
       <select
-        {...stylex.props(styles.field)}
+        {...stylex.props(fieldStyles.box, styles.field)}
         aria-label="Repository"
         value={filter.repo ?? ""}
         onChange={(event) => set("repo", event.target.value)}
@@ -86,36 +87,36 @@ export function ReviewFilterBar({
           </option>
         ))}
       </select>
-      <input
-        {...stylex.props(styles.field)}
+      <TextField
+        xstyle={styles.field}
         aria-label="Branch"
         placeholder="Branch"
         value={filter.branch ?? ""}
         onChange={(event) => set("branch", event.target.value)}
       />
-      <input
-        {...stylex.props(styles.field)}
+      <TextField
+        xstyle={styles.field}
         aria-label="Commit"
         placeholder="Commit"
         value={filter.commit ?? ""}
         onChange={(event) => set("commit", event.target.value.toLowerCase())}
       />
-      <input
-        {...stylex.props(styles.field)}
+      <TextField
+        xstyle={styles.field}
         aria-label="Author"
         placeholder="Author"
         value={filter.author ?? ""}
         onChange={(event) => set("author", event.target.value)}
       />
-      <input
-        {...stylex.props(styles.field)}
+      <TextField
+        xstyle={styles.field}
         aria-label="Tag"
         placeholder="Tag"
         value={filter.tag ?? ""}
         onChange={(event) => set("tag", event.target.value.toLowerCase())}
       />
-      <input
-        {...stylex.props(styles.field)}
+      <TextField
+        xstyle={styles.field}
         aria-label="Your branch"
         placeholder="Your branch"
         value={myBranch}
@@ -125,13 +126,7 @@ export function ReviewFilterBar({
         }}
       />
       {active ? (
-        <button
-          type="button"
-          {...stylex.props(styles.chip)}
-          onClick={() => onChange({})}
-        >
-          Clear filters
-        </button>
+        <Button onClick={() => onChange({})}>Clear filters</Button>
       ) : null}
     </form>
   );
@@ -145,33 +140,10 @@ const styles = stylex.create({
     gap: "8px",
     marginBlock: "12px",
   },
-  chip: {
-    minHeight: "28px",
-    padding: "0 10px",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.rule,
-    borderRadius: radius.control,
-    backgroundColor: tokens.tray,
-    color: tokens.ink,
-    font: "inherit",
-    fontSize: fontSize.ui,
-    cursor: "pointer",
-    ":disabled": { color: tokens.inkMuted, cursor: "default" },
-    ":is([aria-pressed=true])": { borderColor: tokens.ink },
+  pressed: {
+    borderColor: tokens.ink,
   },
   field: {
-    boxSizing: "border-box",
     width: "128px",
-    minHeight: "28px",
-    padding: "0 8px",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.rule,
-    borderRadius: radius.control,
-    backgroundColor: tokens.tray,
-    color: tokens.ink,
-    font: "inherit",
-    fontSize: fontSize.ui,
   },
 });
