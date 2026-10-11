@@ -484,8 +484,6 @@ describe("ReviewHome", () => {
     expect(titles()).toEqual(["Alpha", "Zulu"]);
     await select("Sort reviews", "title");
     expect(titles()).toEqual(["Alpha", "Zulu"]);
-    await select("Filter by repository", "alpha");
-    expect(titles()).toEqual(["Zulu"]);
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>('button[aria-label="Dismiss Zulu"]')!
@@ -551,11 +549,6 @@ describe("ReviewHome", () => {
 
     expect(
       container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Filter by repository"]',
-      )?.disabled,
-    ).toBe(false);
-    expect(
-      container.querySelector<HTMLButtonElement>(
         'button[aria-label="Sort reviews"]',
       )?.disabled,
     ).toBe(false);
@@ -567,9 +560,6 @@ describe("ReviewHome", () => {
     await open("Sort reviews");
     await pick("oldest");
     expect(titles()).toEqual(["Zulu", "Alpha"]);
-    await open("Filter by repository");
-    await pick("alpha");
-    expect(titles()).toEqual(["Zulu"]);
   });
 
   it("puts the scratchpad first, above the reviews and out of their workspaces", async () => {
@@ -980,6 +970,65 @@ describe("ReviewHome", () => {
       expect(document.activeElement).toBe(search);
     },
   );
+
+  describe("search and filters", () => {
+    const type = async (label: string, value: string) => {
+      const input = container.querySelector<HTMLInputElement>(
+        `[aria-label="${label}"]`,
+      )!;
+
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value",
+        )!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+
+    const titles = () =>
+      [...container.querySelectorAll("tbody button > span:first-child")].map(
+        (element) => element.textContent,
+      );
+
+    const reviews = [
+      summary({
+        reviewId: uuid(1),
+        title: "Alpha",
+        tags: ["billing"],
+        origin: { branch: "feature/a", pullRequestNumber: 412 },
+      }),
+      summary({
+        reviewId: uuid(2),
+        title: "Zulu",
+        origin: { branch: "master" },
+      }),
+    ];
+
+    it("finds sessions by a displayed tag or PR number, with or without #", async () => {
+      await act(async () =>
+        renderWithHost(<ReviewHome reviews={reviews} onOpen={() => {}} />),
+      );
+
+      for (const query of ["#billing", "billing", "#412", "412"]) {
+        await type("Search sessions", query);
+        expect(titles()).toEqual(["Alpha"]);
+      }
+    });
+
+    it("names the trunk shortcut after the branch the sessions use", async () => {
+      await act(async () =>
+        renderWithHost(<ReviewHome reviews={reviews} onOpen={() => {}} />),
+      );
+
+      const shortcut = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "On master",
+      );
+
+      await act(async () => shortcut!.click());
+      expect(titles()).toEqual(["Zulu"]);
+    });
+  });
 });
 
 describe("formatRelativeTime", () => {
