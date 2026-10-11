@@ -42,9 +42,11 @@ export const homeStyles = stylex.create({
   },
   header: {
     display: "flex",
+    flexDirection: { default: "row", [narrow]: "column" },
     alignItems: { default: "flex-start", [narrow]: "center" },
     justifyContent: "space-between",
-    gap: "32px",
+    gap: "16px",
+    flexWrap: "wrap",
   },
   heading: {
     margin: 0,

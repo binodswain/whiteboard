@@ -71,6 +71,8 @@ export const themeStyles = stylex.create({
     // switcher included; two type sizes: the label size for anything you read,
     // the small size for badges and tallies.
     "--chrome-control-height": "24px",
+    // Page action height for Home actions (search, New session buttons)
+    "--page-action-height": "38px",
     "--chrome-control-radius": "6px",
     "--chrome-font-size": "12px",
     "--chrome-font-size-small": "11px",
