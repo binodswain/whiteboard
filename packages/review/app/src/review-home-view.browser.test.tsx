@@ -5,7 +5,7 @@ import type {
   ReviewMenuRequest,
   ReviewSessionCreateInput,
 } from "@dev.fast/review-protocol";
-import { type ReactNode, act } from "react";
+import { type ComponentProps, type ReactNode, act } from "react";
 import { type Root, createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1053,6 +1053,67 @@ describe("ReviewHome", () => {
           .click(),
       );
       expect(document.activeElement).toBe(trigger);
+    });
+
+    it("keeps a tag draft through blur and a failed save, and clears it on success", async () => {
+      const onEditTags = vi
+        .fn<NonNullable<ComponentProps<typeof ReviewHome>["onEditTags"]>>()
+        .mockRejectedValueOnce(new Error("Network down"))
+        .mockResolvedValueOnce(["billing", "urgent"]);
+
+      await act(async () =>
+        renderWithHost(
+          <ReviewHome
+            reviews={[reviews[0]!]}
+            onOpen={() => {}}
+            onEditTags={onEditTags}
+          />,
+        ),
+      );
+
+      const tagInput = 'input[aria-label="Add tag to Alpha"]';
+
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Add tag to Alpha"]',
+          )!
+          .click(),
+      );
+      await type("Add tag to Alpha", "urgent");
+
+      // Moving focus away does not discard the draft.
+      await act(async () =>
+        container.querySelector<HTMLInputElement>(tagInput)!.blur(),
+      );
+      expect(container.querySelector<HTMLInputElement>(tagInput)?.value).toBe(
+        "urgent",
+      );
+
+      const save = () =>
+        act(async () =>
+          container
+            .querySelector<HTMLButtonElement>(
+              'button[aria-label="Save tag on Alpha"]',
+            )!
+            .click(),
+        );
+
+      await save();
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        "Network down",
+      );
+      expect(container.querySelector<HTMLInputElement>(tagInput)?.value).toBe(
+        "urgent",
+      );
+
+      await save();
+      expect(onEditTags).toHaveBeenLastCalledWith(reviews[0], {
+        add: ["urgent"],
+        remove: [],
+      });
+      expect(container.querySelector(tagInput)).toBeNull();
+      expect(container.textContent).toContain("#urgent");
     });
 
     it("names the trunk shortcut after the branch the sessions use", async () => {
