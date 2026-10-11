@@ -160,7 +160,7 @@ function mount(options: {
 const publishes = (harness: Harness) =>
   harness.posts.filter((post) => post.path.endsWith("/publish"));
 
-it("asks a signed-out user to sign in, then uploads the version chosen before login", async () => {
+it("asks a signed-out user to sign in, then publishes the version chosen before login only on request", async () => {
   const harness = mount({ signedIn: false });
   const { container } = harness;
 
@@ -181,26 +181,33 @@ it("asks a signed-out user to sign in, then uploads the version chosen before lo
   await vi.waitFor(
     async () => {
       await harness.settle();
-      expect(container.querySelector("input")?.value).toContain("#capability");
+      expect(container.textContent).toContain("Create share link");
     },
     { timeout: 4000 },
   );
+  expect(publishes(harness)).toHaveLength(0);
+  await harness.click("Create share link");
+  await harness.settle();
+  expect(container.querySelector("input")?.value).toContain("#capability");
   expect(publishes(harness).map((post) => post.body)).toEqual([
     expect.objectContaining({ reviewId: "authoring-review", version: 4 }),
   ]);
   expect(container.textContent).not.toContain("Sign in");
 });
 
-it("uploads on open for a signed-in user, retries after a failure, and copies the link", async () => {
+it("publishes only when asked, retries after a failure, and copies the link", async () => {
   const harness = mount({ signedIn: true, publishFails: true });
   const { container } = harness;
 
   await harness.render(4);
   await harness.click("Share review");
   await harness.settle();
+  expect(publishes(harness)).toHaveLength(0);
+  expect(container.textContent).toContain("version 4");
+  await harness.click("Create share link");
+  await harness.settle();
   expect(publishes(harness)).toHaveLength(1);
   expect(container.textContent).toContain("Review exceeds the sharing limit.");
-  expect(container.textContent).not.toContain("Create share link");
   harness.state.publishFails = false;
   await harness.click("Retry");
   await harness.settle();
@@ -232,12 +239,12 @@ it("knows the sign-in state before the popover opens and refreshes it on focus",
   await harness.settle();
   expect(harness.accountReads()).toBe(1);
   await harness.click("Share review");
-  expect(publishes(harness)).toHaveLength(1);
   await harness.settle();
   await harness.click("Share review");
   await harness.click("Share review");
+  expect(publishes(harness)).toHaveLength(0);
   expect(harness.accountReads()).toBe(1);
-  expect(container.querySelector("input")?.value).toContain("#capability");
+  expect(container.querySelector("input")).toBeNull();
   await act(async () => window.dispatchEvent(new Event("focus")));
   await harness.settle();
   expect(harness.accountReads()).toBe(2);
@@ -250,6 +257,7 @@ it("falls back to sign-in when the stored login has expired, then uploads after 
   await harness.render(4);
   await harness.settle();
   await harness.click("Share review");
+  await harness.click("Create share link");
   await harness.settle();
   expect(publishes(harness)).toHaveLength(1);
   expect(container.textContent).toContain("Your sign-in has expired.");
@@ -262,10 +270,13 @@ it("falls back to sign-in when the stored login has expired, then uploads after 
   await vi.waitFor(
     async () => {
       await harness.settle();
-      expect(container.querySelector("input")?.value).toContain("#capability");
+      expect(container.textContent).toContain("Create share link");
     },
     { timeout: 4000 },
   );
+  await harness.click("Create share link");
+  await harness.settle();
+  expect(container.querySelector("input")?.value).toContain("#capability");
   expect(publishes(harness)).toHaveLength(2);
   expect(container.textContent).not.toContain("expired");
 });
@@ -277,6 +288,7 @@ it("reuses the link for a version that was already shared and uploads again for 
   await harness.render(4);
   await harness.settle();
   await harness.click("Share review");
+  await harness.click("Create share link");
   await harness.settle();
   expect(publishes(harness)).toHaveLength(1);
   expect(container.querySelector("input")?.value).toContain("#capability");
@@ -289,6 +301,7 @@ it("reuses the link for a version that was already shared and uploads again for 
   await harness.click("Share review");
   await harness.render(5);
   await harness.click("Share review");
+  await harness.click("Create share link");
   await harness.settle();
   expect(publishes(harness).map((post) => post.body)).toEqual([
     expect.objectContaining({ version: 4 }),
@@ -300,6 +313,7 @@ it("uses a fresh request after failed verification revokes the staged share", as
   const harness = mount({ signedIn: true, preflightFails: true });
   await harness.render(1);
   await harness.click("Share review");
+  await harness.click("Create share link");
   await harness.settle();
   harness.state.preflightFails = false;
   await harness.click("Retry");
@@ -327,6 +341,7 @@ it("keeps one upload when the popover is reopened while it is in flight", async 
 
   await harness.render(3);
   await harness.click("Share review");
+  await harness.click("Create share link");
   await harness.settle();
   await harness.click("Share review");
   await harness.click("Share review");

@@ -15,6 +15,7 @@ import {
 } from "./export/document-export";
 import { CanvasUiContext, useCanvasMenu } from "./host/canvas-ui";
 import { shellStyles } from "./shell-styles";
+import { useToast } from "./toast";
 import { useTooltip } from "./use-tooltip";
 
 const OPTIONS = [
@@ -37,6 +38,7 @@ export function ExportControl(): ReactElement | null {
   const tooltip = useTooltip("Export review");
   const ui = useContext(CanvasUiContext);
   const [open, setOpen] = useState(false);
+  const { showToast, toast } = useToast();
   const anchor = useRef<HTMLDivElement>(null);
   const popover = useAnchoredPopover(open, anchor);
 
@@ -45,28 +47,41 @@ export function ExportControl(): ReactElement | null {
   const select = (id: string) => {
     if (!snapshot) return;
 
-    if (id === "markdown") {
-      download(
-        exportMarkdown(snapshot),
-        "text/markdown",
-        exportFilename(snapshot, "md"),
-      );
-    } else if (id === "html") {
-      download(
-        exportHtml(snapshot),
-        "text/html",
-        exportFilename(snapshot, "html"),
-      );
-    } else if (id === "print") {
-      const printWindow = window.open("", "_blank");
+    try {
+      if (id === "markdown" || id === "html") {
+        const extension = id === "markdown" ? "md" : "html";
+        const filename = exportFilename(snapshot, extension);
 
-      if (!printWindow) return;
-      printWindow.document.open();
-      printWindow.document.write(exportHtml(snapshot));
-      printWindow.document.close();
-      // about:blank popups may never fire a load event for written content;
-      // defer past document.close instead so print() reliably runs.
-      setTimeout(() => printWindow.print(), 0);
+        download(
+          id === "markdown" ? exportMarkdown(snapshot) : exportHtml(snapshot),
+          id === "markdown" ? "text/markdown" : "text/html",
+          filename,
+        );
+        showToast({ kind: "success", text: `Downloaded ${filename}.` });
+      } else if (id === "print") {
+        const printWindow = window.open("", "_blank");
+
+        if (!printWindow) {
+          showToast({
+            kind: "error",
+            text: "Your browser blocked the print window. Allow pop-ups for this site, then try again.",
+          });
+
+          return;
+        }
+
+        printWindow.document.open();
+        printWindow.document.write(exportHtml(snapshot));
+        printWindow.document.close();
+        // about:blank popups may never fire a load event for written content;
+        // defer past document.close instead so print() reliably runs.
+        setTimeout(() => printWindow.print(), 0);
+      }
+    } catch (cause) {
+      showToast({
+        kind: "error",
+        text: `Could not export the review${cause instanceof Error ? ` (${cause.message})` : ""}. Try again.`,
+      });
     }
   };
 
@@ -140,6 +155,7 @@ export function ExportControl(): ReactElement | null {
           ))}
         </div>
       ) : null}
+      {toast}
     </div>
   );
 }
