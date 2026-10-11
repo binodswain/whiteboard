@@ -30,7 +30,7 @@ function TokenPrompt({ signIn, onSubmit }: TokenPromptOptions) {
       <h1 {...stylex.props(styles.heading)}>Whiteboard Reviews</h1>
       <p {...stylex.props(styles.text)}>
         {signIn
-          ? "Sign in to see this team's reviews. A personal API token from Settings also works."
+          ? "Sign in to see this team's reviews. An API key from Settings also works."
           : "This canvas needs the token from your review link. Paste it below to continue."}
       </p>
       {signIn ? (
@@ -46,7 +46,7 @@ function TokenPrompt({ signIn, onSubmit }: TokenPromptOptions) {
       <form onSubmit={submit} {...stylex.props(styles.form)}>
         <TextField
           type="password"
-          placeholder={signIn ? "Personal API token" : "Review token"}
+          placeholder={signIn ? "API key" : "Review token"}
           autoComplete="off"
           required
           value={token}

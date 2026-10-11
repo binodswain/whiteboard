@@ -166,7 +166,7 @@ describe("the /setup landing page", () => {
     });
 
     expect(
-      await settled(() => container!.textContent?.includes("Bearer <api-key>")),
+      await settled(() => container!.textContent?.includes("Bearer <token>")),
     ).toBe(true);
     expect(container!.textContent).toContain("docker compose logs");
   });

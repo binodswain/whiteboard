@@ -123,7 +123,7 @@ export function SetupView({
                 </code>{" "}
                 — healthy, v{state.info.version}.
                 {state.info.localAuth
-                  ? " Local auth is on, so no API key is needed."
+                  ? " Local auth is on, so no token is needed."
                   : ""}
               </p>
             ) : (
@@ -161,7 +161,7 @@ export function SetupView({
 }
 
 function SetupSteps({ info }: { info: SetupInfo }) {
-  const token = info.token ?? "<api-key>";
+  const token = info.token ?? "<token>";
 
   const authHeader = info.localAuth
     ? ""
@@ -187,11 +187,10 @@ function SetupSteps({ info }: { info: SetupInfo }) {
             info.localAuth || info.token ? undefined : (
               <>
                 Replace{" "}
-                <code {...stylex.props(styles.code)}>&lt;api-key&gt;</code> with
-                your API key in the Claude command (it is sent as a Bearer
-                token). For Codex, export it as
+                <code {...stylex.props(styles.code)}>&lt;token&gt;</code> with
+                the server token in the Claude command. For Codex, export it as
                 <code {...stylex.props(styles.code)}>WHITEBOARD_TOKEN</code>.
-                The server key is in{" "}
+                The token is in{" "}
                 <code {...stylex.props(styles.code)}>
                   docker compose logs whiteboard
                 </code>

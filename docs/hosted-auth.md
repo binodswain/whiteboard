@@ -3,7 +3,7 @@
 A remote deployment (`WHITEBOARD_MODE=remote`) replaces the local server
 token with per-user authentication. Every route except `/health` requires an
 identity; the viewer signs in through GitHub, and CLI/MCP clients use a
-personal API token.
+personal API key.
 
 All secrets are environment variables so a Cloud Run service can bind them
 from Secret Manager.
@@ -53,7 +53,7 @@ traffic and inject them itself.
 Signed-in viewers manage personal API keys in Settings → API keys
 (`/auth/tokens`). A key is not an OAuth token: it is an opaque `wbt_…` secret
 sent as a standard `Authorization: Bearer` header. A key is shown once at creation; the database stores only
-its SHA-256 hash. Revoking a token deletes the row, so it fails on its very
+its SHA-256 hash. Revoking a key deletes the row, so it fails on its very
 next request.
 
 ```sh
@@ -62,7 +62,7 @@ whiteboard review --repo .   # sends the key as x-review-token
 ```
 
 `x-review-token` and `Authorization: Bearer` are equivalent. A key
-identifies its owner but cannot mint or manage further tokens — that needs a
+identifies its owner but cannot mint or manage further keys — that needs a
 session.
 
 ## Repository access

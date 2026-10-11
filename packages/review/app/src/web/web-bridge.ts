@@ -53,9 +53,9 @@ const accessTokenSchema = z.object({
   lastUsedAt: z.string().nullable(),
 });
 
-/** Personal API tokens exist on hosted deployments only; a session answer
- * says whether this viewer manages them. Token-authenticated callers cannot
- * mint further tokens. */
+/** API keys exist on hosted deployments only; a session answer
+ * says whether this viewer manages them. Key-authenticated callers cannot
+ * mint further keys. */
 function accessTokens(
   request: (url: string, init?: RequestInit) => Promise<Response>,
   serverUrl: string,
@@ -71,7 +71,7 @@ function accessTokens(
       const response = await request(url);
 
       if (!response.ok)
-        throw new Error(`Could not list API tokens (${response.status}).`);
+        throw new Error(`Could not list API keys (${response.status}).`);
 
       return z
         .object({ tokens: z.array(accessTokenSchema) })
@@ -85,7 +85,7 @@ function accessTokens(
       });
 
       if (!response.ok)
-        throw new Error(`Could not create an API token (${response.status}).`);
+        throw new Error(`Could not create an API key (${response.status}).`);
 
       // A fresh token has never been used; older servers omit the field.
       return accessTokenSchema
@@ -101,7 +101,7 @@ function accessTokens(
       });
 
       if (!response.ok)
-        throw new Error(`Could not revoke the API token (${response.status}).`);
+        throw new Error(`Could not revoke the API key (${response.status}).`);
     },
   };
 }
