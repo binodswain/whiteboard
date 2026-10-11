@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -131,5 +133,59 @@ describe("loadDeploymentConfig", () => {
     { WHITEBOARD_MODE: "local", WHITEBOARD_DB: "mysql://db" },
   ])("rejects invalid combinations", (env) => {
     expect(() => loadDeploymentConfig(env)).toThrow(/.+/);
+  });
+
+  describe("PR reviews", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+    const base = {
+      GITHUB_APP_ID: "1",
+      GITHUB_APP_PRIVATE_KEY: privateKey
+        .export({ type: "pkcs8", format: "pem" })
+        .toString(),
+      WHITEBOARD_GITHUB_WEBHOOK_SECRET: "hook-secret",
+      WHITEBOARD_PR_REVIEW_REPOS: "Octo/Repo, octo/other",
+      WHITEBOARD_PUBLIC_URL: "https://whiteboard.example.com/",
+      WHITEBOARD_JOBS: "queue",
+      WHITEBOARD_REPO_SOURCE: "github",
+    };
+
+    it("stays off without a webhook secret, whatever else is set", () => {
+      expect(
+        loadDeploymentConfig({
+          ...base,
+          WHITEBOARD_GITHUB_WEBHOOK_SECRET: undefined,
+        }).prReviews,
+      ).toBeUndefined();
+    });
+
+    it("opts in the listed repositories and skips drafts by default", () => {
+      expect(loadDeploymentConfig(base).prReviews).toEqual({
+        webhookSecret: "hook-secret",
+        repos: ["octo/repo", "octo/other"],
+        drafts: false,
+        publicUrl: "https://whiteboard.example.com",
+      });
+      expect(
+        loadDeploymentConfig({ ...base, WHITEBOARD_PR_REVIEW_DRAFTS: "true" })
+          .prReviews?.drafts,
+      ).toBe(true);
+    });
+
+    it.each([
+      [{ GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined }],
+      [{ WHITEBOARD_PR_REVIEW_REPOS: undefined }],
+      [{ WHITEBOARD_PR_REVIEW_REPOS: "not-a-slug" }],
+      [{ WHITEBOARD_JOBS: "inline" }],
+      [{ WHITEBOARD_REPO_SOURCE: "local" }],
+      [{ GITHUB_WEB_URL: "https://github.example.com" }],
+      [{ WHITEBOARD_PUBLIC_URL: undefined }],
+      [{ WHITEBOARD_PUBLIC_URL: "not a url" }],
+      [{ WHITEBOARD_PUBLIC_URL: "https://wb.example.com/#token=abc" }],
+    ])("refuses a webhook it could not serve safely", (override) => {
+      expect(() => loadDeploymentConfig({ ...base, ...override })).toThrow(
+        /.+/,
+      );
+    });
   });
 });

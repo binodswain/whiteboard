@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 
+import type { JsonObject } from "@dev.fast/json";
 import type { MetadataStore } from "@review/review-api/storage/metadata-store.js";
 
 import type { AuthPrincipal, RepoAccess } from "./index.js";
@@ -61,14 +62,21 @@ interface GitHubApi {
   post(
     route: string,
     authorization: string,
+    body?: JsonObject,
+  ): Promise<{ status: number; body: unknown }>;
+  patch(
+    route: string,
+    authorization: string,
+    body: JsonObject,
   ): Promise<{ status: number; body: unknown }>;
 }
 
-function githubApi(apiUrl: string, fetchImpl: typeof fetch): GitHubApi {
+export function githubApi(apiUrl: string, fetchImpl: typeof fetch): GitHubApi {
   const send = async (
     method: string,
     route: string,
     authorization?: string,
+    payload?: JsonObject,
   ) => {
     const headers = new Headers({
       accept: "application/vnd.github+json",
@@ -77,10 +85,13 @@ function githubApi(apiUrl: string, fetchImpl: typeof fetch): GitHubApi {
 
     if (authorization) headers.set("authorization", authorization);
 
+    if (payload !== undefined) headers.set("content-type", "application/json");
+
     try {
       const response = await fetchImpl(`${apiUrl}${route}`, {
         method,
         headers,
+        ...(payload !== undefined && { body: JSON.stringify(payload) }),
       });
 
       const body = await response.json().catch(() => undefined);
@@ -93,7 +104,10 @@ function githubApi(apiUrl: string, fetchImpl: typeof fetch): GitHubApi {
 
   return {
     get: (route, authorization) => send("GET", route, authorization),
-    post: (route, authorization) => send("POST", route, authorization),
+    post: (route, authorization, body) =>
+      send("POST", route, authorization, body),
+    patch: (route, authorization, body) =>
+      send("PATCH", route, authorization, body),
   };
 }
 
@@ -133,8 +147,16 @@ export function createGitHubAppCredentials(input: {
   return {
     /** An installation token that reads this repository — throws when the
      * App is not installed there. */
-    async installationToken(slug: string): Promise<string> {
-      const live = tokens.get(slug);
+    async installationToken(
+      slug: string,
+      /** Narrows the token to these permissions on this one repository. */
+      permissions?: Record<string, "read" | "write">,
+    ): Promise<string> {
+      const cacheKey = permissions
+        ? `${slug}#${JSON.stringify(permissions)}`
+        : slug;
+
+      const live = tokens.get(cacheKey);
 
       if (live && live.expiresAt > Date.now() + 60_000) return live.token;
 
@@ -160,6 +182,10 @@ export function createGitHubAppCredentials(input: {
       const minted = await api.post(
         `/app/installations/${installationId}/access_tokens`,
         `Bearer ${appJwt()}`,
+        permissions && {
+          repositories: [slug.split("/")[1]],
+          permissions,
+        },
       );
 
       if (minted.status !== 201)
@@ -174,7 +200,7 @@ export function createGitHubAppCredentials(input: {
         expires_at: string;
       };
 
-      tokens.set(slug, { token, expiresAt: Date.parse(expires_at) });
+      tokens.set(cacheKey, { token, expiresAt: Date.parse(expires_at) });
 
       return token;
     },
