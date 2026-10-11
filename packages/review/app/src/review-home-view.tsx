@@ -11,6 +11,7 @@ import {
 import { Button, IconButton, buttonStyles } from "@canvas/ui/button";
 import { EmptyState } from "@canvas/ui/empty-state";
 import { textStyles } from "@canvas/ui/text";
+import { TextField, fieldStyles } from "@canvas/ui/text-field";
 import type {
   AskAgentStatusLike,
   ReviewApiRepository,
@@ -631,7 +632,7 @@ export function ReviewHome({
               <label {...stylex.props(styles.dialogField)}>
                 Session title
                 <input
-                  {...stylex.props(styles.fieldControl)}
+                  {...stylex.props(fieldStyles.box, styles.fieldControl)}
                   name="title"
                   autoFocus
                   required
@@ -658,7 +659,11 @@ export function ReviewHome({
               <label {...stylex.props(styles.dialogField)}>
                 Task for agent (optional)
                 <textarea
-                  {...stylex.props(styles.fieldControl)}
+                  {...stylex.props(
+                    fieldStyles.box,
+                    fieldStyles.multiline,
+                    styles.fieldControl,
+                  )}
                   name="task"
                   rows={4}
                   disabled={tasksBlocked}
@@ -669,7 +674,7 @@ export function ReviewHome({
                 <label {...stylex.props(styles.dialogField)}>
                   Agent
                   <select
-                    {...stylex.props(styles.fieldControl)}
+                    {...stylex.props(fieldStyles.box, styles.fieldControl)}
                     name="agent"
                     defaultValue={usableAgents[0]?.id ?? ""}
                   >
@@ -684,7 +689,7 @@ export function ReviewHome({
               <label {...stylex.props(styles.dialogField)}>
                 Repository
                 <select
-                  {...stylex.props(styles.fieldControl)}
+                  {...stylex.props(fieldStyles.box, styles.fieldControl)}
                   name="repositoryId"
                   required
                   defaultValue=""
@@ -1137,24 +1142,24 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
         <span key={tag} {...stylex.props(tagStyles.chip)}>
           #{tag}
           {onEditTags ? (
-            <button
-              type="button"
-              {...stylex.props(tagStyles.remove)}
+            <Button
+              variant="ghost"
+              xstyle={tagStyles.remove}
               disabled={busy}
               aria-label={`Remove tag ${tag} from ${reviewTitle(review)}`}
               onClick={() => void change([], [tag])}
             >
               ×
-            </button>
+            </Button>
           ) : null}
         </span>
       ))}
       {onEditTags ? (
         isEditing ? (
           <>
-            <input
+            <TextField
               ref={inputRef}
-              {...stylex.props(tagStyles.input)}
+              xstyle={tagStyles.input}
               value={draft}
               disabled={busy}
               placeholder="Add tag"
@@ -1171,35 +1176,32 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
                 }
               }}
             />
-            <button
-              type="button"
-              {...stylex.props(tagStyles.addButton)}
+            <Button
+              xstyle={tagStyles.addButton}
               disabled={busy || !draft.trim()}
               aria-label={`Save tag on ${reviewTitle(review)}`}
               onClick={() => void save()}
             >
               Save
-            </button>
-            <button
-              type="button"
-              {...stylex.props(tagStyles.addButton)}
+            </Button>
+            <Button
+              xstyle={tagStyles.addButton}
               disabled={busy}
               aria-label={`Cancel adding a tag to ${reviewTitle(review)}`}
               onClick={closeEdit}
             >
               Cancel
-            </button>
+            </Button>
           </>
         ) : (
-          <button
-            type="button"
-            {...stylex.props(tagStyles.addButton)}
+          <Button
+            xstyle={tagStyles.addButton}
             disabled={busy}
             aria-label={`Add tag to ${reviewTitle(review)}`}
             onClick={() => setIsEditing(true)}
           >
             + tag
-          </button>
+          </Button>
         )
       ) : null}
       {error ? (
@@ -1686,38 +1688,19 @@ const tagStyles = stylex.create({
     fontSize: fontSize.ui,
   },
   remove: {
+    height: "auto",
     padding: 0,
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    color: "inherit",
-    font: "inherit",
-    cursor: "pointer",
   },
   addButton: {
+    height: "auto",
     padding: "0 6px",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.rule,
-    borderRadius: radius.control,
-    backgroundColor: "transparent",
     color: tokens.inkMuted,
-    font: "inherit",
-    fontSize: fontSize.ui,
-    cursor: "pointer",
+    fontWeight: fontWeight.regular,
   },
   input: {
-    boxSizing: "border-box",
     width: "96px",
-    minHeight: "24px",
+    height: "24px",
     padding: "0 6px",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.rule,
-    borderRadius: radius.control,
-    backgroundColor: tokens.tray,
-    color: tokens.ink,
-    font: "inherit",
-    fontSize: fontSize.ui,
   },
   error: {
     color: tokens.inkMuted,
@@ -1802,17 +1785,12 @@ const styles = stylex.create({
     fontSize: fontSize.ui,
   },
   fieldControl: {
-    boxSizing: "border-box",
     width: "100%",
+    height: "auto",
     minHeight: "40px",
     padding: "8px 10px",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.rule,
     borderRadius: radius.control,
-    backgroundColor: tokens.tray,
-    color: tokens.ink,
-    font: "inherit",
+    fontSize: fontSize.ui,
   },
   // Pinned to the bottom of the scrolling dialog, so a short window still
   // reaches Create and Cancel.

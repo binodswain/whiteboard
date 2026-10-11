@@ -83,13 +83,8 @@ const adminStyles = stylex.create({
     borderRadius: radius.control,
   },
   remove: {
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    color: "inherit",
-    cursor: "pointer",
+    height: "auto",
     padding: "0 4px",
-    fontSize: "1.1em",
-    lineHeight: 1,
   },
 });
 
@@ -240,14 +235,14 @@ function RepoPicker({
           {value.map((repo) => (
             <li key={repo} {...stylex.props(adminStyles.chip)}>
               {repo}
-              <button
-                type="button"
-                {...stylex.props(adminStyles.remove)}
+              <Button
+                variant="ghost"
+                xstyle={adminStyles.remove}
                 aria-label={`Remove ${repo}`}
                 onClick={() => onChange(value.filter((r) => r !== repo))}
               >
                 ×
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
