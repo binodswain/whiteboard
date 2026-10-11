@@ -249,7 +249,10 @@ export function mountReviewCanvas(
       themeSubscription = content.bridge.onDidChangeTheme(applyTheme);
     } else {
       const contentTheme =
-        content.kind === "home" || content.kind === "settings"
+        content.kind === "home" ||
+        content.kind === "settings" ||
+        content.kind === "loading" ||
+        content.kind === "error"
           ? content.theme
           : undefined;
 

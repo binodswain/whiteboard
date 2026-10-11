@@ -154,7 +154,7 @@ export function SettingsPage({
           </div>
           <p {...stylex.props(styles.lede)}>
             {web
-              ? "Settings apply to your browser session."
+              ? "Settings are saved on this Whiteboard server and shared by everyone who uses it."
               : "Settings apply to Whiteboard on this machine."}
           </p>
 

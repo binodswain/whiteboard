@@ -2,6 +2,7 @@ import { copyText } from "@canvas/copy-text";
 import { diagramStyles } from "@canvas/diagram-styles";
 import { fontSize } from "@canvas/scale.stylex";
 import { withClass } from "@canvas/stylex-props";
+import { useToast } from "@canvas/toast";
 import { menuStyles } from "@canvas/ui/menu";
 import { surfaceStyles } from "@canvas/ui/surface";
 import { useAnchoredPopover } from "@canvas/use-anchored-popover";
@@ -110,45 +111,56 @@ function diagramXmind(source: DiagramExportSource): Uint8Array {
   }
 }
 
+/** Runs one export and returns what the reader should be told; throws a
+ * message that says what to do next when it cannot finish. */
 async function exportDiagram(
   source: DiagramExportSource,
   id: (typeof ITEMS)[number]["id"],
-) {
+): Promise<string> {
   const name = (ext: string) => diagramExportFilename(source.title, ext);
 
   if (id === "copy-mermaid") {
-    await copyText(diagramMermaid(source));
+    if (!(await copyText(diagramMermaid(source))))
+      throw new Error(
+        "Clipboard access was blocked. Use Download Mermaid instead.",
+      );
 
-    return;
+    return "Copied Mermaid to the clipboard.";
   }
 
   if (id === "download-mermaid") {
-    download(diagramMermaid(source), "text/plain", name("mmd"));
+    const filename = name("mmd");
 
-    return;
+    download(diagramMermaid(source), "text/plain", filename);
+
+    return `Downloaded ${filename}.`;
   }
 
   if (id === "download-excalidraw") {
-    download(
-      await diagramExcalidraw(source),
-      "application/json",
-      name("excalidraw"),
-    );
+    const filename = name("excalidraw");
 
-    return;
+    download(await diagramExcalidraw(source), "application/json", filename);
+
+    return `Downloaded ${filename}.`;
   }
 
   if (id === "download-drawio") {
-    download(await diagramDrawio(source), "application/xml", name("drawio"));
+    const filename = name("drawio");
 
-    return;
+    download(await diagramDrawio(source), "application/xml", filename);
+
+    return `Downloaded ${filename}.`;
   }
+
+  const filename = name("xmind");
 
   downloadBytes(
     diagramXmind(source),
     "application/vnd.xmind.workbook",
-    name("xmind"),
+    filename,
   );
+
+  return `Downloaded ${filename}.`;
 }
 
 async function exportPng(
@@ -156,12 +168,19 @@ async function exportPng(
   figure: HTMLElement,
   action: RasterAction,
   options: DiagramRasterOptions,
-) {
+): Promise<string> {
   const body = figure.querySelector<HTMLElement>("[data-diagram-export-body]");
 
-  if (!body) throw new Error("Diagram image area is unavailable");
+  if (!body)
+    throw new Error(
+      "The diagram image isn't ready. Wait for it to finish drawing, then try again.",
+    );
 
-  const blob = await renderDiagramPng(body, options);
+  const blob = await renderDiagramPng(body, options).catch((cause: unknown) => {
+    throw new Error(
+      `Could not render the PNG${cause instanceof Error ? ` (${cause.message})` : ""}. Try again.`,
+    );
+  });
 
   if (
     action === "copy" &&
@@ -173,13 +192,19 @@ async function exportPng(
         new ClipboardItem({ "image/png": blob }),
       ]);
 
-      return;
+      return "Copied the PNG to the clipboard.";
     } catch {
       // Clipboard image support varies by browser and permission state.
     }
   }
 
-  triggerDownload(blob, diagramExportFilename(source.title, "png"));
+  const filename = diagramExportFilename(source.title, "png");
+
+  triggerDownload(blob, filename);
+
+  return action === "copy"
+    ? `The clipboard couldn't take an image, so ${filename} was downloaded instead.`
+    : `Downloaded ${filename}.`;
 }
 
 export function DiagramExportMenu({
@@ -192,7 +217,22 @@ export function DiagramExportMenu({
   const [theme, setTheme] = useState<DiagramRasterOptions["theme"]>("dark");
   const [border, setBorder] = useState<DiagramRasterOptions["border"]>("frame");
   const container = useRef<HTMLDivElement>(null);
+  const { showToast, toast } = useToast();
   const menu = useAnchoredPopover(open, container);
+
+  const report = (task: Promise<string>) =>
+    task.then(
+      (text) => showToast({ kind: "success", text }),
+      (cause: unknown) =>
+        showToast({
+          kind: "error",
+          text:
+            cause instanceof Error
+              ? cause.message
+              : "The export failed. Try again.",
+        }),
+    );
+
   useDismissOnOutside(container, open, (nextOpen) => {
     setOpen(nextOpen);
     setRasterAction(null);
@@ -284,10 +324,9 @@ export function DiagramExportMenu({
 
                   setOpen(false);
                   setRasterAction(null);
-                  void exportPng(source, figure, rasterAction, {
-                    theme,
-                    border,
-                  });
+                  void report(
+                    exportPng(source, figure, rasterAction, { theme, border }),
+                  );
                 }}
               >
                 {rasterAction === "copy" ? "Copy PNG" : "Download PNG"}
@@ -312,7 +351,7 @@ export function DiagramExportMenu({
                     event.preventDefault();
                     event.stopPropagation();
                     setOpen(false);
-                    void exportDiagram(source, item.id);
+                    void report(exportDiagram(source, item.id));
                   }}
                 >
                   {item.label}
@@ -338,6 +377,7 @@ export function DiagramExportMenu({
           )}
         </div>
       )}
+      {toast}
     </div>
   );
 }

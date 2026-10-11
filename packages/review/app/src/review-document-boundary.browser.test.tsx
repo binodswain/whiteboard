@@ -15,6 +15,7 @@ import {
   vi,
 } from "vitest";
 
+import { AuthoringActivityContext } from "./authoring-activity-context";
 import type { ReviewSession } from "./host/review-session";
 import { ReviewDocumentBoundary } from "./review-document-boundary";
 import { testReviewSession } from "./review-session-test-utils";
@@ -22,6 +23,12 @@ import { testReviewSession } from "./review-session-test-utils";
 let request: Mock<(url: string, init?: RequestInit) => Promise<Response>>;
 
 let session: ReviewSession;
+
+const liveActivity = {
+  workingCount: 1,
+  expiresAt: Date.now() + 60_000,
+  activities: [{ activityId: "agent-1", slot: 0 }],
+};
 
 const roots: Array<ReturnType<typeof createRoot>> = [];
 
@@ -69,9 +76,10 @@ describe("ReviewDocumentBoundary", () => {
     expect(container.querySelector('[data-testid="shell"]')?.textContent).toBe(
       "Files Map Trace",
     );
-    expect(container.querySelector('[role="status"]')?.textContent).toContain(
-      "Your coding agent is writing the canvas now",
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "could not be displayed",
     );
+    expect(container.textContent).not.toContain("writing the canvas");
     expect(onError).toHaveBeenCalledWith("bad-1", expect.any(TypeError));
     expect(onError).toHaveBeenCalledTimes(1);
     expect(clientErrorReports()).toEqual([
@@ -108,6 +116,32 @@ describe("ReviewDocumentBoundary", () => {
       "Recovered document",
     );
     expect(container.querySelector('[data-testid="shell"]')).not.toBeNull();
+  });
+
+  it("says the agent is writing only while a document activity is live", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <AuthoringActivityContext.Provider value={liveActivity}>
+          <ReviewDocumentBoundary
+            revision="bad-1"
+            onError={vi.fn<(revision: string, error: Error) => void>()}
+            session={session}
+          >
+            <ThrowingDocument />
+          </ReviewDocumentBoundary>
+        </AuthoringActivityContext.Provider>,
+      );
+    });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "writing the canvas",
+    );
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 });
 

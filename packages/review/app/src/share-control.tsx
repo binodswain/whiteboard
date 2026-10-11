@@ -159,11 +159,6 @@ export function ShareControl() {
 
   useDismissOnOutside(popover, open, setOpen);
 
-  // Upload once per opening; a failure waits for Retry or a new sign-in.
-  useEffect(() => {
-    if (open && signedIn && target && publish.isIdle && !link) upload(target);
-  }, [open, signedIn, target, publish.isIdle, link]);
-
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(false), 2000);
@@ -261,17 +256,25 @@ export function ShareControl() {
                   {copied ? "Copied" : "Copy link"}
                 </Button>
               </>
-            ) : error ? (
-              <Button
-                variant="primary"
-                onClick={() => target && upload(target)}
-              >
-                Retry
-              </Button>
-            ) : (
+            ) : publish.isPending ? (
               <p {...stylex.props(styles.paragraph, styles.status)}>
                 Uploading…
               </p>
+            ) : (
+              <>
+                {!error && target && (
+                  <p {...stylex.props(styles.paragraph, styles.status)}>
+                    Creates a read-only snapshot of version {target.version} and
+                    uploads it. Anyone with the link can open it.
+                  </p>
+                )}
+                <Button
+                  variant="primary"
+                  onClick={() => target && upload(target)}
+                >
+                  {error ? "Retry" : "Create share link"}
+                </Button>
+              </>
             )
           ) : (
             account && (

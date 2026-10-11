@@ -7,7 +7,7 @@ import {
   type ReviewServerHealthWithToken,
   reviewDiffrSummarizerInputSchema,
 } from "@dev.fast/review-protocol";
-import { traceMachineEnabled } from "@dev.fast/trace-core";
+import { traceMachineEnabled, withFileLock } from "@dev.fast/trace-core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
@@ -20,6 +20,9 @@ import {
   createGitHubAppCredentials,
   githubRepoSlug,
 } from "@review/auth/repo-access.js";
+import { createCheckRunsClient } from "@review/integrations/github-checks.js";
+import { createMergeBaseResolver } from "@review/integrations/github-compare.js";
+import { createPrReviews } from "@review/integrations/pr-reviews.js";
 import {
   type JobRunner,
   type PrepareReviewInput,
@@ -42,6 +45,7 @@ import {
   isLocalAuthRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
+import { reviewIdForPullRequestHead } from "@review/review-api/origin.js";
 import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import { reviewServerStateDir } from "@review/server-discovery.js";
@@ -75,6 +79,8 @@ import {
 import { HttpJsonError, ReviewServerError } from "./http-json";
 import { createSetupInfoHandler } from "./setup-info.js";
 import type { WebSettings } from "./web-settings.js";
+
+export const GITHUB_WEBHOOK_PATH = "/integrations/github/webhook";
 
 const version = readReviewPackageVersion(import.meta.url);
 
@@ -115,6 +121,8 @@ export function createReviewServerApp(input: {
   deployment: ReturnType<typeof publicDeploymentConfig>;
   jobSecret?: string;
   runJob?: () => Promise<boolean>;
+  /** Answers GitHub's `pull_request` webhooks; signed, so it skips the wall. */
+  githubWebhook?: (request: Request) => Promise<Response>;
   /** The remote auth driver; absent on local, which keeps its token wall. */
   auth?: AuthDriver;
 }): Hono<ReviewHonoEnv> {
@@ -191,6 +199,13 @@ export function createReviewServerApp(input: {
 
   app.use("*", async (context, next) => {
     if (
+      input.githubWebhook &&
+      context.req.method === "POST" &&
+      new URL(context.req.url).pathname === GITHUB_WEBHOOK_PATH
+    )
+      return next();
+
+    if (
       context.req.method === "POST" &&
       new URL(context.req.url).pathname === "/internal/jobs/run"
     ) {
@@ -250,6 +265,12 @@ export function createReviewServerApp(input: {
 
     return serverJson(accepted ? 200 : 404, { ok: accepted });
   });
+
+  if (input.githubWebhook) {
+    const handle = input.githubWebhook;
+    app.post(GITHUB_WEBHOOK_PATH, (context) => handle(context.req.raw));
+  }
+
   app.post("/internal/jobs/run", async (context) => {
     if (!input.jobSecret)
       return serverJson(404, { ok: false, error: "Not found." });
@@ -409,14 +430,59 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   let api: ReturnType<typeof createReviewApi>;
 
   const prepareReview = async (
-    { repo, baseSha, headSha }: PrepareReviewInput,
+    job: PrepareReviewInput,
     context: { jobId: string; submitterId?: string },
   ) => {
+    if (job.pullRequest) {
+      const existing = await reviewIdForPullRequestHead(
+        store.metadataStore(),
+        job.pullRequest.url,
+        job.headSha,
+      );
+
+      if (existing)
+        return {
+          reviewId: existing,
+          ...(input.headlessOpenUrl && {
+            url: input.headlessOpenUrl(existing),
+          }),
+        };
+    }
+
     const persistentDir =
       deploymentConfig.repoSource === "github"
-        ? githubCachePath(repo)
+        ? githubCachePath(job.repo)
         : undefined;
 
+    if (!persistentDir) return prepareCheckedOut(job, context);
+
+    // One clone per repository serves every review of it, and a checkout
+    // moves its working tree: two preparations racing on it would pin a
+    // review to the other's revisions.
+    const locked = await withFileLock(
+      `${persistentDir}.lock`,
+      {
+        retryMs: 100,
+        staleMs: 120_000,
+        timeoutMs: 300_000,
+        unownedGraceMs: 1_000,
+      },
+      () => prepareCheckedOut(job, context, persistentDir),
+    );
+
+    if (!locked.acquired)
+      throw new Error(
+        "Timed out waiting for another review of this repository.",
+      );
+
+    return locked.result;
+  };
+
+  const prepareCheckedOut = async (
+    { repo, baseSha, headSha, pullRequest }: PrepareReviewInput,
+    context: { jobId: string; submitterId?: string },
+    persistentDir?: string,
+  ) => {
     const checkout = await repoSource.checkout({
       repo,
       baseSha,
@@ -439,6 +505,12 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
               head: headSha,
             },
             open: false,
+            // Each head of a PR is its own review; the default would hand
+            // back the review of the first head ever prepared.
+            ...(pullRequest && {
+              pullRequestUrl: pullRequest.url,
+              reuseExisting: false,
+            }),
           },
         }),
       });
@@ -490,6 +562,28 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
       ? createInlineJobRunner(store.metadataStore(), prepareReview)
       : createQueueJobRunner(store.metadataStore(), prepareReview);
 
+  const prReviews =
+    deploymentConfig.prReviews && githubApp
+      ? createPrReviews({
+          config: deploymentConfig.prReviews,
+          installationId: deploymentConfig.githubApp?.installationId,
+          webUrl: deploymentConfig.github?.webUrl ?? "https://github.com",
+          meta: store.metadataStore(),
+          jobs,
+          mergeBase: createMergeBaseResolver({
+            app: githubApp,
+            apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
+            fetchImpl: input.fetchImpl,
+          }),
+          checks: createCheckRunsClient({
+            app: githubApp,
+            apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
+            fetchImpl: input.fetchImpl,
+          }),
+          log: (message) => console.error(`[pr-reviews] ${message}`),
+        })
+      : undefined;
+
   const app = createReviewServerApp({
     token: input.token,
     instanceId: input.instanceId,
@@ -499,7 +593,13 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     localBrowserPort: input.localBrowserPort,
     deployment,
     jobSecret: process.env.WHITEBOARD_JOB_SECRET,
-    runJob: () => jobs.runNext(),
+    runJob: async () => {
+      const ran = await jobs.runNext();
+      await prReviews?.reconcile();
+
+      return ran;
+    },
+    githubWebhook: prReviews?.handleWebhook,
     auth: auth ?? undefined,
   });
 

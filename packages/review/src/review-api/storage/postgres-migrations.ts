@@ -124,4 +124,16 @@ export const POSTGRES_MIGRATIONS: {
     name: "review_job_submitter",
     sql: "ALTER TABLE jobs_jobs ADD COLUMN submitter_id TEXT",
   },
+  {
+    version: 9,
+    name: "github_pr_reviews",
+    sql: `CREATE TABLE github_deliveries(
+      delivery_id TEXT PRIMARY KEY, outcome TEXT NOT NULL, received_at TEXT NOT NULL);
+      CREATE TABLE pr_review_runs(
+      id TEXT PRIMARY KEY, run_key TEXT NOT NULL UNIQUE, installation_id TEXT NOT NULL,
+      repo TEXT NOT NULL, pr_number INTEGER NOT NULL, base_sha TEXT NOT NULL, head_sha TEXT NOT NULL,
+      status TEXT NOT NULL, job_id TEXT, review_id TEXT, review_url TEXT, check_run_id TEXT,
+      superseded INTEGER NOT NULL DEFAULT 0, reason TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE INDEX pr_review_runs_pr ON pr_review_runs(installation_id, repo, pr_number);`,
+  },
 ];

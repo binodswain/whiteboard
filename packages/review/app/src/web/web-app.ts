@@ -11,6 +11,7 @@ import { ReviewApiClient } from "@dev.fast/review-protocol";
 import { z } from "zod";
 
 import { mountSetupLink, mountWebSetup } from "./setup-view";
+import { readCachedTheme, resolveTheme, writeCachedTheme } from "./theme-cache";
 import { type WebAppFrame, mountWebAppFrame } from "./web-app-frame";
 import {
   type WebSettingsValues,
@@ -285,7 +286,12 @@ function mountWebCanvas(
   frame: WebAppFrame,
 ): WebAppHandle {
   const client = new ReviewApiClient({ serverUrl, token }, request);
-  const canvas = mountReviewCanvas(container, { kind: "loading" });
+
+  const canvas = mountReviewCanvas(container, {
+    kind: "loading",
+    theme: resolveTheme(readCachedTheme()),
+  });
+
   const setupLink = mountSetupLink(container);
 
   let reviews: ReviewApiSummary[] = [];
@@ -338,14 +344,12 @@ function mountWebCanvas(
     openSettings: () => navigate("/settings"),
   };
 
-  const canvasTheme = (theme = webValues?.theme ?? "system") =>
-    theme === "system"
-      ? matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light"
-      : theme;
+  const canvasTheme = (theme = webValues?.theme ?? readCachedTheme()) =>
+    resolveTheme(theme);
 
   const onSettingsChange = (next: WebSettingsValues) => {
+    writeCachedTheme(next.theme);
+
     if (webValues) Object.assign(webValues, next);
     else webValues = { ...next };
     activeBridge?.setCurrentTheme?.(canvasTheme(next.theme));
@@ -373,7 +377,9 @@ function mountWebCanvas(
   };
 
   const ensureSettings = () => {
-    settingsPromise ??= loadWebSettings(bridgeOptions, onSettingsChange).then(
+    if (settingsPromise) return settingsPromise;
+
+    const pending = loadWebSettings(bridgeOptions, onSettingsChange).then(
       (settings) => {
         settingsContent = settings;
         webValues = {
@@ -384,12 +390,20 @@ function mountWebCanvas(
           softwareMapEnabled: settings.softwareMapEnabled,
           structuralDiffEnabled: settings.structuralDiffEnabled,
         };
+        writeCachedTheme(settings.theme);
 
         return settings;
       },
     );
 
-    return settingsPromise;
+    settingsPromise = pending;
+
+    // Cache only a success: a rejected load must not answer every Retry.
+    pending.catch(() => {
+      if (settingsPromise === pending) settingsPromise = undefined;
+    });
+
+    return pending;
   };
 
   const ensureHostedMode = () => {
@@ -517,7 +531,26 @@ function mountWebCanvas(
 
   async function showReview(reviewId: string) {
     catalog?.abort();
-    await ensureSettings();
+    canvas.update({ kind: "loading", theme: canvasTheme() });
+
+    try {
+      await ensureSettings();
+    } catch (error) {
+      if (
+        !disposed &&
+        location.pathname === `/r/${encodeURIComponent(reviewId)}`
+      )
+        canvas.update({
+          kind: "error",
+          theme: canvasTheme(),
+          message: error instanceof Error ? error.message : String(error),
+          retry() {
+            route();
+          },
+        });
+
+      return;
+    }
 
     if (disposed || location.pathname !== `/r/${encodeURIComponent(reviewId)}`)
       return;
@@ -573,6 +606,7 @@ function mountWebCanvas(
       if (!signal.aborted && !disposed) {
         canvas.update({
           kind: "error",
+          theme: canvasTheme(),
           message:
             error instanceof Error
               ? error.message
@@ -635,7 +669,11 @@ function mountWebCanvas(
         .catch((error) =>
           canvas.update({
             kind: "error",
+            theme: canvasTheme(),
             message: error instanceof Error ? error.message : String(error),
+            retry() {
+              route();
+            },
           }),
         );
 

@@ -9,10 +9,19 @@ import { z } from "zod";
 
 export type JobStatus = "pending" | "running" | "succeeded" | "failed";
 
+/** The GitHub pull request a prepared review answers, set by the webhook. */
+export type PullRequestRef = {
+  /** Canonical `https://github.com/owner/repo/pull/N`. */
+  url: string;
+  number: number;
+  installationId: number;
+};
+
 export type PrepareReviewInput = {
   repo: string;
   baseSha: string;
   headSha: string;
+  pullRequest?: PullRequestRef;
 };
 
 export type JobRecord = {
@@ -45,6 +54,13 @@ const prepareReviewInputSchema = z.strictObject({
   repo: z.string().min(1),
   baseSha: z.string().min(1),
   headSha: z.string().min(1),
+  pullRequest: z
+    .strictObject({
+      url: z.string().min(1),
+      number: z.number().int().positive(),
+      installationId: z.number().int().positive(),
+    })
+    .optional(),
 });
 
 const jobStatusSchema = z.enum(["pending", "running", "succeeded", "failed"]);

@@ -39,6 +39,13 @@ const envSchema = z.object({
   GITHUB_APP_INSTALLATION_ID: optionalEnv,
   GITHUB_WEB_URL: optionalEnv,
   GITHUB_API_URL: optionalEnv,
+  WHITEBOARD_GITHUB_WEBHOOK_SECRET: optionalEnv,
+  WHITEBOARD_PR_REVIEW_REPOS: optionalEnv,
+  WHITEBOARD_PUBLIC_URL: optionalEnv,
+  WHITEBOARD_PR_REVIEW_DRAFTS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.enum(["true", "false"]).optional(),
+  ),
 });
 
 export interface DeploymentConfig {
@@ -71,6 +78,16 @@ export interface DeploymentConfig {
   githubApp?: { appId: string; privateKey: string; installationId?: string };
   /** GitHub endpoints — GitHub Enterprise overrides both. */
   github?: { webUrl: string; apiUrl: string };
+  /** Automatic PR reviews: present only when a webhook secret is set. */
+  prReviews?: {
+    webhookSecret: string;
+    /** Lowercase `owner/repo` slugs that opted in. */
+    repos: string[];
+    /** Whether draft PRs are reviewed; skipped by default. */
+    drafts: boolean;
+    /** Where reviewers reach this deployment; check links start here. */
+    publicUrl: string;
+  };
 }
 
 /** The private key env carries a PEM, often with escaped newlines or as
@@ -254,6 +271,73 @@ export function loadDeploymentConfig(
         "GITHUB_OAUTH_CLIENT_SECRET",
       ),
     };
+
+  if (values.WHITEBOARD_GITHUB_WEBHOOK_SECRET) {
+    if (!config.githubApp)
+      throw new Error(
+        "WHITEBOARD_GITHUB_WEBHOOK_SECRET requires GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY",
+      );
+
+    if (config.jobs !== "queue")
+      throw new Error("PR reviews require WHITEBOARD_JOBS=queue");
+
+    // Checkouts are fetched by a GitHub source that accepts github.com only.
+    if (config.repoSource !== "github")
+      throw new Error("PR reviews require WHITEBOARD_REPO_SOURCE=github");
+
+    if (config.github && config.github.webUrl !== "https://github.com")
+      throw new Error(
+        "PR reviews support github.com only, not GitHub Enterprise",
+      );
+
+    const repos = (values.WHITEBOARD_PR_REVIEW_REPOS ?? "")
+      .split(",")
+      .map((repo) => repo.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (!repos.length)
+      throw new Error(
+        "WHITEBOARD_GITHUB_WEBHOOK_SECRET requires WHITEBOARD_PR_REVIEW_REPOS",
+      );
+
+    for (const repo of repos)
+      if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
+        throw new Error(
+          "WHITEBOARD_PR_REVIEW_REPOS must list owner/repo slugs separated by commas",
+        );
+
+    // The bind address a server discovers for itself is local to its
+    // process, and the token-bearing open URL must never reach GitHub.
+    let publicUrl: string;
+
+    try {
+      const parsedUrl = new URL(
+        requireSetting(values.WHITEBOARD_PUBLIC_URL, "WHITEBOARD_PUBLIC_URL"),
+      );
+
+      if (
+        !/^https?:$/.test(parsedUrl.protocol) ||
+        parsedUrl.search ||
+        parsedUrl.hash
+      )
+        throw new Error("unusable");
+
+      publicUrl = parsedUrl.origin + parsedUrl.pathname.replace(/\/$/, "");
+    } catch (cause) {
+      if (cause instanceof Error && /requires/.test(cause.message)) throw cause;
+
+      throw new Error(
+        "WHITEBOARD_PUBLIC_URL must be an http(s) URL without a query or fragment",
+      );
+    }
+
+    config.prReviews = {
+      webhookSecret: values.WHITEBOARD_GITHUB_WEBHOOK_SECRET,
+      publicUrl,
+      repos,
+      drafts: values.WHITEBOARD_PR_REVIEW_DRAFTS === "true",
+    };
+  }
 
   if (config.auth === "oauth") {
     requireSetting(values.WHITEBOARD_AUTH_SECRET, "WHITEBOARD_AUTH_SECRET");
