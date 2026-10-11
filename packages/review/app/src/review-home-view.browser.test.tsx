@@ -1,4 +1,5 @@
 import type {
+  AskAgentStatusLike,
   ReviewApiSummary,
   ReviewCanvasUi,
   ReviewMenuRequest,
@@ -160,7 +161,7 @@ describe("ReviewHome", () => {
     expect(options).not.toContain("Use default agent");
   });
 
-  it("shows 'No agent CLI detected' and disables task textarea when no agents available in local mode", async () => {
+  it("says no agent CLI was found and disables the task when discovery returns nothing", async () => {
     const onCreateSession =
       vi.fn<(input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>>();
 
@@ -182,7 +183,7 @@ describe("ReviewHome", () => {
     });
 
     expect(container.textContent).toContain(
-      "No agent CLI detected on this machine",
+      "No agent CLI was found on this machine",
     );
 
     const taskInput = container.querySelector<HTMLTextAreaElement>(
@@ -190,6 +191,122 @@ describe("ReviewHome", () => {
     )!;
 
     expect(taskInput.disabled).toBe(true);
+  });
+
+  it("does not treat unavailable agents as usable and offers a retry that recovers", async () => {
+    const unavailable = {
+      id: "codex" as const,
+      name: "Codex",
+      available: false,
+      readOnly: true,
+      bypass: false,
+    };
+
+    const ready = { ...unavailable, available: true };
+
+    const askAgents = vi
+      .fn<() => Promise<AskAgentStatusLike[]>>()
+      .mockResolvedValueOnce([unavailable])
+      .mockResolvedValue([ready]);
+
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[{ id: "repo", name: "Repository" }]}
+          askAgents={askAgents}
+          hostedMode={false}
+          onCreateSession={vi.fn<
+            (input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>
+          >()}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+
+    expect(container.textContent).toContain("none is ready to run tasks");
+    expect(container.querySelector('select[name="agent"]')).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[name="task"]')
+        ?.disabled,
+    ).toBe(true);
+
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Check again")!
+        .click(),
+    );
+
+    expect(
+      container.querySelector<HTMLSelectElement>('select[name="agent"]')?.value,
+    ).toBe("codex");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[name="task"]')
+        ?.disabled,
+    ).toBe(false);
+  });
+
+  it("reports a failed agent check instead of claiming none exist", async () => {
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[{ id: "repo", name: "Repository" }]}
+          askAgents={async () => {
+            throw new Error("Server unavailable");
+          }}
+          hostedMode={false}
+          onCreateSession={vi.fn<
+            (input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>
+          >()}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("button")?.click();
+    });
+
+    expect(container.textContent).toContain("Could not check for agent CLIs");
+    expect(container.textContent).toContain("Server unavailable");
+    expect(container.textContent).not.toContain("No agent CLI was found");
+  });
+
+  it("offers setup and a recheck from the empty home before a repository exists", async () => {
+    const onRefreshCatalog = vi.fn<() => void>();
+
+    await act(async () =>
+      renderWithHost(
+        <ReviewHome
+          reviews={[]}
+          repositories={[]}
+          setupHref="/setup"
+          onRefreshCatalog={onRefreshCatalog}
+          onCreateSession={vi.fn<
+            (input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>
+          >()}
+          onOpen={() => {}}
+        />,
+      ),
+    );
+
+    expect(
+      container.querySelector<HTMLAnchorElement>('a[href="/setup"]')
+        ?.textContent,
+    ).toBe("Connect your agent");
+
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Check for repositories")!
+        .click(),
+    );
+
+    expect(onRefreshCatalog).toHaveBeenCalledTimes(1);
   });
 
   it("prevents task submission without an agent in local mode", async () => {

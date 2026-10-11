@@ -79,6 +79,7 @@ interface ReviewHomeProps {
   onboarding?: ReviewCanvasOnboarding;
   onOpenTutorial?(): void;
   onOpenSettings?(): void;
+  setupHref?: string;
 }
 
 interface ReviewAttentionActions {
@@ -123,6 +124,25 @@ function MatchedText({ text }: { text: string }) {
   );
 }
 
+type AgentDiscovery =
+  | { status: "loading" }
+  | { status: "ready"; agents: readonly AskAgentStatusLike[] }
+  | { status: "error"; message: string };
+
+function agentDiscoveryMessage(discovery: AgentDiscovery): string {
+  if (discovery.status === "loading") return "Checking for agent CLIs…";
+
+  if (discovery.status === "error")
+    return `Could not check for agent CLIs (${discovery.message}). Tasks are unavailable until this succeeds.`;
+
+  if (discovery.agents.length === 0)
+    return "No agent CLI was found on this machine. Install one, then check again. You can still create a session without a task.";
+
+  const names = discovery.agents.map((agent) => agent.name).join(", ");
+
+  return `Found ${names}, but none is ready to run tasks. Finish setting it up, then check again. You can still create a session without a task.`;
+}
+
 export function ReviewHome({
   reviews,
   repositories,
@@ -143,6 +163,7 @@ export function ReviewHome({
   onboarding,
   onOpenTutorial,
   onOpenSettings,
+  setupHref,
 }: ReviewHomeProps) {
   const ui = useContext(CanvasUiContext);
   const deleting = useRef(new Set<string>());
@@ -153,9 +174,11 @@ export function ReviewHome({
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string>();
 
-  const [availableAgents, setAvailableAgents] = useState<
-    readonly AskAgentStatusLike[]
-  >([]);
+  const [discovery, setDiscovery] = useState<AgentDiscovery>({
+    status: "loading",
+  });
+
+  const [discoveryAttempt, setDiscoveryAttempt] = useState(0);
 
   const [, setNow] = useState(Date.now);
 
@@ -175,14 +198,40 @@ export function ReviewHome({
     onSearchQueryChange?.(value);
   };
 
+  // Hosts rebuild this callback on every catalog update; discovery should
+  // restart only when the dialog opens or the reader asks to check again.
+  const askAgentsRef = useRef(askAgents);
+
+  askAgentsRef.current = askAgents;
+
+  useEffect(() => {
+    const discover = askAgentsRef.current;
+
+    if (!creationOpen || hostedMode || !discover) return;
+
+    let stale = false;
+
+    setDiscovery({ status: "loading" });
+    discover().then(
+      (agents) => {
+        if (!stale) setDiscovery({ status: "ready", agents });
+      },
+      (cause: unknown) => {
+        if (!stale)
+          setDiscovery({
+            status: "error",
+            message: cause instanceof Error ? cause.message : "Request failed.",
+          });
+      },
+    );
+
+    return () => {
+      stale = true;
+    };
+  }, [creationOpen, hostedMode, discoveryAttempt]);
+
   useEffect(() => {
     if (!creationOpen) return;
-
-    if (!hostedMode && askAgents) {
-      void askAgents()
-        .then(setAvailableAgents)
-        .catch(() => setAvailableAgents([]));
-    }
 
     const dismiss = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !creating) setCreationOpen(false);
@@ -191,7 +240,15 @@ export function ReviewHome({
     window.addEventListener("keydown", dismiss);
 
     return () => window.removeEventListener("keydown", dismiss);
-  }, [creationOpen, creating, hostedMode, askAgents]);
+  }, [creationOpen, creating]);
+
+  // Only agents that are ready can take a task; the rest explain themselves.
+  const usableAgents =
+    discovery.status === "ready"
+      ? discovery.agents.filter((agent) => agent.available)
+      : [];
+
+  const tasksBlocked = !hostedMode && usableAgents.length === 0;
 
   const createSession = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -468,8 +525,22 @@ export function ReviewHome({
                 title="No sessions yet"
                 message={
                   repositories?.length
-                    ? "Sessions start empty. An agent will populate the session; the browser is read-only for board authoring."
-                    : "Register a repository with Whiteboard before creating a session. Sessions are populated by agents."
+                    ? `Repository ready: ${repositories.map((repository) => repository.name).join(", ")}. Choose New session to start; an agent populates it and the browser is read-only for board authoring.`
+                    : "To get started: 1. Connect your agent. 2. Register a repository by launching your agent inside it. 3. Create a session here. Sessions are populated by agents."
+                }
+                action={
+                  repositories?.length ? undefined : (
+                    <div>
+                      {setupHref ? (
+                        <a href={setupHref}>Connect your agent</a>
+                      ) : null}
+                      {onRefreshCatalog ? (
+                        <Button type="button" onClick={onRefreshCatalog}>
+                          Check for repositories
+                        </Button>
+                      ) : null}
+                    </div>
+                  )
                 }
               />
             ) : null}
@@ -523,10 +594,21 @@ export function ReviewHome({
                   placeholder="e.g. Review checkout flow"
                 />
               </label>
-              {!hostedMode && availableAgents.length === 0 ? (
-                <p {...stylex.props(styles.dialogNote)}>
-                  No agent CLI detected on this machine.
-                </p>
+              {!hostedMode && tasksBlocked ? (
+                <div {...stylex.props(styles.dialogNote)} role="status">
+                  <p>{agentDiscoveryMessage(discovery)}</p>
+                  {discovery.status !== "loading" ? (
+                    <Button
+                      type="button"
+                      onClick={() => setDiscoveryAttempt((count) => count + 1)}
+                    >
+                      Check again
+                    </Button>
+                  ) : null}
+                  {discovery.status !== "loading" && setupHref ? (
+                    <a href={setupHref}>Open setup</a>
+                  ) : null}
+                </div>
               ) : null}
               <label {...stylex.props(styles.dialogField)}>
                 Task for agent (optional)
@@ -534,28 +616,23 @@ export function ReviewHome({
                   {...stylex.props(styles.fieldControl)}
                   name="task"
                   rows={4}
-                  disabled={!hostedMode && availableAgents.length === 0}
+                  disabled={tasksBlocked}
                   placeholder="Describe what the agent should build on the board"
                 />
               </label>
-              {!hostedMode && availableAgents.length > 0 ? (
+              {!hostedMode && usableAgents.length > 0 ? (
                 <label {...stylex.props(styles.dialogField)}>
                   Agent
                   <select
                     {...stylex.props(styles.fieldControl)}
                     name="agent"
-                    defaultValue={
-                      availableAgents.filter((item) => item.available)[0]?.id ||
-                      ""
-                    }
+                    defaultValue={usableAgents[0]?.id ?? ""}
                   >
-                    {availableAgents
-                      .filter((item) => item.available)
-                      .map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
+                    {usableAgents.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
                   </select>
                 </label>
               ) : null}

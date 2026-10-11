@@ -759,6 +759,8 @@ export type ReviewCanvasContent =
       setSearchQuery?(query: string): void;
       catalogError?: string;
       refreshCatalog?(): void;
+      // Where first-run setup lives, when the host has a page for it.
+      setupHref?: string;
       theme?: ReviewTheme;
       openReview(uuid: string): void;
       openSettings?(): void;
