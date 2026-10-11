@@ -85,7 +85,8 @@ export class ReviewDocumentBoundary extends Component<
               A block failed to render. Edit the review through the Whiteboard
               MCP tools or{" "}
               <code {...stylex.props(documentStyles.code)}>whiteboard api</code>{" "}
-              to replace the failing block, then reload the page.
+              to replace the failing block. This view updates when a new version
+              arrives.
             </>
           }
         />

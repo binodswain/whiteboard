@@ -278,6 +278,24 @@ function reviewPageUrl(reviewId: string): string {
   return `${location.origin}/r/${encodeURIComponent(reviewId)}`;
 }
 
+/** One fixed column that stacks notices so a second never covers the first. */
+function toastStack(): HTMLElement {
+  const existing = document.querySelector<HTMLElement>("[data-web-toasts]");
+
+  if (existing) return existing;
+
+  const stack = document.createElement("div");
+
+  stack.dataset.webToasts = "";
+  stack.style.cssText =
+    "position:fixed;inset-inline-end:16px;inset-block-end:16px;" +
+    "display:flex;flex-direction:column;gap:8px;align-items:flex-end;" +
+    "z-index:2147483000;pointer-events:none;";
+  document.body.append(stack);
+
+  return stack;
+}
+
 /** The bridge's `notify`, also usable standalone (e.g. the Home tutorial cue). */
 export function webNotify(kind: "success" | "error", text: string): void {
   const light = resolveTheme(readCachedTheme()) === "light";
@@ -290,14 +308,12 @@ export function webNotify(kind: "success" | "error", text: string): void {
   // Toasts mount on body, outside the canvas's token scope, so they carry
   // their own palette for the theme in effect.
   toast.style.cssText =
-    "position:fixed;inset-inline-end:16px;inset-block-end:16px;" +
     "max-width:min(360px,80vw);padding:10px 14px;border-radius:8px;" +
-    "display:flex;gap:12px;align-items:flex-start;" +
+    "display:flex;gap:12px;align-items:flex-start;pointer-events:auto;" +
     (light
       ? "background:#fff;color:#1a1d24;border:1px solid #d9dde4;"
       : "background:#12161e;color:#eef0f4;border:1px solid #262c37;") +
-    "z-index:2147483000;font:13px/1.4 inherit;" +
-    "box-shadow:0 8px 24px rgb(0 0 0 / 40%);";
+    "font:13px/1.4 inherit;box-shadow:0 8px 24px rgb(0 0 0 / 40%);";
 
   if (kind === "error") {
     // A failure may need a follow-up, so it stays until dismissed.
@@ -310,12 +326,12 @@ export function webNotify(kind: "success" | "error", text: string): void {
       "cursor:pointer;font:inherit;text-decoration:underline;padding:0;";
     dismiss.addEventListener("click", () => toast.remove());
     toast.append(dismiss);
-    document.body.append(toast);
+    toastStack().append(toast);
 
     return;
   }
 
-  document.body.append(toast);
+  toastStack().append(toast);
   setTimeout(() => toast.remove(), 4000);
 }
 
