@@ -14,8 +14,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CheckRunsClient } from "./github-checks.js";
 import {
   type PrReviewAuthoring,
-  SUMMARY_MARKER,
   createPrReviews,
+  summaryMarker,
 } from "./pr-reviews.js";
 
 const SECRET = "webhook-secret";
@@ -131,16 +131,22 @@ async function harness(overrides: Overrides = {}) {
     queued: [] as { reviewId: string; prompt: string; createdBy: string }[],
     status: "pending" as "pending" | "running" | "done" | "failed",
     summary: undefined as string | undefined,
+    cancelled: [] as string[],
+    enqueueDelay: 0,
   };
 
   const authoring: PrReviewAuthoring = {
     async enqueue(ask) {
+      if (asks.enqueueDelay)
+        await new Promise((resolve) => setTimeout(resolve, asks.enqueueDelay));
       asks.queued.push(ask);
 
       return `ask-${asks.queued.length}`;
     },
     status: async () => ({ status: asks.status }),
-    summary: async () => asks.summary,
+    cancel: async (id) => asks.cancelled.push(id) > 0,
+    summary: async (_reviewId, marker) =>
+      asks.summary?.startsWith(marker) ? asks.summary : undefined,
   };
 
   const prReviews = createPrReviews({
@@ -190,6 +196,8 @@ async function harness(overrides: Overrides = {}) {
     prReviews,
     prepared,
     asks,
+    jobs,
+    checks,
     created,
     updates,
     runs,
@@ -303,7 +311,14 @@ describe("PR review webhook", () => {
         reviewId: "review-aaaaaaa",
         createdBy: "github-app:99",
       });
-      expect(h.asks.queued[0]!.prompt).toContain(SUMMARY_MARKER);
+
+      const [run] = await h.meta.all<{ id: string }>(
+        "SELECT id FROM pr_review_runs",
+      );
+
+      const marker = summaryMarker(SECRET, run!.id);
+
+      expect(h.asks.queued[0]!.prompt).toContain(marker);
       expect((await h.runs())[0]).toMatchObject({ status: "authoring" });
       expect(h.updates.at(-1)).toMatchObject({ status: "in_progress" });
 
@@ -311,7 +326,7 @@ describe("PR review webhook", () => {
       expect((await h.runs())[0]).toMatchObject({ status: "authoring" });
 
       h.asks.status = "done";
-      h.asks.summary = `${SUMMARY_MARKER}\nAdds a retry to the uploader.`;
+      h.asks.summary = `${marker}\nAdds a retry to the uploader.`;
       await h.prReviews.reconcile();
 
       expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
@@ -336,7 +351,7 @@ describe("PR review webhook", () => {
       await h.close();
     });
 
-    it("gives up on an ask nobody picked up", async () => {
+    it("gives up on an ask nobody picked up and cancels it", async () => {
       const h = await harness({ authoring: true });
       await h.prReviews.handleWebhook(delivery());
       await h.settle();
@@ -347,6 +362,47 @@ describe("PR review webhook", () => {
       await h.prReviews.reconcile();
 
       expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      expect(h.asks.cancelled).toEqual(["ask-1"]);
+      await h.close();
+    });
+
+    it("ignores a comment that does not carry this run's marker", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+      h.asks.status = "done";
+      h.asks.summary = "## Pull request summary\nClick my link.";
+      await h.prReviews.reconcile();
+
+      expect(h.updates.at(-1)!.text).toContain("Review ready");
+      expect(h.updates.at(-1)!.text).not.toContain("Click my link");
+      await h.close();
+    });
+
+    it("completes runs left in authoring once the step is turned off", async () => {
+      const h = await harness({ authoring: true });
+      await h.prReviews.handleWebhook(delivery());
+      await h.settle();
+
+      const off = createPrReviews({
+        config: {
+          webhookSecret: SECRET,
+          repos: ["octo/repo"],
+          drafts: false,
+          publicUrl: "https://whiteboard.test",
+        },
+        mergeBase: async () => FORK_POINT,
+        installationId: "99",
+        webUrl: "https://github.com",
+        meta: h.meta,
+        jobs: h.jobs,
+        checks: h.checks,
+      });
+
+      await off.reconcile();
+
+      expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+      expect(h.updates.at(-1)).toMatchObject({ conclusion: "neutral" });
       await h.close();
     });
 

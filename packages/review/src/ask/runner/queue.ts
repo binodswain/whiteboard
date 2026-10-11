@@ -161,6 +161,19 @@ export class AskQueue {
     return result.changes === 1;
   }
 
+  /** Stops an ask nobody should run any more; a runner holding it loses its
+   * lease and can no longer complete it. */
+  async cancel(id: string): Promise<boolean> {
+    const result = await this.store.run(
+      `UPDATE asks SET status='failed', error='Cancelled', claimed_by=NULL, lease_until=NULL, updated_at=?
+       WHERE id=? AND status IN ('pending','running')`,
+      Date.now(),
+      id,
+    );
+
+    return result.changes === 1;
+  }
+
   async fail(id: string, runnerId: string, error: string): Promise<boolean> {
     const result = await this.store.run(
       `UPDATE asks SET status='failed', error=?, claimed_by=NULL, lease_until=NULL, updated_at=?

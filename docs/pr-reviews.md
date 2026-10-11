@@ -60,7 +60,9 @@ narrowed to `checks: write` on the one repository.
 With `WHITEBOARD_PR_REVIEW_AUTHORING=true`, a prepared review is not completed
 at once. The run moves to `authoring` and a hosted ask is queued with a fixed,
 server-owned prompt: read the change through the review's Whiteboard tools, and
-post one whole-review comment that starts with `## Pull request summary`.
+post one whole-review comment whose first line is `## Pull request summary [<code>]`.
+The code is derived from a server secret and the run, so a comment from anyone
+else is never taken for the summary.
 The prompt marks the diff and comments as untrusted data to describe, never
 instructions. When the ask ends, the check is completed as `neutral` with that
 comment (cut to 4000 characters) as its summary and `details_url` on the
@@ -68,7 +70,10 @@ review.
 
 The review is already usable at that point, so a failed ask, an ask with no
 summary comment, or no runner picking it up within 30 minutes still completes
-the check with the plain "Review ready" text.
+the check with the plain "Review ready" text. An ask that is given up on is
+cancelled so a runner arriving later does not run it. Turning the setting off
+also completes runs still waiting. The server checks for finished asks every
+30 seconds.
 
 An ask runner (`whiteboard ask connect`) must be running for this to do
 anything. The runner currently uses the deployment's general token, so the

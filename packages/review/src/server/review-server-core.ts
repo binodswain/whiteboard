@@ -22,10 +22,7 @@ import {
 } from "@review/auth/repo-access.js";
 import { createCheckRunsClient } from "@review/integrations/github-checks.js";
 import { createMergeBaseResolver } from "@review/integrations/github-compare.js";
-import {
-  SUMMARY_MARKER,
-  createPrReviews,
-} from "@review/integrations/pr-reviews.js";
+import { createPrReviews } from "@review/integrations/pr-reviews.js";
 import {
   type JobRunner,
   type PrepareReviewInput,
@@ -577,13 +574,13 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
             ? {
                 enqueue: (ask) => store.askQueue.create(ask),
                 status: (id) => store.askQueue.get(id),
-                summary: async (reviewId, since) =>
+                cancel: (id) => store.askQueue.cancel(id),
+                summary: async (reviewId, marker) =>
                   (await store.comments.list(reviewId)).find(
                     (comment) =>
                       !comment.parentId &&
                       !comment.anchor &&
-                      comment.createdAt >= since &&
-                      comment.body.startsWith(SUMMARY_MARKER),
+                      comment.body.startsWith(marker),
                   )?.body,
               }
             : undefined,
@@ -600,6 +597,24 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           log: (message) => console.error(`[pr-reviews] ${message}`),
         })
       : undefined;
+
+  // An ask finishes on a runner, not here, so nothing else would notice it.
+  const authoringTimer =
+    prReviews && deploymentConfig.prReviews?.authoring
+      ? setInterval(
+          () =>
+            void prReviews
+              .reconcile()
+              .catch((cause: unknown) =>
+                console.error(
+                  `[pr-reviews] reconcile failed: ${String(cause)}`,
+                ),
+              ),
+          30_000,
+        )
+      : undefined;
+
+  authoringTimer?.unref();
 
   const app = createReviewServerApp({
     token: input.token,
@@ -720,7 +735,10 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     repoSource,
     deployment: deploymentConfig,
     auth: auth ?? undefined,
-    close: () => askThreads?.closeAll(),
+    close: () => {
+      clearInterval(authoringTimer);
+      askThreads?.closeAll();
+    },
   };
 }
 
