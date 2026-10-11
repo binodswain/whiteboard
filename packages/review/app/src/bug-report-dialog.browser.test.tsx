@@ -135,6 +135,66 @@ describe("BugReportControl", () => {
     expect(reportBody()).not.toHaveProperty("screenshot");
   });
 
+  it("keeps the draft when Escape or the backdrop closes the dialog", async () => {
+    await renderAndOpen();
+    await setDescription("It crashed when I resized");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(reportButton());
+
+    await act(async () => reportButton().click());
+    expect(container.querySelector("textarea")?.value).toBe(
+      "It crashed when I resized",
+    );
+    expect(captureScreenshotMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      container
+        .querySelector('[role="dialog"]')
+        ?.parentElement?.dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true }),
+        );
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+
+    await act(async () => reportButton().click());
+    await act(async () => cancelButton().click());
+    await act(async () => reportButton().click());
+    expect(container.querySelector("textarea")?.value).toBe("");
+  });
+
+  it("cannot be dismissed while a report is sending", async () => {
+    request.mockImplementation(() => new Promise<Response>(() => {}));
+    await renderAndOpen();
+    await act(async () => sendButton().click());
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("keeps Tab inside the dialog", async () => {
+    await renderAndOpen();
+
+    const send = sendButton();
+    send.focus();
+
+    await act(async () => {
+      send.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+  });
+
   it("disables reporting in the tutorial", async () => {
     await renderControl(tutorialBridge());
 
@@ -187,6 +247,16 @@ describe("BugReportControl", () => {
     ].find((candidate) => candidate.textContent === "Send");
 
     if (!button) throw new Error("Send button not found");
+
+    return button;
+  }
+
+  function cancelButton() {
+    const button = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((candidate) => candidate.textContent === "Cancel");
+
+    if (!button) throw new Error("Cancel button not found");
 
     return button;
   }

@@ -50,6 +50,7 @@ import { surfaceStyles } from "./ui/surface";
 import { useAnchoredPopover } from "./use-anchored-popover";
 import { useDismissOnOutside } from "./use-dismiss-on-outside";
 import { useMenuKeyboard } from "./use-menu-keyboard";
+import { useModalFocus } from "./use-modal-focus";
 import { WelcomePage } from "./welcome-page";
 
 type TagChange = { add: string[]; remove: string[] };
@@ -174,6 +175,14 @@ export function ReviewHome({
   const [creationOpen, setCreationOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string>();
+  const creationOpener = useRef<HTMLElement>(null);
+  const creationDialog = useRef<HTMLElement>(null);
+
+  const trapCreationFocus = useModalFocus({
+    open: creationOpen,
+    dialog: creationDialog,
+    opener: creationOpener,
+  });
 
   const [discovery, setDiscovery] = useState<AgentDiscovery>({
     status: "loading",
@@ -480,7 +489,8 @@ export function ReviewHome({
                 {onCreateSession ? (
                   <Button
                     disabled={!repositories?.length}
-                    onClick={() => {
+                    onClick={(event) => {
+                      creationOpener.current = event.currentTarget;
                       setCreationError(undefined);
                       setCreationOpen(true);
                     }}
@@ -581,10 +591,12 @@ export function ReviewHome({
       {creationOpen && onCreateSession && repositories?.length ? (
         <div {...stylex.props(styles.creationBackdrop)}>
           <section
+            ref={creationDialog}
             {...stylex.props(styles.creationDialog)}
             role="dialog"
             aria-modal="true"
             aria-labelledby="new-session-title"
+            onKeyDown={trapCreationFocus}
           >
             <h2 id="new-session-title" {...stylex.props(styles.dialogTitle)}>
               New session
@@ -1692,6 +1704,8 @@ const styles = stylex.create({
   creationDialog: {
     boxSizing: "border-box",
     width: "min(480px, 100%)",
+    maxHeight: "calc(100dvh - 32px)",
+    overflowY: "auto",
     padding: "24px",
     borderWidth: "1px",
     borderStyle: "solid",
@@ -1729,11 +1743,18 @@ const styles = stylex.create({
     color: tokens.ink,
     font: "inherit",
   },
+  // Pinned to the bottom of the scrolling dialog, so a short window still
+  // reaches Create and Cancel.
   dialogActions: {
+    position: "sticky",
+    bottom: "-24px",
     display: "flex",
     justifyContent: "flex-end",
     gap: "8px",
     marginTop: "24px",
+    marginBottom: "-24px",
+    paddingBlock: "12px 24px",
+    backgroundColor: tokens.surface,
   },
   // Fixed width, so the clear button appearing does not resize the field.
   search: {
