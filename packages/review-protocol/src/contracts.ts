@@ -713,7 +713,7 @@ export interface ReviewApiSourceLocation {
 }
 
 export type ReviewCanvasContent =
-  | { kind: "loading" }
+  | { kind: "loading"; theme?: ReviewTheme }
   | {
       kind: "api";
       tutorial?: ReviewCanvasTutorialBridge;
@@ -739,6 +739,7 @@ export type ReviewCanvasContent =
       kind: "error";
       message: string;
       retry?(): void;
+      theme?: ReviewTheme;
     }
   // The Source tab: an empty state beside the read-only file tree. Static —
   // the tree and the file tabs it opens are native surfaces. `error` is set

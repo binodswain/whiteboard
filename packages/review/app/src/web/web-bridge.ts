@@ -21,6 +21,7 @@ import type { ReviewCanvasSettingsContent } from "@dev.fast/review-protocol";
 import wasmAssetUrl from "@mr_mint/elkjs-libavoid/dist/libavoid.wasm?url";
 import { z } from "zod";
 
+import { readCachedTheme, resolveTheme } from "./theme-cache";
 import { type WebDiffViewSource, createWebDiffView } from "./web-diff-view";
 
 const BROWSER_ONLY_MESSAGE =
@@ -279,16 +280,41 @@ function reviewPageUrl(reviewId: string): string {
 
 /** The bridge's `notify`, also usable standalone (e.g. the Home tutorial cue). */
 export function webNotify(kind: "success" | "error", text: string): void {
+  const light = resolveTheme(readCachedTheme()) === "light";
   const toast = document.createElement("div");
+  const message = document.createElement("span");
 
-  toast.textContent = text;
+  message.textContent = text;
+  toast.append(message);
   toast.setAttribute("role", kind === "error" ? "alert" : "status");
+  // Toasts mount on body, outside the canvas's token scope, so they carry
+  // their own palette for the theme in effect.
   toast.style.cssText =
     "position:fixed;inset-inline-end:16px;inset-block-end:16px;" +
     "max-width:min(360px,80vw);padding:10px 14px;border-radius:8px;" +
-    "background:var(--tray,#12161e);color:var(--ink,#eef0f4);" +
-    "border:1px solid var(--rule,#262c37);z-index:2147483000;" +
-    "font:13px/1.4 inherit;box-shadow:0 8px 24px rgb(0 0 0 / 40%);";
+    "display:flex;gap:12px;align-items:flex-start;" +
+    (light
+      ? "background:#fff;color:#1a1d24;border:1px solid #d9dde4;"
+      : "background:#12161e;color:#eef0f4;border:1px solid #262c37;") +
+    "z-index:2147483000;font:13px/1.4 inherit;" +
+    "box-shadow:0 8px 24px rgb(0 0 0 / 40%);";
+
+  if (kind === "error") {
+    // A failure may need a follow-up, so it stays until dismissed.
+    const dismiss = document.createElement("button");
+
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.style.cssText =
+      "margin-inline-start:auto;background:none;border:0;color:inherit;" +
+      "cursor:pointer;font:inherit;text-decoration:underline;padding:0;";
+    dismiss.addEventListener("click", () => toast.remove());
+    toast.append(dismiss);
+    document.body.append(toast);
+
+    return;
+  }
+
   document.body.append(toast);
   setTimeout(() => toast.remove(), 4000);
 }
