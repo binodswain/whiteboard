@@ -593,6 +593,14 @@ export interface ReviewAdminSettings {
   /** Null when the viewer is not an admin. */
   read(): Promise<ReviewAdminSettingsView | null>;
   update(patch: ReviewAdminSettingsPatch): Promise<ReviewAdminSettingsView>;
+  /** The admin's GitHub repositories, `owner/repo` lowercased. */
+  repositories(): Promise<{ name: string; private: boolean }[]>;
+  /** Tries a provider key (the stored one when `apiKey` is absent). */
+  checkKey(input: {
+    provider: string;
+    model?: string;
+    apiKey?: string;
+  }): Promise<{ ok: boolean; message: string }>;
 }
 
 export interface ReviewCanvasSettingsContent {

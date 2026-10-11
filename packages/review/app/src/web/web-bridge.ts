@@ -87,8 +87,12 @@ function accessTokens(
       if (!response.ok)
         throw new Error(`Could not create an API token (${response.status}).`);
 
+      // A fresh token has never been used; older servers omit the field.
       return accessTokenSchema
-        .extend({ token: z.string() })
+        .extend({
+          token: z.string(),
+          lastUsedAt: z.string().nullable().default(null),
+        })
         .parse(await response.json());
     },
     async revoke(id) {
@@ -162,7 +166,46 @@ function adminSettings(
 
       return adminSettingsViewSchema.parse(await response.json());
     },
+    async repositories() {
+      const response = await request(`${serverUrl}/admin/repositories`);
+
+      if (!response.ok)
+        throw new Error(await failure(response, "list repositories"));
+
+      return z
+        .object({
+          repositories: z.array(
+            z.object({ name: z.string(), private: z.boolean() }),
+          ),
+        })
+        .parse(await response.json()).repositories;
+    },
+    async checkKey(input) {
+      const response = await request(`${serverUrl}/admin/reviewer/check`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+
+      if (!response.ok)
+        throw new Error(await failure(response, "check the key"));
+
+      return z
+        .object({ ok: z.boolean(), message: z.string() })
+        .parse(await response.json());
+    },
   };
+}
+
+/** The server's error message, else a generic one with the status. */
+async function failure(response: Response, doing: string) {
+  const body = z
+    .object({ error: z.string() })
+    .safeParse(await response.json().catch(() => null));
+
+  return body.success
+    ? body.data.error
+    : `Could not ${doing} (${response.status}).`;
 }
 
 export interface WebBridgeOptions {

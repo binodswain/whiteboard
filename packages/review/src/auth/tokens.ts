@@ -38,7 +38,7 @@ export function createApiTokens(meta: MetadataStore) {
         createdAt,
       );
 
-      return { id, name, token, createdAt };
+      return { id, name, token, createdAt, lastUsedAt: null };
     },
 
     /** The owning user's id when the token is live, else null. */

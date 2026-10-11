@@ -143,7 +143,11 @@ export function createReviewServerApp(input: {
     token: string,
   ) => Promise<{ askId: string; reviewId: string } | undefined>;
   /** Settings deployment admins edit from the settings page. */
-  adminSettings?: { admins: readonly string[]; settings: AdminSettings };
+  adminSettings?: {
+    admins: readonly string[];
+    settings: AdminSettings;
+    githubApiUrl?: string;
+  };
 }): Hono<ReviewHonoEnv> {
   const { auth } = input;
 
@@ -729,6 +733,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     adminSettings: adminSettings && {
       admins: deploymentConfig.admins ?? [],
       settings: adminSettings,
+      githubApiUrl: deploymentConfig.github?.apiUrl,
     },
   });
 
@@ -888,7 +893,7 @@ const WEB_CANVAS_CSP = [
  * unauthenticated app whose static routes answer before the core app's
  * `use("*")` token auth is reached. The first page load cannot carry the
  * token — it lives in the URL fragment, which never reaches the server — and
- * the files hold no data, so they are public. `/` and `/r/*` fall back to
+ * the files hold no data, so they are public. `/`, `/r/*`, `/setup` and `/settings` fall back to
  * `index.html` for the SPA's own router; anything else is left for the core
  * app, which keeps answering 401 or its JSON 404.
  */
@@ -948,6 +953,7 @@ export function serveWebCanvas(
   outer.get("/", index);
   outer.get("/r/*", index);
   outer.get("/setup", index);
+  outer.get("/settings", index);
 
   outer.route("/", app);
   outer.notFound(() => serverJson(404, { ok: false, error: "Not found." }));

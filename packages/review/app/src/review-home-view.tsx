@@ -551,20 +551,38 @@ export function ReviewHome({
                 message={
                   repositories?.length
                     ? `Repository ready: ${repositories.map((repository) => repository.name).join(", ")}. Choose New session to start; an agent populates it and the browser is read-only for board authoring.`
-                    : "To get started: 1. Connect your agent. 2. Register a repository by launching your agent inside it. 3. Create a session here. Sessions are populated by agents."
+                    : "To get started:"
                 }
                 action={
                   repositories?.length ? undefined : (
-                    <div>
-                      {setupHref ? (
-                        <a href={setupHref}>Connect your agent</a>
-                      ) : null}
+                    <>
+                      <ol {...stylex.props(styles.setupSteps)}>
+                        <li>
+                          {setupHref ? (
+                            <a href={setupHref}>Connect your agent</a>
+                          ) : (
+                            "Connect your agent"
+                          )}
+                          .
+                        </li>
+                        <li>
+                          Register a repository by launching your agent inside
+                          it.
+                        </li>
+                        <li>
+                          Create a session here. Agents populate sessions.
+                        </li>
+                      </ol>
                       {onRefreshCatalog ? (
-                        <Button type="button" onClick={onRefreshCatalog}>
-                          Check for repositories
-                        </Button>
+                        <div>
+                          {/* The catalog loads once; this re-reads it after
+                            step 2 without reloading the page. */}
+                          <Button type="button" onClick={onRefreshCatalog}>
+                            Check for repositories
+                          </Button>
+                        </div>
                       ) : null}
-                    </div>
+                    </>
                   )
                 }
               />
@@ -1739,6 +1757,11 @@ const styles = stylex.create({
   // Page actions match the 38px search field; dense toolbars stay compact.
   pageAction: {
     height: "38px",
+  },
+  setupSteps: {
+    margin: "0 0 8px",
+    paddingInlineStart: "20px",
+    lineHeight: 1.55,
   },
   creationBackdrop: {
     position: "fixed",
