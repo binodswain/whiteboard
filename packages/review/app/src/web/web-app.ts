@@ -493,7 +493,7 @@ function mountWebCanvas(
   const colorScheme = matchMedia("(prefers-color-scheme: dark)");
 
   const updateSystemTheme = () => {
-    if (webValues?.theme !== "system" || activeBridge) return;
+    if (webValues?.theme !== "system") return;
 
     if (location.pathname === "/settings" && settingsContent) {
       canvas.update({
@@ -504,6 +504,12 @@ function mountWebCanvas(
       });
     } else if (location.pathname === "/") {
       canvas.update(homeContent());
+    } else if (activeReviewContent) {
+      activeReviewContent = {
+        ...activeReviewContent,
+        theme: canvasTheme("system"),
+      };
+      canvas.update(activeReviewContent);
     }
   };
 
@@ -550,7 +556,7 @@ function mountWebCanvas(
     const signal = catalog.signal;
 
     document.title = "Whiteboard Reviews";
-    canvas.update({ kind: "loading" });
+    canvas.update({ kind: "loading", theme: canvasTheme() });
 
     try {
       const [nextReviews, nextRepositories] = await Promise.all([

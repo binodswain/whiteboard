@@ -34,9 +34,9 @@ function ReviewCanvas({
 }) {
   if (content.kind === "loading")
     return (
-      <CanvasShell title="Loading sessions">
+      <CanvasShell title="Loading sessions" theme={content.theme}>
         <p role="status" {...stylex.props(styles.shellText)}>
-          Loading sessions…
+          Loading sessions\u2026
         </p>
       </CanvasShell>
     );
@@ -69,7 +69,7 @@ function ReviewCanvas({
       <EmptyState
         xstyle={styles.sourceEmpty}
         title="Select a file in the source tree"
-        message="⌘B toggles the tree"
+        message="\u2318B toggles the tree"
       />
     );
   }
@@ -98,7 +98,7 @@ function ReviewCanvas({
 
   if (content.kind === "error") {
     return (
-      <CanvasShell title="Session unavailable">
+      <CanvasShell title="Session unavailable" theme={content.theme}>
         <p role="alert" {...stylex.props(styles.shellText)}>
           {content.message}
         </p>
@@ -158,12 +158,14 @@ function Home({
 function CanvasShell({
   title,
   children,
+  theme,
 }: {
   title: string;
   children: React.ReactNode;
+  theme?: "dark" | "light";
 }) {
   return (
-    <main {...stylex.props(styles.shell)}>
+    <main {...stylex.props(styles.shell, theme === "light" && themeStyles.light)}>
       <div {...stylex.props(textStyles.eyebrow, styles.brand)}>
         /dev/fast Whiteboard
       </div>
@@ -175,7 +177,7 @@ function CanvasShell({
 
 // The canvas shares the workbench DOM, so outside a session (which carries its
 // own theme bridge) the workbench root is the theme authority. In a plain
-// browser document — the web bundle — the OS preference is.
+// browser document \u2014 the web bundle \u2014 the OS preference is.
 function workbenchColorTheme(container: HTMLElement): "dark" | "light" {
   const workbench = container.ownerDocument.querySelector(".monaco-workbench");
 
@@ -207,7 +209,7 @@ export function mountReviewCanvas(
   const findHost = createReviewFindHost();
   container.classList.add("review-canvas-root");
   // The canvas stylesheet is compiled inside @scope (.review-canvas-root),
-  // where the scope root itself is only matched by :scope — a theme class on
+  // where the scope root itself is only matched by :scope \u2014 a theme class on
   // the container would never match the light token block. The theme class
   // must live on an in-scope descendant, so all content renders inside this
   // host element.
@@ -342,7 +344,7 @@ const styles = stylex.create({
     margin: "0 auto",
     padding: "32px",
     color: tokens.ink,
-    font: `${fontSize.ui}/1.55 ${tokens.fontDisplay}`,
+    font: `${fontSize.ui}/1.55 ${tokens.fontMono}`,
   },
   shellTitle: {
     margin: "10px 0 6px",
