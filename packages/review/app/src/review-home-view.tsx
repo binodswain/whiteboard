@@ -42,6 +42,7 @@ import {
 import { homeStyles } from "./home-styles";
 import { CanvasUiContext, useCanvasMenu } from "./host/canvas-ui";
 import { CheckIcon } from "./icons";
+import { ProjectIndexSection } from "./project-index";
 import { ArchiveIcon } from "./review-corner-action";
 import { ReviewFilterBar } from "./review-filter-bar";
 import { withClass } from "./stylex-props";
@@ -504,6 +505,16 @@ export function ReviewHome({
                 ) : null}
               </div>
             </div>
+            {onCreateSession && !hostedMode && repositories?.length ? (
+              <ProjectIndexSection
+                repositories={repositories}
+                reviews={reviews}
+                askAgents={askAgents}
+                createSession={onCreateSession}
+                onOpen={onOpen}
+                formatTime={formatRelativeTime}
+              />
+            ) : null}
             {listed.length > 0 ? (
               <ReviewFilterBar
                 filter={filter}
