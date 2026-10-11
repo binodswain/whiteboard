@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { normalizeGitHubRemote } from "@dev.fast/review-share-protocol";
 import {
   type PrepareReviewInput,
   createQueueJobRunner,
@@ -21,6 +22,8 @@ const HEAD_A = "a".repeat(40);
 
 const HEAD_B = "c".repeat(40);
 
+const FORK_POINT = "d".repeat(40);
+
 const dirs: string[] = [];
 
 afterEach(async () =>
@@ -29,7 +32,7 @@ afterEach(async () =>
   ),
 );
 
-type Overrides = { fail?: boolean };
+type Overrides = { fail?: boolean; mergeBaseFails?: boolean };
 
 async function harness(overrides: Overrides = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "whiteboard-pr-reviews-"));
@@ -41,7 +44,12 @@ async function harness(overrides: Overrides = {}) {
   });
 
   const prepared: PrepareReviewInput[] = [];
-  const state = { fail: overrides.fail ?? false };
+
+  const state = {
+    fail: overrides.fail ?? false,
+    mergeBaseFails: overrides.mergeBaseFails ?? false,
+    updateFails: 0,
+  };
 
   const jobs = createQueueJobRunner(
     meta,
@@ -52,7 +60,8 @@ async function harness(overrides: Overrides = {}) {
 
       return {
         reviewId: `review-${input.headSha.slice(0, 7)}`,
-        url: `https://whiteboard.test/r/review-${input.headSha.slice(0, 7)}`,
+        // What a bind-address discovery URL carrying a token looks like.
+        url: `http://127.0.0.1:7421/r/review-${input.headSha.slice(0, 7)}#token=secret`,
       };
     },
     { maxAttempts: 1 },
@@ -76,6 +85,12 @@ async function harness(overrides: Overrides = {}) {
       return id;
     },
     async update({ checkRunId, conclusion, status, detailsUrl, output }) {
+      if (state.updateFails > 0) {
+        state.updateFails--;
+
+        throw new Error("GitHub is unavailable");
+      }
+
       updates.push({
         checkRunId,
         conclusion,
@@ -87,7 +102,17 @@ async function harness(overrides: Overrides = {}) {
   };
 
   const prReviews = createPrReviews({
-    config: { webhookSecret: SECRET, repos: ["octo/repo"], drafts: false },
+    config: {
+      webhookSecret: SECRET,
+      repos: ["octo/repo"],
+      drafts: false,
+      publicUrl: "https://whiteboard.test",
+    },
+    mergeBase: async () => {
+      if (state.mergeBaseFails) throw new Error("GitHub is unavailable");
+
+      return FORK_POINT;
+    },
     installationId: "99",
     webUrl: "https://github.com",
     meta,
@@ -101,8 +126,8 @@ async function harness(overrides: Overrides = {}) {
     );
 
   /** Waits for the background job the delivery started. */
-  const settle = async () => {
-    for (let attempt = 0; attempt < 50; attempt++) {
+  const settle = async (attempts = 50) => {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       await prReviews.reconcile();
 
       if (
@@ -201,8 +226,8 @@ describe("PR review webhook", () => {
     expect(h.created).toEqual([{ id: "check-1", headSha: HEAD_A }]);
     expect(h.prepared).toEqual([
       {
-        repo: "octo/repo",
-        baseSha: BASE,
+        repo: "https://github.com/octo/repo",
+        baseSha: FORK_POINT,
         headSha: HEAD_A,
         pullRequest: {
           url: "https://github.com/octo/repo/pull/7",
@@ -217,6 +242,8 @@ describe("PR review webhook", () => {
       detailsUrl: "https://whiteboard.test/r/review-aaaaaaa",
     });
     expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+    // The checkout source only accepts what it can normalize.
+    expect(normalizeGitHubRemote(h.prepared[0]!.repo)).toBeTruthy();
     await h.close();
   });
 
@@ -325,6 +352,96 @@ describe("PR review webhook", () => {
       detailsUrl: "https://whiteboard.test/r/review-aaaaaaa",
     });
     expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+    await h.close();
+  });
+
+  it("links the check at the public origin, never the discovery address or a token", async () => {
+    const h = await harness();
+    await h.prReviews.handleWebhook(delivery());
+    await h.settle();
+
+    const detailsUrl = h.updates[0]!.detailsUrl!;
+
+    expect(detailsUrl).toBe("https://whiteboard.test/r/review-aaaaaaa");
+    expect(detailsUrl).not.toMatch(/token|127\.0\.0\.1/);
+    await h.close();
+  });
+
+  it("keeps a run open until GitHub accepts its final check update", async () => {
+    const h = await harness();
+    h.state.updateFails = 1;
+    await h.prReviews.handleWebhook(delivery());
+    await h.settle(50);
+
+    expect(h.updates).toHaveLength(1);
+    expect(h.updates[0]).toMatchObject({
+      checkRunId: "check-1",
+      detailsUrl: "https://whiteboard.test/r/review-aaaaaaa",
+    });
+    expect((await h.runs())[0]).toMatchObject({ status: "prepared" });
+    await h.close();
+  });
+
+  it("creates one check and one job when deliveries for a head race", async () => {
+    const h = await harness();
+
+    const responses = await Promise.all([
+      h.prReviews.handleWebhook(delivery({ id: "one" })),
+      h.prReviews.handleWebhook(delivery({ id: "two" })),
+      h.prReviews.handleWebhook(delivery({ id: "three" })),
+    ]);
+
+    await h.settle();
+
+    expect(
+      responses.filter((response) => response.status === 202),
+    ).toHaveLength(1);
+    expect(h.created).toHaveLength(1);
+    expect(h.prepared).toHaveLength(1);
+    await h.close();
+  });
+
+  it("stops reading an unsigned body at the limit even without a Content-Length", async () => {
+    const h = await harness();
+    let pulled = 0;
+    const chunk = new Uint8Array(1024 * 1024);
+
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(chunk);
+      },
+    });
+
+    const response = await h.prReviews.handleWebhook(
+      new Request("http://whiteboard.invalid/integrations/github/webhook", {
+        method: "POST",
+        headers: { "x-github-event": "pull_request" },
+        body,
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    expect(response.status).toBe(413);
+    expect(pulled).toBeLessThan(20);
+    await h.close();
+  });
+
+  it("answers 500 when the merge base cannot be resolved, and a redelivery finishes the run", async () => {
+    const h = await harness({ mergeBaseFails: true });
+    const failed = await h.prReviews.handleWebhook(delivery({ id: "x" }));
+
+    expect(failed.status).toBe(500);
+    expect(h.prepared).toEqual([]);
+
+    h.state.mergeBaseFails = false;
+    const retried = await h.prReviews.handleWebhook(delivery({ id: "x" }));
+    await h.settle();
+
+    expect(retried.status).toBe(202);
+    expect(await h.runs()).toHaveLength(1);
+    expect(h.created).toHaveLength(1);
+    expect(h.prepared).toHaveLength(1);
     await h.close();
   });
 });

@@ -21,6 +21,7 @@ import {
   githubRepoSlug,
 } from "@review/auth/repo-access.js";
 import { createCheckRunsClient } from "@review/integrations/github-checks.js";
+import { createMergeBaseResolver } from "@review/integrations/github-compare.js";
 import { createPrReviews } from "@review/integrations/pr-reviews.js";
 import {
   type JobRunner,
@@ -44,6 +45,7 @@ import {
   isLocalAuthRequest,
 } from "@review/review-api/http.js";
 import type { LocalReviewData } from "@review/review-api/local-data.js";
+import { reviewIdForPullRequestHead } from "@review/review-api/origin.js";
 import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
 import { reviewServerStateDir } from "@review/server-discovery.js";
@@ -428,15 +430,31 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
   let api: ReturnType<typeof createReviewApi>;
 
   const prepareReview = async (
-    input: PrepareReviewInput,
+    job: PrepareReviewInput,
     context: { jobId: string; submitterId?: string },
   ) => {
+    if (job.pullRequest) {
+      const existing = await reviewIdForPullRequestHead(
+        store.metadataStore(),
+        job.pullRequest.url,
+        job.headSha,
+      );
+
+      if (existing)
+        return {
+          reviewId: existing,
+          ...(input.headlessOpenUrl && {
+            url: input.headlessOpenUrl(existing),
+          }),
+        };
+    }
+
     const persistentDir =
       deploymentConfig.repoSource === "github"
-        ? githubCachePath(input.repo)
+        ? githubCachePath(job.repo)
         : undefined;
 
-    if (!persistentDir) return prepareCheckedOut(input, context);
+    if (!persistentDir) return prepareCheckedOut(job, context);
 
     // One clone per repository serves every review of it, and a checkout
     // moves its working tree: two preparations racing on it would pin a
@@ -449,7 +467,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
         timeoutMs: 300_000,
         unownedGraceMs: 1_000,
       },
-      () => prepareCheckedOut(input, context, persistentDir),
+      () => prepareCheckedOut(job, context, persistentDir),
     );
 
     if (!locked.acquired)
@@ -552,6 +570,11 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
           webUrl: deploymentConfig.github?.webUrl ?? "https://github.com",
           meta: store.metadataStore(),
           jobs,
+          mergeBase: createMergeBaseResolver({
+            app: githubApp,
+            apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",
+            fetchImpl: input.fetchImpl,
+          }),
           checks: createCheckRunsClient({
             app: githubApp,
             apiUrl: deploymentConfig.github?.apiUrl ?? "https://api.github.com",

@@ -11,8 +11,12 @@ import type { MetadataStore } from "@review/review-api/storage/metadata-store.js
 import { z } from "zod";
 
 import type { CheckRunsClient } from "./github-checks.js";
+import type { MergeBaseResolver } from "./github-compare.js";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+/** A dispatch that has not finished after this long is presumed dead. */
+const DISPATCH_STALE_MS = 60_000;
 
 const ACTIONS = new Set(["opened", "reopened", "synchronize"]);
 
@@ -36,6 +40,8 @@ const payloadSchema = z.object({
 export type PrReviewRunStatus =
   /** Row exists; the job is not submitted yet. */
   | "queued"
+  /** One delivery owns the run while it creates the check and the job. */
+  | "dispatching"
   /** The prepare_review job is submitted or running. */
   | "preparing"
   /** The review exists and its link is on the check. */
@@ -84,14 +90,37 @@ function signatureMatches(secret: string, body: Buffer, header: string | null) {
   );
 }
 
+/** The raw body, or undefined once it passes the cap. The stream is read
+ * incrementally: this route is public and unsigned until the body is in, so
+ * a missing or false Content-Length must not decide how much gets buffered. */
 async function readBody(request: Request): Promise<Buffer | undefined> {
-  const declared = Number(request.headers.get("content-length") ?? 0);
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES)
+    return undefined;
 
-  if (declared > MAX_BODY_BYTES) return undefined;
+  const reader = request.body?.getReader();
 
-  const body = Buffer.from(await request.arrayBuffer());
+  if (!reader) return Buffer.alloc(0);
 
-  return body.length > MAX_BODY_BYTES ? undefined : body;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    total += value.byteLength;
+
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+
+      return undefined;
+    }
+
+    chunks.push(value);
+  }
+
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -103,18 +132,26 @@ async function readBody(request: Request): Promise<Buffer | undefined> {
  * for an old head can only touch that head's own check.
  */
 export function createPrReviews(input: {
-  config: { webhookSecret: string; repos: string[]; drafts: boolean };
+  config: {
+    webhookSecret: string;
+    repos: string[];
+    drafts: boolean;
+    /** Public origin of this deployment; check links are built from it. */
+    publicUrl: string;
+  };
   /** The App's single configured installation, when it has one. */
   installationId?: string;
   webUrl: string;
   meta: MetadataStore;
   jobs: JobRunner;
   checks: CheckRunsClient;
+  mergeBase: MergeBaseResolver;
   log?: (message: string) => void;
 }): PrReviews {
   const { meta, jobs, checks, config } = input;
   const log = input.log ?? (() => {});
   const webUrl = input.webUrl.replace(/\/$/, "");
+  const publicUrl = config.publicUrl.replace(/\/$/, "");
 
   const now = () => new Date().toISOString();
 
@@ -157,14 +194,28 @@ export function createPrReviews(input: {
     return checkRunId;
   };
 
-  const dispatch = async (run: RunRow) => {
+  /** Only one delivery gets to dispatch a run: the others, racing on the
+   * same head, see it taken. A dispatch that died is retaken once stale. */
+  const claim = async (run: RunRow) => {
+    const claimed = await meta.run(
+      `UPDATE pr_review_runs SET status='dispatching',updated_at=?
+       WHERE id=? AND (status IN ('queued','failed') OR (status='dispatching' AND updated_at<?))`,
+      now(),
+      run.id,
+      new Date(Date.now() - DISPATCH_STALE_MS).toISOString(),
+    );
+
+    return claimed.changes > 0;
+  };
+
+  const dispatch = async (run: RunRow, previous: PrReviewRunStatus) => {
     const output = {
       title: "Queued",
       summary: "Whiteboard is preparing a review of this commit.",
     };
 
     // A retried run reopens the check its failure completed.
-    if (run.status === "failed" && run.check_run_id)
+    if (previous === "failed" && run.check_run_id)
       await checks.update({
         repo: run.repo,
         checkRunId: run.check_run_id,
@@ -173,10 +224,18 @@ export function createPrReviews(input: {
       });
     else await ensureCheck(run, output);
 
+    // The webhook's base is the base branch's tip; the review is of what
+    // the PR changed since it forked.
+    const baseSha = await input.mergeBase({
+      repo: run.repo,
+      baseSha: run.base_sha,
+      headSha: run.head_sha,
+    });
+
     const job = await jobs.submit(
       {
-        repo: run.repo,
-        baseSha: run.base_sha,
+        repo: `${webUrl}/${run.repo}`,
+        baseSha,
         headSha: run.head_sha,
         pullRequest: {
           url: `${webUrl}/${run.repo}/pull/${run.pr_number}`,
@@ -189,6 +248,7 @@ export function createPrReviews(input: {
 
     await setRun(run.id, {
       status: "preparing",
+      base_sha: baseSha,
       job_id: job.id,
       error: null,
     });
@@ -203,7 +263,7 @@ export function createPrReviews(input: {
       );
   };
 
-  const reconcile = async () => {
+  const reconcileOnce = async () => {
     const pending = await meta.all<RunRow>(
       "SELECT * FROM pr_review_runs WHERE status='preparing' AND job_id IS NOT NULL",
     );
@@ -214,55 +274,69 @@ export function createPrReviews(input: {
       if (!job || (job.status !== "succeeded" && job.status !== "failed"))
         continue;
 
+      // The run leaves `preparing` only once GitHub has the final check, so
+      // a rejected update is retried by the next reconcile, not lost.
       try {
         if (job.status === "succeeded") {
-          const claimed = await setRun(
+          const reviewUrl = job.reviewId
+            ? `${publicUrl}/r/${encodeURIComponent(job.reviewId)}`
+            : null;
+
+          if (run.check_run_id)
+            await checks.update({
+              repo: run.repo,
+              checkRunId: run.check_run_id,
+              conclusion: "neutral",
+              output: {
+                title: "Review ready",
+                summary:
+                  "A Whiteboard review was prepared for this commit. An AI-authored summary is not generated yet.",
+              },
+              ...(reviewUrl && { detailsUrl: reviewUrl }),
+            });
+
+          await setRun(
             run.id,
             {
               status: "prepared",
               review_id: job.reviewId ?? null,
-              review_url: job.url ?? null,
+              review_url: reviewUrl,
             },
             "preparing",
           );
-
-          if (!claimed.changes || !run.check_run_id) continue;
-
-          await checks.update({
-            repo: run.repo,
-            checkRunId: run.check_run_id,
-            conclusion: "neutral",
-            output: {
-              title: "Review ready",
-              summary:
-                "A Whiteboard review was prepared for this commit. An AI-authored summary is not generated yet.",
-            },
-            ...(job.url && { detailsUrl: job.url }),
-          });
         } else {
-          const claimed = await setRun(
+          if (run.check_run_id)
+            await checks.update({
+              repo: run.repo,
+              checkRunId: run.check_run_id,
+              conclusion: "failure",
+              output: {
+                title: "Review could not be prepared",
+                summary:
+                  "Whiteboard could not prepare a review of this commit. Redeliver the webhook or push a new commit to try again.",
+              },
+            });
+
+          await setRun(
             run.id,
             { status: "failed", error: job.error ?? "Preparation failed." },
             "preparing",
           );
-
-          if (!claimed.changes || !run.check_run_id) continue;
-
-          await checks.update({
-            repo: run.repo,
-            checkRunId: run.check_run_id,
-            conclusion: "failure",
-            output: {
-              title: "Review could not be prepared",
-              summary:
-                "Whiteboard could not prepare a review of this commit. Redeliver the webhook or push a new commit to try again.",
-            },
-          });
         }
       } catch (cause) {
         log(`pr review ${run.id} check update failed: ${String(cause)}`);
       }
     }
+  };
+
+  // One pass at a time in this process, so a pass triggered while another
+  // is mid-update finds the run already finished instead of repeating it.
+  let reconciling: Promise<void> = Promise.resolve();
+
+  const reconcile = () => {
+    reconciling = reconciling.then(reconcileOnce, reconcileOnce);
+
+    return reconciling;
   };
 
   const handleWebhook = async (request: Request): Promise<Response> => {
@@ -344,8 +418,8 @@ export function createPrReviews(input: {
 
       const fork = pr.head.repo?.full_name.toLowerCase() !== repo;
 
-      const { run, created } = await meta.transaction(async () => {
-        const inserted = await meta.run(
+      const run = await meta.transaction(async () => {
+        await meta.run(
           `INSERT INTO pr_review_runs(id,run_key,installation_id,repo,pr_number,base_sha,head_sha,status,created_at,updated_at)
            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_key) DO NOTHING`,
           randomUUID(),
@@ -369,13 +443,10 @@ export function createPrReviews(input: {
           runKey,
         );
 
-        return {
-          run: (await meta.get<RunRow>(
-            "SELECT * FROM pr_review_runs WHERE run_key=?",
-            runKey,
-          ))!,
-          created: inserted.changes > 0,
-        };
+        return (await meta.get<RunRow>(
+          "SELECT * FROM pr_review_runs WHERE run_key=?",
+          runKey,
+        ))!;
       });
 
       if (run.status === "unsupported") {
@@ -402,19 +473,23 @@ export function createPrReviews(input: {
         return reply(200, { runId: run.id, unsupported: "fork" });
       }
 
-      const complete =
-        run.status !== "queued" &&
-        run.status !== "failed" &&
-        run.check_run_id &&
-        run.job_id;
+      const previous = run.status;
 
-      if (!created && complete) {
+      if (!(await claim(run))) {
         await record("duplicate");
+        void reconcile().catch(() => {});
 
         return reply(200, { runId: run.id, duplicate: true });
       }
 
-      await dispatch(run);
+      try {
+        await dispatch((await getRun(run.id))!, previous);
+      } catch (cause) {
+        // Hand the run back so the redelivery that retries can claim it.
+        await setRun(run.id, { status: previous }).catch(() => {});
+        throw cause;
+      }
+
       await record("queued");
 
       return reply(202, { runId: run.id });

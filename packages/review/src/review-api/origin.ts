@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { MetadataStore } from "./storage/metadata-store.js";
 import type { Snapshot } from "./store.js";
 
 export const pullRequestUrl = z
@@ -40,4 +41,30 @@ export function setPullRequest(
     pullRequestUrl: url,
     pullRequestNumber: Number(url.split("/").at(-1)),
   };
+}
+
+/**
+ * The review already made for this PR at this head, if any. Preparing a PR
+ * head must find its earlier review rather than make another: a retried job
+ * may have created one before its record of that was lost.
+ */
+export async function reviewIdForPullRequestHead(
+  meta: MetadataStore,
+  url: string,
+  headSha: string,
+): Promise<string | undefined> {
+  const dialect = meta.dialect;
+
+  const row = await meta.get<{ id: string }>(
+    `SELECT reviews.id FROM reviews
+     JOIN versions ON versions.review_id=reviews.id AND versions.version=reviews.version
+     WHERE lower(${dialect.jsonText("versions.snapshot", "origin.pullRequestUrl")})=?
+       AND reviews.head_sha=?
+       AND NOT ${dialect.jsonFlag("versions.snapshot", "origin.tutorial")}
+     ORDER BY reviews.rowid DESC LIMIT 1`,
+    pullRequestKey(url),
+    headSha,
+  );
+
+  return row ? String(row.id) : undefined;
 }

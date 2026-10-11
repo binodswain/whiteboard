@@ -22,10 +22,11 @@ All of it is deployment environment, never repository files.
 | `WHITEBOARD_PR_REVIEW_REPOS`              | Comma-separated `owner/repo` allowlist. Required.                                                                      |
 | `WHITEBOARD_PR_REVIEW_DRAFTS`             | `true` to review draft PRs. Skipped by default.                                                                        |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | Required. The same App that checks repositories out. Set `GITHUB_APP_INSTALLATION_ID` to accept one installation only. |
+| `WHITEBOARD_PUBLIC_URL`                   | Required. The origin readers use to reach this deployment; check links are `<origin>/r/<review id>`, with no token.    |
 | `WHITEBOARD_JOBS`                         | Must be `queue`: a delivery is answered before its review is prepared.                                                 |
 
 Give the GitHub App the `pull_requests: read` and `checks: write` permissions,
-subscribe it to **Pull request** events, and point its webhook at
+give it `contents: read` (it resolves each PR's fork point), subscribe it to **Pull request** events, and point its webhook at
 `POST /integrations/github/webhook`. Check updates use an installation token
 narrowed to `checks: write` on the one repository.
 
@@ -36,13 +37,17 @@ narrowed to `checks: write` on the one repository.
 2. Only `opened`, `reopened` and `synchronize` on an allowlisted repository and
    installation are acted on. Anything else is answered `200` and its reason is
    kept in `github_deliveries`.
-3. One run is stored per `(installation, repository, PR, head SHA)`, a check run
-   is created for that head, and a `prepare_review` job is queued. A repeated
-   delivery, or a second event for the same head, finds the existing run and
-   adds nothing.
-4. The job checks out the event's base and head SHAs, creates a review linked to
-   the PR URL, and the check run is completed with `details_url` set to that
-   review. Each head gets its own review, even when an earlier head of the same
+3. One run is stored per `(installation, repository, PR, head SHA)`. One
+   delivery claims the run, creates the check run for that head, resolves the
+   PR's fork point through GitHub's compare API (the event's `base.sha` is the
+   base branch's tip, which would show newer base commits as reverted), and
+   queues a `prepare_review` job. A repeated or concurrent delivery for the
+   same head finds the run taken and adds nothing.
+4. The job checks out the fork point and head, creates a review linked to the
+   PR URL (a retry finds the head's existing review instead of making another),
+   and the check run is completed with `details_url` set to
+   `WHITEBOARD_PUBLIC_URL/r/<review id>`. The run only leaves `preparing` once
+   GitHub accepted that update, so a rejected update is retried. Each head gets its own review, even when an earlier head of the same
    PR already has one.
 5. A failed job completes the check as `failure` with fixed text. Error details
    stay in the run row (`pr_review_runs.error`), never in check output.

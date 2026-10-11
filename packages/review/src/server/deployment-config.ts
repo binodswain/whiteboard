@@ -41,6 +41,7 @@ const envSchema = z.object({
   GITHUB_API_URL: optionalEnv,
   WHITEBOARD_GITHUB_WEBHOOK_SECRET: optionalEnv,
   WHITEBOARD_PR_REVIEW_REPOS: optionalEnv,
+  WHITEBOARD_PUBLIC_URL: optionalEnv,
   WHITEBOARD_PR_REVIEW_DRAFTS: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.enum(["true", "false"]).optional(),
@@ -84,6 +85,8 @@ export interface DeploymentConfig {
     repos: string[];
     /** Whether draft PRs are reviewed; skipped by default. */
     drafts: boolean;
+    /** Where reviewers reach this deployment; check links start here. */
+    publicUrl: string;
   };
 }
 
@@ -294,8 +297,34 @@ export function loadDeploymentConfig(
           "WHITEBOARD_PR_REVIEW_REPOS must list owner/repo slugs separated by commas",
         );
 
+    // The bind address a server discovers for itself is local to its
+    // process, and the token-bearing open URL must never reach GitHub.
+    let publicUrl: string;
+
+    try {
+      const parsedUrl = new URL(
+        requireSetting(values.WHITEBOARD_PUBLIC_URL, "WHITEBOARD_PUBLIC_URL"),
+      );
+
+      if (
+        !/^https?:$/.test(parsedUrl.protocol) ||
+        parsedUrl.search ||
+        parsedUrl.hash
+      )
+        throw new Error("unusable");
+
+      publicUrl = parsedUrl.origin + parsedUrl.pathname.replace(/\/$/, "");
+    } catch (cause) {
+      if (cause instanceof Error && /requires/.test(cause.message)) throw cause;
+
+      throw new Error(
+        "WHITEBOARD_PUBLIC_URL must be an http(s) URL without a query or fragment",
+      );
+    }
+
     config.prReviews = {
       webhookSecret: values.WHITEBOARD_GITHUB_WEBHOOK_SECRET,
+      publicUrl,
       repos,
       drafts: values.WHITEBOARD_PR_REVIEW_DRAFTS === "true",
     };

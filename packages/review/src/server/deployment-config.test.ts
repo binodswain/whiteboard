@@ -145,6 +145,7 @@ describe("loadDeploymentConfig", () => {
         .toString(),
       WHITEBOARD_GITHUB_WEBHOOK_SECRET: "hook-secret",
       WHITEBOARD_PR_REVIEW_REPOS: "Octo/Repo, octo/other",
+      WHITEBOARD_PUBLIC_URL: "https://whiteboard.example.com/",
       WHITEBOARD_JOBS: "queue",
     };
 
@@ -162,6 +163,7 @@ describe("loadDeploymentConfig", () => {
         webhookSecret: "hook-secret",
         repos: ["octo/repo", "octo/other"],
         drafts: false,
+        publicUrl: "https://whiteboard.example.com",
       });
       expect(
         loadDeploymentConfig({ ...base, WHITEBOARD_PR_REVIEW_DRAFTS: "true" })
@@ -174,6 +176,9 @@ describe("loadDeploymentConfig", () => {
       [{ WHITEBOARD_PR_REVIEW_REPOS: undefined }],
       [{ WHITEBOARD_PR_REVIEW_REPOS: "not-a-slug" }],
       [{ WHITEBOARD_JOBS: "inline" }],
+      [{ WHITEBOARD_PUBLIC_URL: undefined }],
+      [{ WHITEBOARD_PUBLIC_URL: "not a url" }],
+      [{ WHITEBOARD_PUBLIC_URL: "https://wb.example.com/#token=abc" }],
     ])("refuses a webhook it could not serve safely", (override) => {
       expect(() => loadDeploymentConfig({ ...base, ...override })).toThrow(
         /.+/,
