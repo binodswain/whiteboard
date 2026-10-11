@@ -559,7 +559,7 @@ const styles = stylex.create({
     alignItems: "center",
     justifyContent: "center",
     padding: "24px",
-    backgroundColor: "rgb(0 0 0 / 0.4)",
+    backgroundColor: tokens.backdrop,
   },
   dialog: {
     display: "flex",
