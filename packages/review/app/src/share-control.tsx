@@ -334,7 +334,7 @@ const styles = stylex.create({
     color: tokens.chromeFgMuted,
   },
   error: {
-    color: "var(--vscode-errorForeground, #f48771)",
+    color: tokens.changeRemoved,
   },
   link: {
     width: "100%",

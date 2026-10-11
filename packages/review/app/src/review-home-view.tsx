@@ -1770,7 +1770,7 @@ const styles = stylex.create({
     display: "grid",
     placeItems: "center",
     padding: "16px",
-    backgroundColor: "rgba(0, 0, 0, 0.55)",
+    backgroundColor: tokens.backdrop,
   },
   creationDialog: {
     boxSizing: "border-box",
