@@ -355,9 +355,6 @@ describe("the web canvas entry", () => {
     });
     expect(location.pathname).toBe("/settings");
     expect(container!.textContent).toContain("Structural Diffs");
-    expect(container!.textContent).toContain(
-      "Settings apply to Whiteboard on this machine.",
-    );
     expect(
       container!.querySelector<HTMLInputElement>(
         'input[aria-label="Scratchpad"]',
@@ -520,11 +517,7 @@ describe("the web canvas entry", () => {
     });
     expect(location.pathname).toBe("/settings");
     expect(
-      await settled(() =>
-        container!.textContent?.includes(
-          "Settings apply to Whiteboard on this machine.",
-        ),
-      ),
+      await settled(() => container!.textContent?.includes("Structural Diffs")),
     ).toBe(true);
 
     await act(async () => {
@@ -661,7 +654,7 @@ describe("the web canvas entry", () => {
 
     expect(
       await settled(() =>
-        container!.textContent?.includes("Settings unavailable."),
+        container!.textContent?.includes("Could not read settings (503)."),
       ),
     ).toBe(true);
 
