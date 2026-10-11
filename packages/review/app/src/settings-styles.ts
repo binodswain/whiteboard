@@ -3,6 +3,9 @@ import * as stylex from "@stylexjs/stylex";
 
 import { tokens } from "./tokens.stylex";
 
+// Same container query the Home shell narrows at.
+const narrow = "@container review-canvas (max-width: 660px)";
+
 // Settings page: flat rows, no cards. One narrow column, a small-caps label per
 // section, and a fixed right lane so every control lines up. Shared with the
 // diffr section, which lays its rows out the same way.
@@ -29,9 +32,12 @@ export const settingsStyles = stylex.create({
   row: {
     display: "grid",
     // Wide segmented controls grow the lane instead of overlapping the text.
-    gridTemplateColumns: "minmax(0, 1fr) minmax(200px, max-content)",
+    gridTemplateColumns: {
+      default: "minmax(0, 1fr) minmax(200px, max-content)",
+      [narrow]: "minmax(0, 1fr)",
+    },
     alignItems: "center",
-    gap: "24px",
+    gap: { default: "24px", [narrow]: "10px" },
     padding: "14px 0",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
@@ -54,21 +60,25 @@ export const settingsStyles = stylex.create({
   rowControl: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "flex-end",
+    justifyContent: { default: "flex-end", [narrow]: "flex-start" },
   },
   toggle: {
     display: "flex",
     alignItems: "center",
     gap: "8px",
+    // A deliberate target: the box plus padding is at least 36px square.
+    minWidth: "36px",
+    minHeight: "36px",
+    justifyContent: "center",
     color: tokens.reviewHomeMeta,
     fontSize: fontSize.body,
     cursor: "pointer",
   },
-  // A box is the state of a thing (viewed, enabled); it is the same 14px
+  // A box is the state of a thing (viewed, enabled); it is the same 18px
   // hairline box everywhere, filled with the accent when checked.
   checkbox: {
-    width: "14px",
-    height: "14px",
+    width: "18px",
+    height: "18px",
     margin: 0,
     borderWidth: "1px",
     borderStyle: "solid",
@@ -77,7 +87,7 @@ export const settingsStyles = stylex.create({
     backgroundColor: { default: tokens.surface, ":checked": tokens.accent },
     backgroundImage: { default: "none", ":checked": tokens.checkMark },
     backgroundPosition: "center",
-    backgroundSize: "10px 10px",
+    backgroundSize: "12px 12px",
     backgroundRepeat: "no-repeat",
     appearance: "none",
     cursor: "pointer",
