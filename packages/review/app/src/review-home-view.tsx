@@ -49,6 +49,7 @@ import { menuStyles } from "./ui/menu";
 import { surfaceStyles } from "./ui/surface";
 import { useAnchoredPopover } from "./use-anchored-popover";
 import { useDismissOnOutside } from "./use-dismiss-on-outside";
+import { useMenuKeyboard } from "./use-menu-keyboard";
 import { WelcomePage } from "./welcome-page";
 
 type TagChange = { add: string[]; remove: string[] };
@@ -1192,6 +1193,13 @@ function TableMenu<T extends string>({
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useAnchoredPopover(open, anchor);
 
+  const { onKeyDown, restoreFocus } = useMenuKeyboard({
+    open,
+    container: anchor,
+    menu,
+    close: () => setOpen(false),
+  });
+
   useDismissOnOutside(anchor, open, setOpen);
 
   return (
@@ -1233,6 +1241,8 @@ function TableMenu<T extends string>({
           popover="manual"
           role="menu"
           aria-label={ariaLabel}
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
           {...stylex.props(
             surfaceStyles.popover,
             menuStyles.popover,
@@ -1244,6 +1254,7 @@ function TableMenu<T extends string>({
               key={option.value}
               type="button"
               role="menuitemradio"
+              tabIndex={-1}
               aria-checked={option.value === value}
               data-value={option.value}
               {...stylex.props(
@@ -1252,6 +1263,7 @@ function TableMenu<T extends string>({
               )}
               onClick={() => {
                 setOpen(false);
+                restoreFocus();
                 onChange(option.value);
               }}
             >

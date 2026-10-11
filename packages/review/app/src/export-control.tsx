@@ -3,6 +3,7 @@ import { menuStyles } from "@canvas/ui/menu";
 import { surfaceStyles } from "@canvas/ui/surface";
 import { useAnchoredPopover } from "@canvas/use-anchored-popover";
 import { useDismissOnOutside } from "@canvas/use-dismiss-on-outside";
+import { useMenuKeyboard } from "@canvas/use-menu-keyboard";
 import * as stylex from "@stylexjs/stylex";
 import { type ReactElement, useContext, useRef, useState } from "react";
 
@@ -41,6 +42,13 @@ export function ExportControl(): ReactElement | null {
   const { showToast, toast } = useToast();
   const anchor = useRef<HTMLDivElement>(null);
   const popover = useAnchoredPopover(open, anchor);
+
+  const { onKeyDown, restoreFocus } = useMenuKeyboard({
+    open,
+    container: anchor,
+    menu: popover,
+    close: () => setOpen(false),
+  });
 
   useDismissOnOutside(anchor, open, setOpen);
 
@@ -133,6 +141,8 @@ export function ExportControl(): ReactElement | null {
           popover="manual"
           role="menu"
           aria-label="Export review"
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
           {...stylex.props(
             surfaceStyles.popover,
             menuStyles.popover,
@@ -144,9 +154,11 @@ export function ExportControl(): ReactElement | null {
               key={id}
               type="button"
               role="menuitem"
+              tabIndex={-1}
               {...stylex.props(menuStyles.item)}
               onClick={() => {
                 setOpen(false);
+                restoreFocus();
                 select(id);
               }}
             >

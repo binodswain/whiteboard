@@ -7,6 +7,7 @@ import { menuStyles } from "@canvas/ui/menu";
 import { surfaceStyles } from "@canvas/ui/surface";
 import { useAnchoredPopover } from "@canvas/use-anchored-popover";
 import { useDismissOnOutside } from "@canvas/use-dismiss-on-outside";
+import { useMenuKeyboard } from "@canvas/use-menu-keyboard";
 import * as stylex from "@stylexjs/stylex";
 import { type ReactElement, useRef, useState } from "react";
 
@@ -220,6 +221,17 @@ export function DiagramExportMenu({
   const { showToast, toast } = useToast();
   const menu = useAnchoredPopover(open, container);
 
+  const { onKeyDown, restoreFocus } = useMenuKeyboard({
+    open,
+    container,
+    menu,
+    close: () => {
+      setOpen(false);
+      setRasterAction(null);
+    },
+    view: rasterAction ?? "items",
+  });
+
   const report = (task: Promise<string>) =>
     task.then(
       (text) => showToast({ kind: "success", text }),
@@ -265,6 +277,8 @@ export function DiagramExportMenu({
           popover="manual"
           role="menu"
           aria-label="Export diagram"
+          tabIndex={-1}
+          onKeyDown={onKeyDown}
           {...stylex.props(
             surfaceStyles.popover,
             menuStyles.popover,
@@ -324,6 +338,7 @@ export function DiagramExportMenu({
 
                   setOpen(false);
                   setRasterAction(null);
+                  restoreFocus();
                   void report(
                     exportPng(source, figure, rasterAction, { theme, border }),
                   );
@@ -346,11 +361,13 @@ export function DiagramExportMenu({
                   key={item.id}
                   type="button"
                   role="menuitem"
+                  tabIndex={-1}
                   {...stylex.props(menuStyles.item)}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
                     setOpen(false);
+                    restoreFocus();
                     void report(exportDiagram(source, item.id));
                   }}
                 >
@@ -360,6 +377,7 @@ export function DiagramExportMenu({
               <button
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
                 {...stylex.props(menuStyles.item)}
                 onClick={() => setRasterAction("copy")}
               >
@@ -368,6 +386,7 @@ export function DiagramExportMenu({
               <button
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
                 {...stylex.props(menuStyles.item)}
                 onClick={() => setRasterAction("download")}
               >
