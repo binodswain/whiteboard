@@ -1040,6 +1040,9 @@ function ReviewTable({
   );
 }
 
+const TAG_SYNTAX =
+  "1 to 40 letters, digits, dots, slashes, dashes or underscores, starting with a letter or digit.";
+
 function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
   const { onEditTags } = useContext(AttentionActionsContext);
   const [tags, setTags] = useState(review.tags ?? []);
@@ -1051,28 +1054,43 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
 
   useEffect(() => setTags(review.tags ?? []), [review.tags]);
 
+  // Also refocuses after a failed save, when the busy input lost focus.
   useEffect(() => {
-    if (isEditing && inputRef.current) {
+    if (isEditing && !busy && inputRef.current) {
       inputRef.current.focus();
     }
-  }, [isEditing]);
+  }, [isEditing, busy]);
 
   if (!onEditTags && tags.length === 0) return null;
 
   const change = async (add: string[], remove: string[]) => {
-    if (!onEditTags || busy) return;
+    if (!onEditTags || busy) return false;
     setBusy(true);
     setError(undefined);
 
     try {
       setTags(await onEditTags(review, { add, remove }));
+
+      return true;
     } catch (failure) {
       setError(
         failure instanceof Error ? failure.message : "Could not change tags.",
       );
+
+      return false;
     } finally {
       setBusy(false);
     }
+  };
+
+  // The draft survives blur and a failed save; it goes only on success or an
+  // explicit Cancel or Escape.
+  const save = async () => {
+    const tag = draft.trim().toLowerCase();
+
+    if (!tag) return;
+
+    if (await change([tag], [])) closeEdit();
   };
 
   const closeEdit = () => {
@@ -1105,30 +1123,45 @@ function ReviewTagEditor({ review }: { review: ReviewApiSummary }) {
       ))}
       {onEditTags ? (
         isEditing ? (
-          <input
-            ref={inputRef}
-            {...stylex.props(tagStyles.input)}
-            value={draft}
-            disabled={busy}
-            placeholder="Add tag"
-            aria-label={`Add tag to ${reviewTitle(review)}`}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={closeEdit}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                const tag = draft.trim().toLowerCase();
-
-                if (!tag) return;
-                setDraft("");
-                void change([tag], []);
-                closeEdit();
-              } else if (event.key === "Escape") {
-                event.preventDefault();
-                closeEdit();
-              }
-            }}
-          />
+          <>
+            <input
+              ref={inputRef}
+              {...stylex.props(tagStyles.input)}
+              value={draft}
+              disabled={busy}
+              placeholder="Add tag"
+              aria-label={`Add tag to ${reviewTitle(review)}`}
+              onChange={(event) => setDraft(event.target.value)}
+              title={TAG_SYNTAX}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void save();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeEdit();
+                }
+              }}
+            />
+            <button
+              type="button"
+              {...stylex.props(tagStyles.addButton)}
+              disabled={busy || !draft.trim()}
+              aria-label={`Save tag on ${reviewTitle(review)}`}
+              onClick={() => void save()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              {...stylex.props(tagStyles.addButton)}
+              disabled={busy}
+              aria-label={`Cancel adding a tag to ${reviewTitle(review)}`}
+              onClick={closeEdit}
+            >
+              Cancel
+            </button>
+          </>
         ) : (
           <button
             type="button"
@@ -2159,9 +2192,11 @@ const styles = stylex.create({
       ":focus-within": tokens.tray,
     },
   },
+  // A minimum, not a cap: the vertical padding keeps a title, repository and
+  // wrapped tags from touching the row's rules.
   td: {
     height: "60px",
-    padding: "0 8px",
+    padding: "10px 8px",
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: tokens.rule,
