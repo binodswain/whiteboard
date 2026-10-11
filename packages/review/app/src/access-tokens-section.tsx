@@ -52,7 +52,7 @@ const tokenStyles = stylex.create({
 });
 
 /**
- * Personal API tokens for CLI and MCP access on a hosted deployment. A token
+ * Personal API keys for CLI and MCP access on a hosted deployment. A token
  * is shown once, when it is created; afterwards the row is name and dates.
  */
 export function AccessTokensSection({
@@ -112,12 +112,13 @@ export function AccessTokensSection({
   return (
     <div>
       <p {...stylex.props(styles.rowDescription)}>
-        Personal API tokens authenticate the whiteboard CLI and MCP clients,
-        sent as Authorization: Bearer. A token is readable only when created.
+        API keys authenticate the whiteboard CLI and MCP clients (Claude Code,
+        Codex), sent in an Authorization: Bearer header. A key is readable only
+        when created.
       </p>
 
       {items === undefined ? null : items.length === 0 ? (
-        <p {...stylex.props(styles.unavailable)}>No tokens yet.</p>
+        <p {...stylex.props(styles.unavailable)}>No API keys yet.</p>
       ) : (
         <ul {...stylex.props(tokenStyles.list)}>
           {items.map((item) => (
@@ -145,7 +146,7 @@ export function AccessTokensSection({
 
       {created ? (
         <div {...stylex.props(tokenStyles.created)} role="status">
-          {`New token “${created.name}” — copy it now; it is not shown again.`}
+          {`New API key “${created.name}” — copy it now; it is not shown again.`}
           {"\n"}
           {created.token}
         </div>
@@ -161,14 +162,14 @@ export function AccessTokensSection({
       >
         <TextField
           xstyle={styles.input}
-          aria-label="Token name"
-          placeholder="Token name (e.g. my laptop)"
+          aria-label="API key name"
+          placeholder="Key name (e.g. my laptop)"
           value={name}
           required
           onChange={(event) => setName(event.target.value)}
         />
         <Button type="submit" disabled={busy !== null || !name.trim()}>
-          Create token
+          Create API key
         </Button>
       </form>
 

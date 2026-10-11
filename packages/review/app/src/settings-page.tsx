@@ -239,7 +239,7 @@ export function SettingsPage({
             ) : null}
 
             {settings.accessTokens ? (
-              <Section label="API tokens">
+              <Section label="API keys">
                 <AccessTokensSection tokens={settings.accessTokens} />
               </Section>
             ) : null}
