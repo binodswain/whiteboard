@@ -19,6 +19,7 @@ import {
   loadWebSettings,
   webNotify,
 } from "./web-bridge";
+import { renderTokenPrompt } from "./web-token-prompt";
 
 const TOKEN_KEY = "review-token";
 
@@ -71,69 +72,10 @@ function captureFragmentToken(): string {
   return value;
 }
 
-function renderTokenPrompt(
-  container: HTMLElement,
-  signIn?: { href: string; label: string },
-): void {
-  const page = document.createElement("main");
-  const heading = document.createElement("h1");
-  const text = document.createElement("p");
-  const form = document.createElement("form");
-  const input = document.createElement("input");
-  const button = document.createElement("button");
-
-  heading.textContent = "Whiteboard Reviews";
-  text.textContent = signIn
-    ? "Sign in to see this team's reviews. A personal API token from Settings also works."
-    : "This canvas needs the token from your review link. Paste it below to continue.";
-  input.type = "password";
-  input.placeholder = signIn ? "Personal API token" : "Review token";
-  input.autocomplete = "off";
-  input.required = true;
-  button.type = "submit";
-  button.textContent = "Continue";
-  page.style.cssText =
-    "min-height:100%;display:grid;place-content:center;gap:12px;" +
-    "padding:24px;font:14px/1.5 system-ui,sans-serif;" +
-    "background:#0c0f15;color:#eef0f4;";
-  form.style.cssText = "display:flex;gap:8px;";
-  input.style.cssText =
-    "padding:8px 12px;border-radius:6px;border:1px solid #39404d;" +
-    "background:#1a1f29;color:inherit;font:inherit;min-width:240px;";
-  button.style.cssText =
-    "padding:8px 16px;border-radius:6px;border:0;background:#5b7cff;" +
-    "color:#fff;font:inherit;cursor:pointer;";
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-
-    const token = input.value.trim();
-
-    if (!token) return;
-
-    sessionStorage.setItem(TOKEN_KEY, token);
-    location.reload();
-  });
-
-  form.append(input, button);
-
-  if (signIn) {
-    const link = document.createElement("a");
-
-    link.href = `${signIn.href}?next=${encodeURIComponent(
-      `${location.pathname}${location.search}`,
-    )}`;
-    link.textContent = signIn.label;
-    link.style.cssText =
-      "display:inline-block;padding:8px 16px;border-radius:6px;" +
-      "background:#eef0f4;color:#0c0f15;font:inherit;font-weight:600;" +
-      "text-decoration:none;text-align:center;";
-    page.append(heading, text, link, form);
-  } else {
-    page.append(heading, text, form);
-  }
-
-  container.append(page);
+/** Keeps the pasted token for this tab and reloads into the canvas with it. */
+function submitToken(token: string): void {
+  sessionStorage.setItem(TOKEN_KEY, token);
+  location.reload();
 }
 
 /**
@@ -210,7 +152,7 @@ export function startWebCanvas(
   let mounted: WebAppHandle | undefined;
 
   const showPrompt = () => {
-    if (!disposed) renderTokenPrompt(frame.page);
+    if (!disposed) renderTokenPrompt(frame.page, { onSubmit: submitToken });
   };
 
   const showSignIn = (signIn?: string) => {
@@ -218,12 +160,12 @@ export function startWebCanvas(
 
     // GitHub OAuth links straight at the provider; a proxy-only deployment
     // gets its instructions from the server's own sign-in page.
-    renderTokenPrompt(
-      frame.page,
-      signIn
+    renderTokenPrompt(frame.page, {
+      signIn: signIn
         ? { href: signIn, label: "Sign in with GitHub" }
         : { href: "/auth/sign-in", label: "Sign in" },
-    );
+      onSubmit: submitToken,
+    });
   };
 
   const probe = async () => {
