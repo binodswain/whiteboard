@@ -1,4 +1,4 @@
-import { type ReactElement, useRef, useState } from "react";
+import { type ReactElement, useId, useRef, useState } from "react";
 
 import { fingerprintText, useCodeCardExpanded } from "./code-card-state";
 import {
@@ -43,6 +43,7 @@ export function AuthoredCodeSurface({
   const [expanded, setExpanded] = useCodeCardExpanded(stateKey, false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const openFullSnippetRef = useRef<HTMLButtonElement | null>(null);
+  const regionId = useId();
 
   const showAll = expanded || !truncatable;
   const shownLines = showAll ? lines : lines.slice(0, STANDALONE_PREVIEW_LINES);
@@ -60,17 +61,20 @@ export function AuthoredCodeSurface({
         language={language}
         rangeLabel={rangeLabel}
         segments={[{ startLine: firstLine, code: shownText }]}
+        omittedAfter={totalLines - shownLines.length}
         copyText={shownText}
         ariaLabel={
           language ? `${language} snippet, ${rangeLabel}` : "Code snippet"
         }
         scrollKey={stateKey}
+        bodyId={regionId}
         footer={
           <>
             {truncatable && (
               <Button
                 variant="ghost"
                 aria-expanded={expanded}
+                aria-controls={regionId}
                 onClick={() => setExpanded(!expanded)}
               >
                 {expanded

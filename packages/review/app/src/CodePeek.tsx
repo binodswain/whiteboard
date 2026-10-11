@@ -1,4 +1,3 @@
-import { fontSize } from "@canvas/scale.stylex";
 import type {
   ReviewDiffSide,
   ReviewInlineEditorHeightMode,
@@ -212,6 +211,7 @@ export function CodePeekCard({
   onNativeFocus,
   lenses: lensesOverride,
   reportOutcome = false,
+  stateScope,
 }: {
   source: DiffSelection;
   active?: boolean;
@@ -221,6 +221,9 @@ export function CodePeekCard({
   /** Report resolution telemetry. Only the panel the user opened sets this,
    * so an authored document with many inline peeks sends one event, not N. */
   reportOutcome?: boolean;
+  /** Keeps expansion and scroll state to one step or code item, so two
+   * steps citing the same lines never share it. */
+  stateScope?: string;
 }) {
   const session = useReviewSession();
   const contextLenses = useReviewLenses();
@@ -259,6 +262,26 @@ export function CodePeekCard({
     );
   }, [key, outcome, reportOutcome, session]);
 
+  const scope = stateScope ? `${stateScope}:` : "";
+
+  // A selection that never resolved has no lines to excerpt: say which
+  // source was asked for instead of guessing one.
+  // The same status region as the native loading state below, so the
+  // failure is announced when it replaces "Loading…".
+  if (!ranges.length && outcome !== "pending")
+    return (
+      <section
+        {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
+        role="status"
+      >
+        <SourceUnavailableCard
+          file={source.file}
+          {...requestedSource(source)}
+          reason="The requested range could not be resolved at this revision."
+        />
+      </section>
+    );
+
   if (session.config.surface === "web")
     return (
       <WebCodePeek
@@ -266,6 +289,7 @@ export function CodePeekCard({
         pins={source.pins}
         ranges={ranges}
         outcome={outcome}
+        stateScope={stateScope}
       />
     );
 
@@ -275,31 +299,7 @@ export function CodePeekCard({
         {...withClass("code-peek", styles.peek, drawStyles.blockChild)}
         role="status"
       >
-        {outcome === "failed" ? (
-          <>
-            Diff selection unavailable
-            <dl {...stylex.props(styles.nativeUnavailableMeta)}>
-              <div>
-                <dt>File</dt>
-                <dd>{anchor.file}</dd>
-              </div>
-              <div>
-                <dt>Side</dt>
-                <dd>{anchor.side}</dd>
-              </div>
-              <div>
-                <dt>Requested range</dt>
-                <dd>
-                  {formatLineRangeLabel([
-                    { startLine: anchor.fromLine, endLine: anchor.toLine },
-                  ])}
-                </dd>
-              </div>
-            </dl>
-          </>
-        ) : (
-          "Loading diff selection…"
-        )}
+        Loading diff selection…
       </section>
     );
 
@@ -309,7 +309,7 @@ export function CodePeekCard({
       data-code-rendering="inline-editor"
     >
       <NativeCodePeekSection
-        contextStateKey={`card:${key}`}
+        contextStateKey={`${scope}card:${key}`}
         defaultSide={anchor.side}
         baseRanges={ranges}
         label={`${source.file}, full snippet`}
@@ -470,6 +470,7 @@ function WebCodePeek({
   pins,
   ranges,
   outcome,
+  stateScope,
 }: {
   file: string;
   pins?: DiffSelection["pins"];
@@ -479,6 +480,7 @@ function WebCodePeek({
     endLine: number;
   }[];
   outcome: PeekResolutionOutcome;
+  stateScope?: string;
 }) {
   const session = useReviewSession();
 
@@ -573,6 +575,7 @@ function WebCodePeek({
           pins={pins}
           ranges={ranges.filter((range) => range.side === side)}
           state={filesBySide[side]}
+          stateScope={stateScope}
         />
       ))}
     </section>
@@ -589,17 +592,21 @@ function WebSourceExcerpt({
   pins,
   ranges,
   state,
+  stateScope,
 }: {
   file: string;
   side: ReviewDiffSide;
   pins?: DiffSelection["pins"];
   ranges: readonly { startLine: number; endLine: number }[];
   state: WebSourceFileState | undefined;
+  stateScope?: string;
 }) {
   const relevantRanges = useMemo(() => mergeLineRanges(ranges), [ranges]);
   const rangeLabel = formatLineRangeLabel(relevantRanges);
+  const regionId = useId();
+  const revision = sourceRevision(side, pins);
 
-  const stateKey = `${file}:${side}:${pins ? sourcePinsKey(pins) : ""}:${relevantRanges
+  const stateKey = `${stateScope ? `${stateScope}:` : ""}${file}:${side}:${pins ? sourcePinsKey(pins) : ""}:${relevantRanges
     .map((range) => `${range.startLine}-${range.endLine}`)
     .join(",")}`;
 
@@ -615,7 +622,7 @@ function WebSourceExcerpt({
   const language = languageFromFilename(file);
 
   const identity = `${side === "base" ? "Base" : "Head"} · ${
-    pins ? `${pins.repositoryId}@${pins.head}` : "review revision"
+    revision ?? "review revision"
   }`;
 
   if (!state)
@@ -630,7 +637,7 @@ function WebSourceExcerpt({
       <SourceUnavailableCard
         file={file}
         side={side}
-        revision={pins ? `${pins.repositoryId}@${pins.head}` : undefined}
+        revision={revision}
         rangeLabel={rangeLabel}
         reason={state.error}
       />
@@ -649,23 +656,30 @@ function WebSourceExcerpt({
       })
     : relevantRanges;
 
+  const slice = (range: LineRange) =>
+    sliceSourceRange(text, {
+      file,
+      fromLine: range.startLine,
+      toLine: range.endLine,
+    });
+
+  let selectedChunks: string[];
   let segments: { startLine: number; code: string }[];
 
   try {
+    // The authored selection is validated as-is, before any context widens
+    // it: clamped context must never make an out-of-bounds range look valid.
+    selectedChunks = relevantRanges.map(slice);
     segments = displayRanges.map((range) => ({
       startLine: range.startLine,
-      code: sliceSourceRange(text, {
-        file,
-        fromLine: range.startLine,
-        toLine: range.endLine,
-      }),
+      code: slice(range),
     }));
   } catch (caught) {
     return (
       <SourceUnavailableCard
         file={file}
         side={side}
-        revision={pins ? `${pins.repositoryId}@${pins.head}` : undefined}
+        revision={revision}
         rangeLabel={rangeLabel}
         reason={
           caught instanceof SourceRangeError
@@ -680,15 +694,7 @@ function WebSourceExcerpt({
 
   const copyText = segments.map((segment) => segment.code).join("\n");
 
-  const fullSnippetText = relevantRanges
-    .map((range) =>
-      sliceSourceRange(text, {
-        file,
-        fromLine: range.startLine,
-        toLine: range.endLine,
-      }),
-    )
-    .join("\n");
+  const fullSnippetText = selectedChunks.join("\n");
 
   return (
     <>
@@ -702,11 +708,13 @@ function WebSourceExcerpt({
         copyText={copyText}
         ariaLabel={`${file}, ${side} lines ${rangeLabel}`}
         scrollKey={stateKey}
+        bodyId={regionId}
         footer={
           <>
             <Button
               variant="ghost"
               aria-expanded={showContext}
+              aria-controls={regionId}
               onClick={() => setShowContext(!showContext)}
             >
               {showContext
@@ -739,15 +747,11 @@ function WebSourceExcerpt({
         copyLabel="Copy full snippet"
         copyText={fullSnippetText}
       >
-        {relevantRanges.map((range) => (
+        {relevantRanges.map((range, index) => (
           <CodeFullViewerLines
             key={`${range.startLine}-${range.endLine}`}
             startLine={range.startLine}
-            code={sliceSourceRange(text, {
-              file,
-              fromLine: range.startLine,
-              toLine: range.endLine,
-            })}
+            code={selectedChunks[index]!}
             language={language}
           />
         ))}
@@ -839,6 +843,50 @@ function FileSnippetCard({
       </NativeCodePeekSection>
     </section>
   );
+}
+
+/** What an unresolved selection asked for, from both of its endpoints: a
+ * cross-side selection names each side, revision and line it spans. */
+function requestedSource(source: DiffSelection) {
+  const { start, end, pins } = source;
+
+  if (start.side === end.side)
+    return {
+      side: start.side,
+      revision: sourceRevision(start.side, pins),
+      rangeLabel: formatLineRangeLabel([
+        {
+          startLine: Math.min(start.line, end.line),
+          endLine: Math.max(start.line, end.line),
+        },
+      ]),
+    };
+
+  const startRevision = sourceRevision(start.side, pins);
+  const endRevision = sourceRevision(end.side, pins);
+
+  return {
+    side: `${start.side} → ${end.side}`,
+    revision:
+      startRevision && endRevision
+        ? `${startRevision} → ${endRevision}`
+        : undefined,
+    rangeLabel: `${start.side} ${start.line} → ${end.side} ${end.line}`,
+  };
+}
+
+/** The effective revision one side of a pinned source reads from: base for
+ * the base side (head alone means head against itself), head otherwise.
+ * Unpinned sources read the review's own snapshot. */
+function sourceRevision(
+  side: ReviewDiffSide,
+  pins: DiffSelection["pins"],
+): string | undefined {
+  if (!pins) return undefined;
+
+  return `${pins.repositoryId}@${
+    side === "base" ? (pins.base ?? pins.head) : pins.head
+  }`;
 }
 
 export function codePeekSubject(source: FileLineRange): CodePeekSubject {
@@ -979,14 +1027,6 @@ const styles = stylex.create({
   contextToggle: {
     display: "flex",
     marginTop: "4px",
-  },
-  nativeUnavailableMeta: {
-    display: "grid",
-    gap: "2px",
-    marginTop: "6px",
-    fontSize: fontSize.small,
-    lineHeight: "16px",
-    color: tokens.inkFaint,
   },
   webLoading: {
     padding: "8px 0",

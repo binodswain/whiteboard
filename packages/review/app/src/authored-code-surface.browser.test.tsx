@@ -34,6 +34,15 @@ function gutterNumbers(container: HTMLElement): (string | null)[] {
 
 const anchor = (id = "snippet"): PeekAnchor => ({ id, title: "Snippet" });
 
+const codeLines = (scope: ParentNode) => [
+  ...scope.querySelectorAll("pre > div:not([data-code-omission])"),
+];
+
+const button = (scope: ParentNode, text: string) =>
+  [...scope.querySelectorAll("button")].find((candidate) =>
+    candidate.textContent?.startsWith(text),
+  )!;
+
 describe("AuthoredCodeSurface", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -43,6 +52,7 @@ describe("AuthoredCodeSurface", () => {
     act(() => root?.unmount());
     root = undefined;
     document.body.replaceChildren();
+    vi.restoreAllMocks();
   });
 
   it("shows a short snippet completely, with no expand control", async () => {
@@ -68,8 +78,11 @@ describe("AuthoredCodeSurface", () => {
 
     const container = await renderCard(anchor(), code);
 
-    expect(container.querySelectorAll("pre > div")).toHaveLength(12);
+    expect(codeLines(container)).toHaveLength(12);
     expect(container.textContent).toContain("12 of 100 lines");
+    expect(
+      container.querySelector("[data-code-omission]")?.textContent,
+    ).toContain("88 more lines hidden");
 
     const expandButton = [...container.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Expand snippet"),
@@ -79,7 +92,8 @@ describe("AuthoredCodeSurface", () => {
 
     await act(async () => expandButton.click());
 
-    expect(container.querySelectorAll("pre > div")).toHaveLength(100);
+    expect(codeLines(container)).toHaveLength(100);
+    expect(container.querySelector("[data-code-omission]")).toBeNull();
     expect(container.textContent).toContain("100 lines");
     expect(
       [...container.querySelectorAll("button")].some(
@@ -114,7 +128,7 @@ describe("AuthoredCodeSurface", () => {
     // ...but a different step's identical-looking code starts collapsed.
     const third = await renderCard(anchor("step-b"), code);
 
-    expect(third.querySelectorAll("pre > div")).toHaveLength(12);
+    expect(codeLines(third)).toHaveLength(12);
   });
 
   it("copies only the currently displayed preview text, not the full snippet", async () => {
@@ -190,6 +204,89 @@ describe("AuthoredCodeSurface", () => {
     ).toBe("ts");
     expect(container.querySelector("code")?.textContent).toContain(
       "const x = 1;",
+    );
+  });
+
+  it("names the code region it expands and keeps the expanded snippet within the height cap", async () => {
+    const code = Array.from({ length: 30 }, (_, i) => `  e${i}();`).join("\n");
+    const container = await renderCard(anchor(), code, "ts");
+    const expand = button(container, "Expand snippet");
+
+    const region = document.getElementById(
+      expand.getAttribute("aria-controls")!,
+    );
+
+    expect(region?.tagName).toBe("PRE");
+
+    await act(async () => expand.click());
+
+    expect(expand.getAttribute("aria-expanded")).toBe("true");
+    expect(region?.style.maxHeight).toBe("240px");
+
+    const writeText = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue();
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Copy excerpt"]')!
+        .click(),
+    );
+
+    // Indentation kept; no gutters or omission markers.
+    expect(writeText).toHaveBeenCalledWith(code);
+  });
+
+  it("keeps Tab inside the full viewer", async () => {
+    const code = Array.from({ length: 30 }, (_, i) => `t${i}`).join("\n");
+    const container = await renderCard(anchor(), code);
+
+    await act(async () => button(container, "Open full snippet").click());
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const buttons = [...dialog.querySelectorAll("button")];
+
+    buttons.at(-1)!.focus();
+    await act(async () =>
+      buttons
+        .at(-1)!
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
+        ),
+    );
+
+    expect(document.activeElement).toBe(buttons[0]);
+
+    await act(async () =>
+      buttons[0]!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+        }),
+      ),
+    );
+
+    expect(document.activeElement).toBe(buttons.at(-1));
+  });
+
+  it("reports a failed copy instead of staying silent", async () => {
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(
+      new Error("denied"),
+    );
+    vi.spyOn(document, "execCommand").mockReturnValue(false);
+    const container = await renderCard(anchor(), "a\nb");
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Copy excerpt"]')!
+        .click(),
+    );
+
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(
+        "Copy failed",
+      ),
     );
   });
 });

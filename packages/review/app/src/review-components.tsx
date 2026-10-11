@@ -1333,6 +1333,7 @@ function ReviewPeekContentView({
         heightMode="capped"
         onNativeFocus={onNativeFocus}
         reportOutcome={reportOutcome}
+        stateScope={anchor.id}
       />
     );
   }

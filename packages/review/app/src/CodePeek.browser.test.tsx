@@ -32,6 +32,7 @@ let disposed: ReviewInlineEditorSpec[] = [];
 let session: ReviewSession;
 
 beforeEach(() => {
+  window.sessionStorage.clear();
   posted = [];
   created = [];
   disposed = [];
@@ -672,7 +673,292 @@ describe("CodePeek native editor", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("BBB"));
     expect(container.textContent).not.toContain("AAA");
   });
+
+  it("names the base revision for a base-side web excerpt", async () => {
+    session = createTestSession("web-session", "web");
+    vi.spyOn(session, "fetch").mockImplementation(
+      async () => new Response("not found", { status: 404 }),
+    );
+
+    const container = await renderWebCard(
+      selectSource({
+        side: "base",
+        file: "src/old.ts",
+        fromLine: 1,
+        toLine: 2,
+        pins: { repositoryId: "repo", base: "basesha", head: "headsha" },
+      }),
+    );
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Source unavailable"),
+    );
+    expect(container.textContent).toContain("repo@basesha");
+    expect(container.textContent).not.toContain("headsha");
+  });
+
+  it("shows Source unavailable with its identity when the selection never resolves", async () => {
+    session = createTestSession("web-session", "web");
+    const fetch = vi.spyOn(session, "fetch");
+
+    const container = await renderWebCard(
+      selectSource({
+        side: "head",
+        file: "src/gone.ts",
+        fromLine: 4,
+        toLine: 8,
+        pins: { repositoryId: "repo", head: "headsha" },
+      }),
+      { progress: null, error: "lens failed", resolve: () => [] },
+    );
+
+    expect(container.textContent).toContain("Source unavailable");
+    expect(container.textContent).toContain("src/gone.ts");
+    expect(container.textContent).toContain("repo@headsha");
+    expect(container.textContent).toContain("4-8");
+    expect(container.querySelector("button")).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("names both endpoints of an unresolved cross-side selection in a status region", async () => {
+    session = createTestSession("native-session");
+
+    const container = await renderWebCard(
+      {
+        file: "src/moved.ts",
+        start: { side: "base", line: 10 },
+        end: { side: "head", line: 20 },
+        pins: { repositoryId: "repo", base: "basesha", head: "headsha" },
+      },
+      { progress: null, error: "lens failed", resolve: () => [] },
+    );
+
+    const region = container.querySelector('[role="status"]');
+
+    expect(region?.textContent).toContain("Source unavailable");
+    expect(region?.textContent).toContain("base 10 → head 20");
+    expect(region?.textContent).toContain("repo@basesha → repo@headsha");
+  });
+
+  it("copies disjoint ranges joined in source order, without the hidden lines", async () => {
+    session = createTestSession("web-session", "web");
+    const text = Array.from({ length: 40 }, (_, i) => `  l${i + 1}`).join("\n");
+
+    vi.spyOn(session, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ text })),
+    );
+
+    const writeText = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue();
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      renderWithSession(
+        <CodePeekGroup
+          peeks={[
+            { file: "src/current.ts", fromLine: 20, toLine: 21, side: "head" },
+            { file: "src/current.ts", fromLine: 10, toLine: 11, side: "head" },
+          ]}
+          lenses={testLenses}
+        />,
+      );
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain("l10"));
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Copy excerpt"]')!
+        .click(),
+    );
+
+    expect(writeText).toHaveBeenLastCalledWith("  l10\n  l11\n  l20\n  l21");
+
+    const openSnippet = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Open full snippet",
+    )!;
+
+    await act(async () => openSnippet.click());
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[role="dialog"] button[aria-label="Copy full snippet"]',
+        )!
+        .click(),
+    );
+
+    expect(writeText).toHaveBeenLastCalledWith("  l10\n  l11\n  l20\n  l21");
+  });
+
+  it("keeps an out-of-bounds range unavailable even with context shown", async () => {
+    session = createTestSession("web-session", "web");
+    let text = Array.from({ length: 10 }, (_, i) => `w${i + 1}`).join("\n");
+
+    vi.spyOn(session, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ text })),
+    );
+
+    const source = selectSource({
+      side: "head",
+      file: "src/unpinned.ts",
+      fromLine: 2,
+      toLine: 5,
+    });
+
+    let container = await renderWebCard(source);
+
+    await vi.waitFor(() => expect(container.textContent).toContain("w2"));
+
+    const toggle = [...container.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Show surrounding context"),
+    )!;
+
+    expect(
+      document.getElementById(toggle.getAttribute("aria-controls")!)?.tagName,
+    ).toBe("PRE");
+
+    await act(async () => toggle.click());
+    await act(async () => root?.unmount());
+    document.body.replaceChildren();
+
+    // The unpinned file shrank under the same card; its remembered context
+    // would clamp to the new end, but the selection itself is out of bounds.
+    text = "a\nb\nc";
+    container = await renderWebCard(source);
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Source unavailable"),
+    );
+    expect(container.querySelectorAll("pre > div")).toHaveLength(0);
+  });
+
+  it("reads a step's own expansion when the same card switches steps", async () => {
+    session = createTestSession("web-session", "web");
+    const text = Array.from({ length: 30 }, (_, i) => `s${i + 1}`).join("\n");
+
+    vi.spyOn(session, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ text })),
+    );
+
+    const source = selectSource({
+      side: "head",
+      file: "src/current.ts",
+      fromLine: 10,
+      toLine: 11,
+    });
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    const show = async (stateScope: string) =>
+      act(async () =>
+        renderWithSession(
+          <CodePeekCard
+            source={source}
+            lenses={testLenses}
+            stateScope={stateScope}
+          />,
+        ),
+      );
+
+    await show("step-a");
+    await vi.waitFor(() => expect(container.textContent).toContain("s10"));
+
+    await act(async () =>
+      [...container.querySelectorAll("button")]
+        .find((b) => b.textContent?.includes("Show surrounding context"))!
+        .click(),
+    );
+
+    expect(container.querySelectorAll("pre > div")).toHaveLength(12);
+
+    // The peek panel swaps anchors in place: the card is not remounted.
+    await show("step-b");
+    expect(container.querySelectorAll("pre > div")).toHaveLength(2);
+
+    await show("step-a");
+    expect(container.querySelectorAll("pre > div")).toHaveLength(12);
+  });
+
+  it("keeps context expansion to the step that opened it", async () => {
+    session = createTestSession("web-session", "web");
+    const text = Array.from({ length: 30 }, (_, i) => `r${i + 1}`).join("\n");
+
+    vi.spyOn(session, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ text })),
+    );
+
+    const source = selectSource({
+      side: "head",
+      file: "src/current.ts",
+      fromLine: 10,
+      toLine: 11,
+    });
+
+    const renderScoped = async (stateScope: string) => {
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+
+      await act(async () => {
+        renderWithSession(
+          <CodePeekCard
+            source={source}
+            lenses={testLenses}
+            stateScope={stateScope}
+          />,
+        );
+      });
+      await vi.waitFor(() => expect(container.textContent).toContain("r10"));
+
+      return container;
+    };
+
+    const remount = async () => {
+      await act(async () => root?.unmount());
+      document.body.replaceChildren();
+    };
+
+    const first = await renderScoped("step-a");
+
+    const toggle = [...first.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Show surrounding context"),
+    )!;
+
+    await act(async () => toggle.click());
+    expect(first.querySelectorAll("pre > div")).toHaveLength(12);
+
+    await remount();
+    expect(
+      (await renderScoped("step-b")).querySelectorAll("pre > div"),
+    ).toHaveLength(2);
+
+    await remount();
+    expect(
+      (await renderScoped("step-a")).querySelectorAll("pre > div"),
+    ).toHaveLength(12);
+  });
 });
+
+async function renderWebCard(
+  source: ReturnType<typeof selectSource>,
+  lenses: ReviewLensView = testLenses,
+) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+
+  await act(async () => {
+    renderWithSession(<CodePeekCard source={source} lenses={lenses} />);
+  });
+
+  return container;
+}
 
 function renderWithSession(node: ReactNode) {
   root!.render(
