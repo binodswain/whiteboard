@@ -28,10 +28,12 @@ function writeMyBranch(value: string) {
 export function ReviewFilterBar({
   filter,
   repositoryNames,
+  trunkBranch,
   onChange,
 }: {
   filter: ReviewFilter;
   repositoryNames: readonly string[];
+  trunkBranch: string;
   onChange(filter: ReviewFilter): void;
 }) {
   const [myBranch, setMyBranch] = useState(readMyBranch);
@@ -56,10 +58,10 @@ export function ReviewFilterBar({
       <button
         type="button"
         {...stylex.props(styles.chip)}
-        aria-pressed={filter.branch === "main"}
-        onClick={() => toggleBranch("main")}
+        aria-pressed={filter.branch === trunkBranch}
+        onClick={() => toggleBranch(trunkBranch)}
       >
-        Latest on main
+        On {trunkBranch}
       </button>
       <button
         type="button"
@@ -69,7 +71,7 @@ export function ReviewFilterBar({
         title={myBranch ? undefined : "Set your branch below first"}
         onClick={() => toggleBranch(myBranch)}
       >
-        Latest on my branch
+        On my branch
       </button>
       <select
         {...stylex.props(styles.field)}

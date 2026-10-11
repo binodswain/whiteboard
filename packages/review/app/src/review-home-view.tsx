@@ -425,6 +425,16 @@ export function ReviewHome({
       ].sort(),
     [listed],
   );
+
+  /* The repository select only offers repositories that still have sessions, so
+     a selection that no longer does is cleared rather than left hiding rows. */
+  useEffect(() => {
+    if (filter.repo !== undefined && !repositoryNames.includes(filter.repo))
+      setFilter((current) => ({ ...current, repo: undefined }));
+  }, [filter.repo, repositoryNames]);
+
+  const trunkBranch = useMemo(() => trunkBranchName(listed), [listed]);
+
   /* With nothing to list, Home is the Welcome rail rather than a zero state
      of its own: the same three steps, in the place the reader already is.
  */
@@ -483,6 +493,7 @@ export function ReviewHome({
               <ReviewFilterBar
                 filter={filter}
                 repositoryNames={repositoryNames}
+                trunkBranch={trunkBranch}
                 onChange={setFilter}
               />
             ) : null}
@@ -838,15 +849,9 @@ function ReviewTable({
   reviews: readonly ReviewApiSummary[];
   onOpen(review: ReviewApiSummary): void;
 }) {
-  const [repository, setRepository] = useState("");
   const [sort, setSort] = useState<ReviewSort>("newest");
-  const repositories = [...new Set(reviews.map(repositoryLabel))].sort();
 
-  const filtered = reviews.filter(
-    (review) => !repository || repositoryLabel(review) === repository,
-  );
-
-  const sorted = [...filtered].sort((left, right) => {
+  const sorted = [...reviews].sort((left, right) => {
     const created = (review: ReviewApiSummary) =>
       Date.parse(review.firstCreatedAt ?? review.createdAt) || 0;
 
@@ -870,18 +875,8 @@ function ReviewTable({
   return (
     <section {...stylex.props(styles.tableSection)} aria-label="Sessions">
       <div {...stylex.props(styles.toolbar)}>
-        <span>{countLabel(filtered.length, "review")}</span>
+        <span>{countLabel(reviews.length, "review")}</span>
         <div {...stylex.props(styles.controls)}>
-          <TableMenu
-            label="Filter"
-            ariaLabel="Filter by repository"
-            value={repository}
-            options={[
-              { value: "", label: "All repos" },
-              ...repositories.map((name) => ({ value: name, label: name })),
-            ]}
-            onChange={setRepository}
-          />
           <TableMenu<ReviewSort>
             label="Sort"
             ariaLabel="Sort reviews"
@@ -1021,7 +1016,7 @@ function ReviewTable({
                     styles.lastRowCell,
                   )}
                 >
-                  No reviews match this repository.
+                  No reviews to show.
                 </td>
               </tr>
             ) : null}
@@ -1486,7 +1481,27 @@ function matchesQuery(review: ReviewApiSummary, query: string): boolean {
     repositoryLabel(review),
     review.repositoryPath ?? "",
     review.origin?.branch ?? "",
+    ...(review.tags ?? []).flatMap((tag) => [tag, `#${tag}`]),
+    ...pullRequestLabels(review),
   );
+}
+
+/** The PR number as the table shows it (`#12`) and bare (`12`), so either
+ * spelling finds it. */
+function pullRequestLabels(review: ReviewApiSummary): string[] {
+  const number = review.origin?.pullRequestNumber;
+
+  return number ? [`#${number}`, String(number)] : [];
+}
+
+/** `master` when the sessions' branches name it more often than `main`: the
+ * registry does not record each repository's default branch, so the listed
+ * sessions are the evidence. */
+function trunkBranchName(reviews: readonly ReviewApiSummary[]): string {
+  const count = (name: string) =>
+    reviews.filter((review) => review.origin?.branch === name).length;
+
+  return count("master") > count("main") ? "master" : "main";
 }
 
 function repositoryLabel(review: ReviewApiSummary): string {
