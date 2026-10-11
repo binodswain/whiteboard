@@ -141,4 +141,11 @@ export const POSTGRES_MIGRATIONS: {
     name: "pr_review_ask",
     sql: "ALTER TABLE pr_review_runs ADD COLUMN ask_id TEXT",
   },
+  {
+    version: 11,
+    name: "ask_kind_and_token",
+    sql: `ALTER TABLE asks ADD COLUMN kind TEXT NOT NULL DEFAULT 'interactive';
+      ALTER TABLE asks ADD COLUMN token_hash TEXT;
+      CREATE INDEX asks_token ON asks(token_hash);`,
+  },
 ];

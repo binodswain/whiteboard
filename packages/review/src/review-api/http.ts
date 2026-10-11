@@ -24,6 +24,7 @@ import {
 } from "@review/ask/build-prompt.js";
 import { checkoutFiles, mentionableFiles } from "@review/ask/checkout-files.js";
 import { parseFileRef, resolveFileRefs } from "@review/ask/file-refs.js";
+import { askKinds } from "@review/ask/runner/queue.js";
 import {
   type AskAgentId,
   type AskThreadState,
@@ -352,9 +353,16 @@ export function createReviewApi(
     return context.json({ askId }, 202);
   });
   app.get("/asks/pending", async (context) => {
+    const kind = context.req.query("kind");
+
+    if (kind !== undefined && !askKinds.some((known) => known === kind))
+      return context.json({ error: "Unknown ask kind." }, 400);
+
     await store.askQueue.reapExpired();
 
-    const asks = await store.askQueue.pending();
+    const asks = await store.askQueue.pending({
+      kind: askKinds.find((known) => known === kind),
+    });
 
     const visible = await Promise.all(
       asks.map(async (ask) => {
@@ -384,13 +392,14 @@ export function createReviewApi(
 
     await assertAskAccess(context.req.param("askId"));
 
-    const ask = await store.askQueue.claim(
+    const claimed = await store.askQueue.claim(
       context.req.param("askId"),
       runnerId,
     );
 
-    return ask
-      ? context.json({ ask })
+    // The token is the agent's only credential; it is shown once, here.
+    return claimed
+      ? context.json(claimed)
       : context.json({ error: "Ask is not claimable." }, 409);
   });
   app.post("/asks/:askId/complete", async (context) => {
@@ -559,6 +568,12 @@ export function createReviewApi(
     const caller = principal ?? authScope.getStore();
 
     if (!caller) return;
+
+    if (caller.via === "ask") {
+      if (caller.askReviewId === id) return;
+
+      throw new ReviewInputError("Review not found.", 404);
+    }
 
     const found = await reviewRepoPaths(id);
 

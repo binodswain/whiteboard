@@ -40,6 +40,9 @@ jobs:
         with:
           context: .
           target: runtime
+          # Pi runs the optional pull request reviewer service.
+          build-args: |
+            AGENTS=pi
           platforms: linux/arm64
           tags: whiteboard:${{ env.IMAGE_TAG }}
           outputs: type=docker,dest=${{ runner.temp }}/whiteboard.tar
@@ -105,6 +108,12 @@ jobs:
           GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
           GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
           GH_TOKEN: ${{ secrets.WHITEBOARD_GH_TOKEN }}
+          # Optional: with a reviewer token set, the reviewer service runs.
+          REVIEWER_TOKEN: ${{ secrets.WHITEBOARD_REVIEWER_TOKEN }}
+          REVIEWER_ANTHROPIC_API_KEY: ${{ secrets.WHITEBOARD_REVIEWER_ANTHROPIC_API_KEY }}
+          REVIEWER_OPENROUTER_API_KEY: ${{ secrets.WHITEBOARD_REVIEWER_OPENROUTER_API_KEY }}
+          WHITEBOARD_PR_MODEL: ${{ vars.WHITEBOARD_PR_MODEL }}
+          WHITEBOARD_PR_PROVIDER: ${{ vars.WHITEBOARD_PR_PROVIDER }}
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
@@ -115,7 +124,9 @@ jobs:
             IMAGE_TAG,WHITEBOARD_DB,WHITEBOARD_DB_TOKEN,WHITEBOARD_BLOBS,
             WHITEBOARD_S3_ENDPOINT,WHITEBOARD_S3_KEY,WHITEBOARD_S3_SECRET,
             WHITEBOARD_AUTH_SECRET,GITHUB_OAUTH_CLIENT_ID,
-            GITHUB_OAUTH_CLIENT_SECRET,GH_TOKEN
+            GITHUB_OAUTH_CLIENT_SECRET,GH_TOKEN,REVIEWER_TOKEN,
+            REVIEWER_ANTHROPIC_API_KEY,REVIEWER_OPENROUTER_API_KEY,
+            WHITEBOARD_PR_MODEL,WHITEBOARD_PR_PROVIDER
           script: |
             set -euo pipefail
             cd ~/services/whiteboard
@@ -135,11 +146,28 @@ jobs:
               printf 'GH_TOKEN=%s\nGITHUB_TOKEN=%s\n' "$GH_TOKEN" "$GH_TOKEN"
             } > .env.prod
 
+            # The reviewer gets its own token and a provider key, nothing else.
+            profiles=()
+            if [ -n "${REVIEWER_TOKEN:-}" ]; then
+              {
+                printf 'WHITEBOARD_TOKEN=%s\n' "$REVIEWER_TOKEN"
+                [ -z "${REVIEWER_ANTHROPIC_API_KEY:-}" ] || printf 'ANTHROPIC_API_KEY=%s\n' "$REVIEWER_ANTHROPIC_API_KEY"
+                [ -z "${REVIEWER_OPENROUTER_API_KEY:-}" ] || printf 'OPENROUTER_API_KEY=%s\n' "$REVIEWER_OPENROUTER_API_KEY"
+                [ -z "${WHITEBOARD_PR_MODEL:-}" ] || printf 'WHITEBOARD_PR_MODEL=%s\n' "$WHITEBOARD_PR_MODEL"
+                [ -z "${WHITEBOARD_PR_PROVIDER:-}" ] || printf 'WHITEBOARD_PR_PROVIDER=%s\n' "$WHITEBOARD_PR_PROVIDER"
+              } > .env.reviewer
+              profiles=(--profile reviewer)
+            else
+              # Stop a reviewer left from an earlier deploy.
+              touch .env.reviewer
+              docker compose -f docker-compose.prod.yml --profile reviewer rm -sf reviewer || true
+            fi
+
             gunzip -c whiteboard.tar.gz | docker load
             rm -f whiteboard.tar.gz
 
             export WHITEBOARD_IMAGE_TAG="$IMAGE_TAG"
-            docker compose -f docker-compose.prod.yml up -d --wait --wait-timeout 180
+            docker compose -f docker-compose.prod.yml ${profiles[@]+"${profiles[@]}"} up -d --wait --wait-timeout 180
 
             # Keep only the running image so old builds do not fill the disk.
             docker images whiteboard --format '{{.Tag}}' \

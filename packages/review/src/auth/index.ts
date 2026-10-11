@@ -10,7 +10,9 @@ export interface AuthPrincipal {
   /** Stable internal user id — `gh:<github id>` or `proxy:<login>`. */
   id: string;
   login: string;
-  via: "github" | "api-token" | "proxy" | "job";
+  via: "github" | "api-token" | "proxy" | "job" | "ask";
+  /** The one review a per-ask token may read and author. */
+  askReviewId?: string;
   /** Canonical GitHub repository for an in-process queued job principal. */
   jobRepository?: string;
   /** Exact ephemeral clone owned by the same in-process queued job. */

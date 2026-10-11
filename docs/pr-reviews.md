@@ -7,10 +7,10 @@ exact head commit and links it from a GitHub check run.
 This is opt-in and remote-only. A deployment without
 `WHITEBOARD_GITHUB_WEBHOOK_SECRET` mounts nothing, and local mode is unchanged.
 
-**What exists today:** the webhook receiver, one prepared review per head, and
-the check run that links it. The AI authoring step (a hosted Pi worker writing
-the summary and diagrams) is not wired in yet, so the completed check is
-`neutral` and says the review is ready without an authored summary.
+**What exists today:** the webhook receiver, one prepared review per head, the
+check run that links it, and an opt-in written summary from a locked-down ask
+runner (see below). Without it, the completed check is `neutral` and says the
+review is ready without an authored summary.
 
 ## Configuration
 
@@ -75,12 +75,60 @@ cancelled so a runner arriving later does not run it. Turning the setting off
 also completes runs still waiting. The server checks for finished asks every
 30 seconds.
 
-An ask runner (`whiteboard ask connect`) must be running for this to do
-anything. The runner currently uses the deployment's general token, so the
-agent can reach every review on the server, not only this one; scoping it to a
-single review, isolating the worker and pinning the agent's provider and model
-are not done yet. Enable this only on a deployment where that trust is
-acceptable.
+These asks have kind `pr-review`. A connector takes only `interactive` asks
+unless started with `--kind pr-review`, so a laptop connector never runs them.
+
+### The pull request runner
+
+```sh
+whiteboard connect --server https://whiteboard.example.com --agent pi \
+  --kind pr-review --once --model <model> [--provider <provider>]
+```
+
+`--model` and `--provider` default to `WHITEBOARD_PR_MODEL` and
+`WHITEBOARD_PR_PROVIDER`. With `--kind pr-review` the runner:
+
+- refuses to start unless the agent has a locked-down mode, is installed, can
+  take Whiteboard's MCP tools and has a provider key. Only Pi has one today:
+  it runs with read-only local tools (`read,grep,find,ls`), no extensions and
+  no saved session;
+- starts the agent with only `PATH`, `HOME`, locale and CA variables and the
+  provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+  `GEMINI_API_KEY`). The runner's own token and other secrets are not passed;
+- gives the agent a per-ask token (`wba_…`) issued at claim. It reaches only
+  that ask's review — its reads, comments, progress, activity and edits — and
+  stops working when the ask ends or its lease runs out. Other reviews,
+  listings, the ask queue and settings answer `403`;
+- runs the agent in a fresh temporary directory holding `PR_DIFF.patch`,
+  `CHANGED_FILES.txt` and the changed files' head contents under `head/`
+  (fetched through the per-ask token and size-capped), and deletes it after;
+- fails an ask that runs past `--max-runtime` minutes (15 by default);
+- with `--once`, exits after one ask so nothing carries over between PRs.
+
+The production compose file has a `reviewer` service for this, off unless
+started with `--profile reviewer`. It reads `.env.reviewer` (the runner's API
+token as `WHITEBOARD_TOKEN`, and a provider key), runs read-only with dropped
+capabilities and a `/tmp` tmpfs, and mounts no data volume or GitHub key.
+Build its image with `AGENTS=pi`; the Dockerfile installs pinned agent
+versions.
+
+The VM deploy workflow builds with `AGENTS=pi` and starts the reviewer when
+the `WHITEBOARD_REVIEWER_TOKEN` secret is set, writing `.env.reviewer` from it,
+`WHITEBOARD_REVIEWER_ANTHROPIC_API_KEY` or
+`WHITEBOARD_REVIEWER_OPENROUTER_API_KEY`, and the `WHITEBOARD_PR_MODEL` and
+`WHITEBOARD_PR_PROVIDER` repository variables. Without the token it stops any
+reviewer left running.
+
+## Cleanup
+
+When a run finishes, its review's pinned checkouts are removed; they are
+rebuilt if someone opens the review's files later. Once a day the server
+deletes `github_deliveries` rows older than seven days and runs
+`git worktree prune` and `git gc --auto` on each cached clone, skipping a clone
+that is being prepared. Clones themselves are kept: reviews read from them.
+
+Preparations of one repository take turns on its clone through a file lock
+that is renewed while held, so a long preparation is not taken over.
 
 A `synchronize` marks the PR's older runs `superseded`. Each run only ever
 updates its own check run, so an old head finishing late cannot change the
@@ -111,4 +159,6 @@ redelivering its webhook or pushing a new commit.
 Webhook payloads are read for identifiers (repository, PR number, SHAs,
 installation) only; PR titles, descriptions and branch names are not stored or
 used. The review itself is prepared from the repository checkout as for any
-hosted review. Nothing is sent to a model provider by this step.
+hosted review. Preparing sends nothing to a model provider. With the written
+summary on, the runner sends the PR's diff, changed files and review content
+to the configured provider.

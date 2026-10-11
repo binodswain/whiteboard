@@ -39,10 +39,16 @@ export default function (pi: {
 }
 `;
 
+const ARGS_ENV = "WHITEBOARD_ASK_PI_ARGS";
+
+// The extra arguments are split on spaces, unquoted; each is checked to
+// hold none, nor anything else the shell would read.
 const WRAPPER = `#!/bin/sh
 # Managed by Whiteboard: starts Pi for Ask with Whiteboard's extension.
-exec "$${PI_ENV}" -e "$${EXTENSION_ENV}" "$@"
+exec "$${PI_ENV}" -e "$${EXTENSION_ENV}" $${ARGS_ENV} "$@"
 `;
+
+const PLAIN_ARG = /^[\w.,:/@=-]+$/u;
 
 const versions = new Map<
   string,
@@ -137,7 +143,13 @@ export async function piWithMcp(
   executable: string,
   servers: McpServer[],
   env: NodeJS.ProcessEnv,
+  { extraArgs = [] }: { extraArgs?: string[] } = {},
 ): Promise<string> {
+  const unsafe = extraArgs.find((arg) => !PLAIN_ARG.test(arg));
+
+  if (unsafe !== undefined)
+    throw new Error(`Unsafe Pi argument: ${JSON.stringify(unsafe)}.`);
+
   const directory = path.join(devReviewHome(), "ask", "pi");
   const extension = path.join(directory, "whiteboard-mcp.ts");
   const wrapper = path.join(directory, "pi");
@@ -149,6 +161,7 @@ export async function piWithMcp(
   env[PI_ENV] = executable;
   env[EXTENSION_ENV] = extension;
   env[SERVERS_ENV] = JSON.stringify(piServers(servers));
+  env[ARGS_ENV] = extraArgs.join(" ");
 
   return wrapper;
 }

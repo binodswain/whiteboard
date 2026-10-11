@@ -52,5 +52,47 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # Writes the summary for each pull request review. Opt in with
+  # `--profile reviewer`; it needs .env.reviewer holding WHITEBOARD_TOKEN (an
+  # API token for the runner, not the server's secrets) and one model
+  # provider key such as ANTHROPIC_API_KEY. It holds no GitHub key, database
+  # or /data: it reaches reviews only through the server, and each agent run
+  # only through its ask's own token. Build the image with AGENTS=pi.
+  reviewer:
+    profiles: [reviewer]
+    image: whiteboard:${WHITEBOARD_IMAGE_TAG:?set by the deploy workflow}
+    init: true
+    depends_on:
+      whiteboard:
+        condition: service_healthy
+    env_file:
+      - .env.reviewer
+    environment:
+      # Pi writes its MCP wrapper and settings under HOME.
+      HOME: /tmp
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Run one ask per process so nothing carries over between pull requests;
+    # restart picks up the next.
+    command:
+      - whiteboard
+      - connect
+      - --server
+      - http://whiteboard:7421
+      - --agent
+      - pi
+      - --kind
+      - pr-review
+      - --once
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          pids: 256
+    restart: unless-stopped
+
 volumes:
   whiteboard-data:

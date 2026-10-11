@@ -993,6 +993,24 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
       .option("--server <url>", "run a laptop connector for hosted asks")
       .option("--token <token>", "server token; defaults to WHITEBOARD_TOKEN")
       .option("--agent <agent>", "installed CLI agent to run", "claude")
+      .option(
+        "--kind <kind>",
+        "take only asks of this kind (interactive or pr-review); pr-review runs the agent locked down",
+        "interactive",
+      )
+      .option("--once", "exit after running one ask")
+      .option(
+        "--max-runtime <minutes>",
+        "fail an ask still running after this many minutes",
+      )
+      .option(
+        "--model <model>",
+        "pr-review model; defaults to WHITEBOARD_PR_MODEL",
+      )
+      .option(
+        "--provider <provider>",
+        "pr-review provider; defaults to WHITEBOARD_PR_PROVIDER",
+      )
       .addArgument(
         new Argument("[target...]", "coding agent").choices([
           "claude",
@@ -1017,6 +1035,11 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         server?: string;
         token?: string;
         agent: string;
+        kind?: string;
+        once?: boolean;
+        maxRuntime?: string;
+        model?: string;
+        provider?: string;
       },
     ) => {
       if (options.server) {
@@ -1026,6 +1049,29 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
         if (!agent)
           throw new ReviewCliUsageError(
             `--agent must be one of: ${askAgentIds.join(", ")}.`,
+          );
+
+        const { askKinds } = await import("./ask/runner/queue.js");
+        const kind = askKinds.find((known) => known === options.kind);
+
+        if (options.kind !== undefined && !kind)
+          throw new ReviewCliUsageError(
+            `--kind must be one of: ${askKinds.join(", ")}.`,
+          );
+
+        const maxRuntimeMinutes =
+          options.maxRuntime === undefined
+            ? kind === "pr-review"
+              ? 15
+              : undefined
+            : Number(options.maxRuntime);
+
+        if (
+          maxRuntimeMinutes !== undefined &&
+          !(Number.isFinite(maxRuntimeMinutes) && maxRuntimeMinutes > 0)
+        )
+          throw new ReviewCliUsageError(
+            "--max-runtime must be a positive number of minutes.",
           );
 
         const cliPath = input.cliPaths?.effectivePath ?? process.argv[1];
@@ -1045,6 +1091,17 @@ export async function runReviewCli(input: ReviewCliInput): Promise<number> {
             token: options.token ?? env.WHITEBOARD_TOKEN,
             agent,
             cliPath,
+            kind,
+            once: options.once,
+            maxRuntimeMs:
+              maxRuntimeMinutes === undefined
+                ? undefined
+                : maxRuntimeMinutes * 60_000,
+            hosted: {
+              model: options.model ?? (env.WHITEBOARD_PR_MODEL || undefined),
+              provider:
+                options.provider ?? (env.WHITEBOARD_PR_PROVIDER || undefined),
+            },
             signal: controller.signal,
             onStatus: (message) => input.stdout.write(`${message}\n`),
           });

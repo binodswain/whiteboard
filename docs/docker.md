@@ -88,5 +88,5 @@ The bind-mounted data directory and its generated token remain intact across con
 
 - Every repository to review must be available beneath `CODE_ROOT`, mounted at the same absolute path in the container.
 - Docker binds only to host loopback by default. Use a separately configured reverse proxy for remote access.
-- `AGENT` only installs an optional CLI in the image; it does not start an agent service. The coding agent and its MCP process should run on the host.
+- `AGENTS` (a list such as `pi` or `claude,codex`; `AGENT` is the older single-value form) only installs optional CLIs in the image, at pinned versions; it does not start an agent service. The coding agent and its MCP process should run on the host.
 - GitHub Enterprise requires a reachable `GH_HOST` and a token with repository access.

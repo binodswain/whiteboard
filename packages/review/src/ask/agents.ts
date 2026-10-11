@@ -52,6 +52,86 @@ interface AskAgentSpec {
    * read-only mode and settings, when the reviewer bypasses permissions.
    * Whiteboard also allows whatever it still asks. */
   bypass?: AskAgentBypass;
+  /** How it runs unattended on an untrusted pull request. Without it, the
+   * agent cannot take pull request asks. */
+  hosted?: AskAgentHosted;
+}
+
+/**
+ * An unattended run reads a pull request nobody vetted, so it must be locked
+ * down by the agent itself, never by a prompt nobody is there to answer.
+ */
+export interface AskAgentHosted {
+  /** The only variables beyond the base set that reach its process: its
+   * provider keys. Anything else in the runner's environment stays out. */
+  keyEnv: string[];
+  /** Arguments that turn off every tool that writes, runs commands or
+   * reaches the network, leaving file reads and the Whiteboard MCP tools. */
+  lockdownArgs: string[];
+  /** Arguments that pick the model, from the operator's settings. */
+  modelArgs(model: { provider?: string; model?: string }): string[];
+}
+
+/** What every unattended agent may see of the runner's environment. */
+const HOSTED_BASE_ENV = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "DEV_REVIEW_HOME",
+];
+
+/** Settings an unattended run takes from its operator. */
+export interface AskHostedLaunch {
+  provider?: string;
+  model?: string;
+}
+
+/** Provider and model names reach an argument list, so they stay plain. */
+const HOSTED_NAME = /^[\w.:/@-]{1,200}$/u;
+
+/** The environment of an unattended agent: the base set and its keys only. */
+export function hostedAgentEnv(
+  hosted: AskAgentHosted,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const kept: NodeJS.ProcessEnv = {};
+
+  for (const name of [...HOSTED_BASE_ENV, ...hosted.keyEnv])
+    if (env[name] !== undefined) kept[name] = env[name];
+
+  return kept;
+}
+
+/** Why an agent cannot run unattended here, or undefined when it can. */
+export async function hostedAgentProblem(
+  agent: AskAgentId,
+  launch: AskHostedLaunch = {},
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+  const spec = askAgents[agent];
+
+  if (!spec.hosted)
+    return `${spec.name} has no locked-down mode for unattended pull request reviews.`;
+
+  for (const value of [launch.provider, launch.model])
+    if (value !== undefined && !HOSTED_NAME.test(value))
+      return `Invalid provider or model name: ${JSON.stringify(value)}.`;
+
+  const executable = await findAgent(spec, env);
+
+  if (!executable) return `${spec.name} is not installed.`;
+
+  if (spec.mcp && !(await spec.mcp.supported(executable)))
+    return `This ${spec.name} install cannot take Whiteboard's MCP tools; update it.`;
+
+  if (!spec.hosted.keyEnv.some((name) => env[name]))
+    return `Set one of ${spec.hosted.keyEnv.join(", ")} for ${spec.name}.`;
+
+  return undefined;
 }
 
 interface AskAgentMcp {
@@ -63,6 +143,7 @@ interface AskAgentMcp {
     executable: string,
     servers: McpServer[],
     env: NodeJS.ProcessEnv,
+    options?: { extraArgs?: string[] },
   ): Promise<string>;
 }
 
@@ -172,6 +253,25 @@ export const askAgents: Record<AskAgentId, AskAgentSpec> = {
     mcp: { supported: piTakesMcp, launch: piWithMcp },
     // Pi never asks before it edits or runs a command, and has no mode that
     // stops it.
+    hosted: {
+      keyEnv: [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+      ],
+      // Reads only; MCP tools stay on. No user extensions, no saved session.
+      lockdownArgs: [
+        "--tools",
+        "read,grep,find,ls",
+        "--no-extensions",
+        "--no-session",
+      ],
+      modelArgs: ({ provider, model }) => [
+        ...(provider && model ? ["--provider", provider] : []),
+        ...(model ? ["--model", model] : []),
+      ],
+    },
   },
 };
 
@@ -200,6 +300,8 @@ export type AskAgentLauncher = (
     bypass?: boolean;
     /** The MCP servers its sessions are given. */
     mcpServers?: McpServer[];
+    /** Runs it unattended: locked down, with only its keys in its env. */
+    hosted?: AskHostedLaunch;
   },
 ) => Promise<AskAgentProcess>;
 
@@ -280,17 +382,25 @@ const STDERR_LIMIT = 8_000;
 export const launchAskAgent: AskAgentLauncher = async (
   agent,
   cwd,
-  { bypass = false, mcpServers = [] } = {},
+  { bypass = false, mcpServers = [], hosted } = {},
 ) => {
   const spec = askAgents[agent];
   const executable = await findAgent(spec);
 
   if (!executable) throw new Error(`${spec.name} is not installed.`);
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...((bypass && spec.bypass?.env) || spec.env),
-  };
+  if (hosted) {
+    const problem = await hostedAgentProblem(agent, hosted);
+
+    if (problem) throw new Error(problem);
+  }
+
+  const env: NodeJS.ProcessEnv = hosted
+    ? hostedAgentEnv(spec.hosted!)
+    : {
+        ...process.env,
+        ...((bypass && spec.bypass?.env) || spec.env),
+      };
 
   // A server started from inside a Claude Code session must not look nested.
   delete env.CLAUDECODE;
@@ -304,8 +414,18 @@ export const launchAskAgent: AskAgentLauncher = async (
   if ("adapter" in launch) {
     env[launch.executableEnv] =
       spec.mcp && mcpServers.length && (await spec.mcp.supported(executable))
-        ? await spec.mcp.launch(executable, mcpServers, env)
+        ? await spec.mcp.launch(executable, mcpServers, env, {
+            extraArgs: hosted
+              ? [
+                  ...spec.hosted!.lockdownArgs,
+                  ...spec.hosted!.modelArgs(hosted),
+                ]
+              : [],
+          })
         : executable;
+
+    if (hosted && env[launch.executableEnv] === executable)
+      throw new Error(`${spec.name} cannot run unattended without MCP tools.`);
 
     if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
     command = process.execPath;

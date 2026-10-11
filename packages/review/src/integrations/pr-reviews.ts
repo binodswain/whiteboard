@@ -78,6 +78,7 @@ export interface PrReviewAuthoring {
   /** Queues the summary ask; resolves with its id. */
   enqueue(input: {
     reviewId: string;
+    kind: "pr-review";
     prompt: string;
     createdBy: string;
   }): Promise<string>;
@@ -135,7 +136,12 @@ export interface PrReviews {
   handleWebhook(request: Request): Promise<Response>;
   /** Moves runs whose prepare job has finished to their terminal state. */
   reconcile(): Promise<void>;
+  /** Deletes delivery records past their retention. */
+  prune(): Promise<void>;
 }
+
+/** How long a webhook delivery's outcome is kept for diagnosis. */
+export const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 function reply(status: number, body: JsonObject): Response {
   return Response.json(
@@ -216,6 +222,9 @@ export function createPrReviews(input: {
   /** Set when `config.authoring` is on and a runner can pick up asks. */
   authoring?: PrReviewAuthoring;
   log?: (message: string) => void;
+  /** Frees a finished run's checkouts; they are rebuilt if the review is
+   * read again. */
+  release?: (run: { repo: string; reviewId: string }) => Promise<void>;
 }): PrReviews {
   const { meta, jobs, checks, config } = input;
   const log = input.log ?? (() => {});
@@ -397,11 +406,18 @@ export function createPrReviews(input: {
         ...(reviewUrl && { detailsUrl: reviewUrl }),
       });
 
-    await setRun(
+    const finished = await setRun(
       run.id,
       { status: "prepared", review_id: reviewId, review_url: reviewUrl },
       from,
     );
+
+    if (finished.changes && reviewId && input.release)
+      await input
+        .release({ repo: run.repo, reviewId })
+        .catch((cause: unknown) =>
+          log(`pr review ${run.id} checkouts not freed: ${String(cause)}`),
+        );
   };
 
   /** Finishes runs whose summary ask ended or timed out, or whose summary
@@ -513,6 +529,7 @@ export function createPrReviews(input: {
                   prNumber: run.pr_number,
                   marker: summaryMarker(config.webhookSecret, run.id),
                 }),
+                kind: "pr-review",
                 createdBy: `github-app:${run.installation_id}`,
               });
 
@@ -718,5 +735,12 @@ export function createPrReviews(input: {
     }
   };
 
-  return { handleWebhook, reconcile };
+  const prune = async () => {
+    await meta.run(
+      "DELETE FROM github_deliveries WHERE received_at<?",
+      new Date(Date.now() - DELIVERY_RETENTION_MS).toISOString(),
+    );
+  };
+
+  return { handleWebhook, reconcile, prune };
 }

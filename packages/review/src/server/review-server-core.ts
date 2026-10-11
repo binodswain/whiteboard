@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
 import { type JsonObject, isJsonObject, jsonString } from "@dev.fast/json";
+import { gitCommonDir } from "@dev.fast/local-vcs";
 import {
   type ReviewServerHealth,
   type ReviewServerHealthWithToken,
@@ -10,6 +11,8 @@ import {
 import { traceMachineEnabled, withFileLock } from "@dev.fast/trace-core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { detectAskAgents, launchAskAgent } from "@review/ask/agents.js";
+import { askTokenAllows } from "@review/ask/runner/ask-token-scope.js";
+import { ASK_TOKEN_PREFIX } from "@review/ask/runner/queue.js";
 import { AskThreads, type AskTools } from "@review/ask/threads.js";
 import {
   type AuthDriver,
@@ -48,7 +51,9 @@ import type { LocalReviewData } from "@review/review-api/local-data.js";
 import { reviewIdForPullRequestHead } from "@review/review-api/origin.js";
 import { createBlobStore } from "@review/review-api/storage/blob-store.js";
 import type { ReviewStore } from "@review/review-api/store.js";
+import { removeReviewManagedCheckouts } from "@review/review-head-checkout.js";
 import { reviewServerStateDir } from "@review/server-discovery.js";
+import { maintainRepoCaches } from "@review/server/repo-cache-maintenance.js";
 import { mountSharingPublisher } from "@review/sharing/host.js";
 import type { SharedReviewStore } from "@review/sharing/import.js";
 import { type Context, Hono } from "hono";
@@ -75,6 +80,7 @@ import {
   isAuthorizedRequest,
   jsonResponse,
   readBoundedRequestJson,
+  suppliedRequestToken,
 } from "./hono-http";
 import { HttpJsonError, ReviewServerError } from "./http-json";
 import { createSetupInfoHandler } from "./setup-info.js";
@@ -125,6 +131,10 @@ export function createReviewServerApp(input: {
   githubWebhook?: (request: Request) => Promise<Response>;
   /** The remote auth driver; absent on local, which keeps its token wall. */
   auth?: AuthDriver;
+  /** The ask and review a per-ask (`wba_`) token is bound to while live. */
+  askToken?: (
+    token: string,
+  ) => Promise<{ askId: string; reviewId: string } | undefined>;
 }): Hono<ReviewHonoEnv> {
   const { auth } = input;
 
@@ -214,6 +224,39 @@ export function createReviewServerApp(input: {
 
       if (!jobSecretMatches(context.req.raw))
         return serverJson(401, { ok: false, error: "Unauthorized" });
+
+      return next();
+    }
+
+    // A per-ask token is all an unattended agent holds. It decides the caller
+    // on its own and reaches only its bound review's authoring routes.
+    const supplied = suppliedRequestToken(context.req.raw);
+
+    if (supplied?.startsWith(ASK_TOKEN_PREFIX)) {
+      const bound = await input.askToken?.(supplied);
+
+      if (!bound) return serverJson(401, { ok: false, error: "Unauthorized" });
+
+      const { pathname } = new URL(context.req.url);
+
+      const body =
+        context.req.method === "POST" && pathname === "/reviews-api/commands"
+          ? await readBoundedRequestJson(context.req.raw.clone()).catch(
+              () => undefined,
+            )
+          : undefined;
+
+      if (
+        !askTokenAllows(bound.reviewId, {
+          method: context.req.method,
+          pathname,
+          body,
+        })
+      )
+        return serverJson(403, {
+          ok: false,
+          error: "This token can only author its own review.",
+        });
 
       return next();
     }
@@ -465,6 +508,8 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
         retryMs: 100,
         staleMs: 120_000,
         timeoutMs: 300_000,
+        // A preparation can outlast staleMs; the heartbeat keeps it owned.
+        heartbeatMs: 5_000,
         unownedGraceMs: 1_000,
       },
       () => prepareCheckedOut(job, context, persistentDir),
@@ -595,8 +640,33 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
             fetchImpl: input.fetchImpl,
           }),
           log: (message) => console.error(`[pr-reviews] ${message}`),
+          release: async ({ repo, reviewId }) => {
+            const commonDir = await gitCommonDir(githubCachePath(repo));
+
+            if (commonDir)
+              await removeReviewManagedCheckouts(commonDir, reviewId);
+          },
         })
       : undefined;
+
+  // Once a day: drop old delivery records and compact the cached clones.
+  const maintenanceTimer = prReviews
+    ? setInterval(
+        () =>
+          void (async () => {
+            await prReviews.prune();
+            await maintainRepoCaches(
+              path.join(reviewServerStateDir(), "repos"),
+              (message) => console.error(`[pr-reviews] ${message}`),
+            );
+          })().catch((cause: unknown) =>
+            console.error(`[pr-reviews] maintenance failed: ${String(cause)}`),
+          ),
+        24 * 60 * 60 * 1000,
+      )
+    : undefined;
+
+  maintenanceTimer?.unref();
 
   // An ask finishes on a runner, not here, so nothing else would notice it.
   const authoringTimer =
@@ -633,6 +703,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     },
     githubWebhook: prReviews?.handleWebhook,
     auth: auth ?? undefined,
+    askToken: (token) => store.askQueue.authenticateToken(token),
   });
 
   const callbacks = relayReviewCallbacks(input.relay, input.softwareMapEnabled);
@@ -657,8 +728,27 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     auth === null
       ? undefined
       : {
-          authenticate: (request: Request) => auth.authenticate(request),
+          authenticate: async (request: Request) => {
+            const supplied = suppliedRequestToken(request);
+
+            if (!supplied?.startsWith(ASK_TOKEN_PREFIX))
+              return auth.authenticate(request);
+
+            const bound = await store.askQueue.authenticateToken(supplied);
+
+            return bound
+              ? {
+                  id: `ask:${bound.askId}`,
+                  login: "whiteboard-ask",
+                  via: "ask" as const,
+                  askReviewId: bound.reviewId,
+                }
+              : null;
+          },
           canReadRepo: async (principal, repoPath) => {
+            // An ask principal reaches its one review, checked by review id.
+            if (principal.via === "ask") return false;
+
             if (principal.via === "job")
               return canReadRepository(principal, repoPath, auth.access);
 
@@ -737,6 +827,7 @@ export function createWhiteboardCore(input: WhiteboardCoreInput) {
     auth: auth ?? undefined,
     close: () => {
       clearInterval(authoringTimer);
+      clearInterval(maintenanceTimer);
       askThreads?.closeAll();
     },
   };

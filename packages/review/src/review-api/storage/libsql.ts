@@ -114,6 +114,16 @@ export class LibsqlMetadataStore implements MetadataStore {
               "ALTER TABLE pr_review_runs ADD COLUMN ask_id TEXT",
             );
 
+          const askColumns = await columnsOf("asks");
+
+          if (!askColumns.has("kind"))
+            await tx.execute(
+              "ALTER TABLE asks ADD COLUMN kind TEXT NOT NULL DEFAULT 'interactive'",
+            );
+
+          if (!askColumns.has("token_hash"))
+            await tx.execute("ALTER TABLE asks ADD COLUMN token_hash TEXT");
+
           const present = await columnsOf("reviews");
 
           const missing = REVIEW_COLUMNS.filter(

@@ -1,12 +1,26 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import type { MetadataStore } from "@review/review-api/storage/metadata-store.js";
 
 export type AskStatus = "pending" | "running" | "done" | "failed";
 
+/** Who an ask is for: a person's question from the board, or an unattended
+ * pull request review that only a locked-down runner should take. */
+export const askKinds = ["interactive", "pr-review"] as const;
+
+export type AskKind = (typeof askKinds)[number];
+
+/** Every per-ask token carries this prefix, so a request's credential is
+ * recognisably one bound to a single claimed ask. */
+export const ASK_TOKEN_PREFIX = "wba_";
+
+const hashAskToken = (token: string) =>
+  createHash("sha256").update(`whiteboard:ask-token:${token}`).digest("hex");
+
 export interface QueuedAsk {
   id: string;
   reviewId: string;
+  kind: AskKind;
   prompt: string;
   status: AskStatus;
   claimedBy: string | null;
@@ -22,7 +36,7 @@ export interface QueuedAsk {
 
 type AskRow = Omit<QueuedAsk, "resultRefs"> & { result_refs: string | null };
 
-const columns = `id, review_id AS "reviewId", prompt, status,
+const columns = `id, review_id AS "reviewId", kind, prompt, status,
   claimed_by AS "claimedBy", lease_until AS "leaseUntil", attempts,
   max_attempts AS "maxAttempts", error, created_by AS "createdBy",
   result_refs, created_at AS "createdAt", updated_at AS "updatedAt"`;
@@ -41,6 +55,7 @@ export class AskQueue {
 
   async create(input: {
     reviewId: string;
+    kind?: AskKind;
     prompt: string;
     createdBy: string;
     maxAttempts?: number;
@@ -49,10 +64,11 @@ export class AskQueue {
     const id = randomUUID();
     const now = input.now ?? Date.now();
     await this.store.run(
-      `INSERT INTO asks(id,review_id,prompt,status,attempts,max_attempts,created_by,created_at,updated_at)
-       VALUES(?,?,?,'pending',0,?,?,?,?)`,
+      `INSERT INTO asks(id,review_id,kind,prompt,status,attempts,max_attempts,created_by,created_at,updated_at)
+       VALUES(?,?,?,?,'pending',0,?,?,?,?)`,
       id,
       input.reviewId,
+      input.kind ?? "interactive",
       input.prompt,
       input.maxAttempts ?? 5,
       input.createdBy,
@@ -72,36 +88,66 @@ export class AskQueue {
     );
   }
 
-  async pending(limit = 20): Promise<QueuedAsk[]> {
-    const rows = await this.store.all<AskRow>(
-      `SELECT ${columns} FROM asks WHERE status='pending' ORDER BY created_at LIMIT ?`,
-      limit,
-    );
+  async pending(
+    options: { kind?: AskKind; limit?: number } = {},
+  ): Promise<QueuedAsk[]> {
+    const rows = options.kind
+      ? await this.store.all<AskRow>(
+          `SELECT ${columns} FROM asks WHERE status='pending' AND kind=? ORDER BY created_at LIMIT ?`,
+          options.kind,
+          options.limit ?? 20,
+        )
+      : await this.store.all<AskRow>(
+          `SELECT ${columns} FROM asks WHERE status='pending' ORDER BY created_at LIMIT ?`,
+          options.limit ?? 20,
+        );
 
     return rows.map((row) => mapAsk(row)!);
   }
 
+  /** Claims a pending ask and mints the one token its agent may use: it
+   * reaches only this ask's review, and only while this claim's lease lives. */
   async claim(
     id: string,
     runnerId: string,
     options: { now?: number; leaseMs?: number } = {},
-  ): Promise<QueuedAsk | undefined> {
+  ): Promise<{ ask: QueuedAsk; token: string } | undefined> {
     const now = options.now ?? Date.now();
+    const token = `${ASK_TOKEN_PREFIX}${randomBytes(24).toString("base64url")}`;
 
     return this.store.transaction(async () => {
       await this.reapExpired(now);
 
       const result = await this.store.run(
-        `UPDATE asks SET status='running', claimed_by=?, lease_until=?, attempts=attempts+1, updated_at=?
+        `UPDATE asks SET status='running', claimed_by=?, lease_until=?, attempts=attempts+1, token_hash=?, updated_at=?
          WHERE id=? AND status='pending'`,
         runnerId,
         now + (options.leaseMs ?? 2 * 60_000),
+        hashAskToken(token),
         now,
         id,
       );
 
-      return result.changes === 1 ? this.get(id) : undefined;
+      if (result.changes !== 1) return undefined;
+      const ask = await this.get(id);
+
+      return ask && { ask, token };
     });
+  }
+
+  /** The ask and review a per-ask token is bound to, while its claim is live. */
+  async authenticateToken(
+    token: string,
+    now = Date.now(),
+  ): Promise<{ askId: string; reviewId: string } | undefined> {
+    if (!token.startsWith(ASK_TOKEN_PREFIX)) return undefined;
+
+    return this.store.get<{ askId: string; reviewId: string }>(
+      `SELECT id AS "askId", review_id AS "reviewId" FROM asks
+       WHERE token_hash=? AND status='running' AND lease_until>?`,
+      hashAskToken(token),
+      now,
+    );
   }
 
   async heartbeat(
@@ -133,7 +179,7 @@ export class AskQueue {
       if (!expired.length) return 0;
       await this.store.run(
         `UPDATE asks SET status=CASE WHEN attempts>=max_attempts THEN 'failed' ELSE 'pending' END,
-         claimed_by=NULL, lease_until=NULL,
+         claimed_by=NULL, lease_until=NULL, token_hash=NULL,
          error=CASE WHEN attempts>=max_attempts THEN 'Runner lease expired after maximum attempts' ELSE error END,
          updated_at=? WHERE status='running' AND lease_until<=?`,
         now,
@@ -150,7 +196,7 @@ export class AskQueue {
     resultRefs: string[],
   ): Promise<boolean> {
     const result = await this.store.run(
-      `UPDATE asks SET status='done', result_refs=?, claimed_by=NULL, lease_until=NULL, updated_at=?
+      `UPDATE asks SET status='done', result_refs=?, claimed_by=NULL, lease_until=NULL, token_hash=NULL, updated_at=?
        WHERE id=? AND status='running' AND claimed_by=?`,
       JSON.stringify(resultRefs),
       Date.now(),
@@ -165,7 +211,7 @@ export class AskQueue {
    * lease and can no longer complete it. */
   async cancel(id: string): Promise<boolean> {
     const result = await this.store.run(
-      `UPDATE asks SET status='failed', error='Cancelled', claimed_by=NULL, lease_until=NULL, updated_at=?
+      `UPDATE asks SET status='failed', error='Cancelled', claimed_by=NULL, lease_until=NULL, token_hash=NULL, updated_at=?
        WHERE id=? AND status IN ('pending','running')`,
       Date.now(),
       id,
@@ -176,7 +222,7 @@ export class AskQueue {
 
   async fail(id: string, runnerId: string, error: string): Promise<boolean> {
     const result = await this.store.run(
-      `UPDATE asks SET status='failed', error=?, claimed_by=NULL, lease_until=NULL, updated_at=?
+      `UPDATE asks SET status='failed', error=?, claimed_by=NULL, lease_until=NULL, token_hash=NULL, updated_at=?
        WHERE id=? AND status='running' AND claimed_by=?`,
       error,
       Date.now(),

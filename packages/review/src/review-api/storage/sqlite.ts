@@ -67,11 +67,11 @@ export const REVIEW_SCHEMA = `
     UNIQUE(agent, session_id));
   CREATE INDEX IF NOT EXISTS ask_conversations_review ON ask_conversations(review_id, updated_at);
   CREATE TABLE IF NOT EXISTS asks(
-    id TEXT PRIMARY KEY, review_id TEXT NOT NULL, prompt TEXT NOT NULL,
+    id TEXT PRIMARY KEY, review_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'interactive', prompt TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending','running','done','failed')),
     claimed_by TEXT, lease_until BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5, error TEXT, created_by TEXT NOT NULL,
-    result_refs TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+    result_refs TEXT, token_hash TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
   CREATE INDEX IF NOT EXISTS asks_pending ON asks(status, created_at);
   CREATE TABLE IF NOT EXISTS ask_agent_offers(agent TEXT PRIMARY KEY, offer TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS ask_agent_model_offers(agent TEXT NOT NULL, model TEXT NOT NULL, offer TEXT NOT NULL, PRIMARY KEY(agent, model));
@@ -201,6 +201,23 @@ export class SqliteMetadataStore {
         .some((column) => String(column.name) === "ask_id")
     )
       this.db.exec("ALTER TABLE pr_review_runs ADD COLUMN ask_id TEXT");
+
+    if (this.schema === "review") {
+      const askColumns = new Set(
+        this.db
+          .prepare("PRAGMA table_info(asks)")
+          .all()
+          .map((column) => String(column.name)),
+      );
+
+      if (!askColumns.has("kind"))
+        this.db.exec(
+          "ALTER TABLE asks ADD COLUMN kind TEXT NOT NULL DEFAULT 'interactive'",
+        );
+
+      if (!askColumns.has("token_hash"))
+        this.db.exec("ALTER TABLE asks ADD COLUMN token_hash TEXT");
+    }
 
     if (this.schema === "review") this.addReviewColumns();
   }
