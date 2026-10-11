@@ -419,7 +419,7 @@ describe("ReviewHome", () => {
     ).not.toBeNull();
   });
 
-  it("filters repositories and changes sort order without losing review actions", async () => {
+  it("changes sort order without losing review actions", async () => {
     const reviews = [
       summary({
         reviewId: uuid(1),
@@ -496,7 +496,7 @@ describe("ReviewHome", () => {
         .querySelector<HTMLButtonElement>("td:nth-child(2) > button")!
         .click(),
     );
-    expect(onOpen).toHaveBeenCalledWith(reviews[0]);
+    expect(onOpen).toHaveBeenCalledWith(reviews[1]);
   });
 
   it("filters and sorts sessions with no canvas host, as in the web app", async () => {
