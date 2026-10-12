@@ -945,7 +945,7 @@ function ReviewTable({
       <div {...stylex.props(styles.tableScroll)}>
         <table {...stylex.props(styles.table)}>
           <colgroup>
-            <col {...stylex.props(styles.colPr)} />
+            <col {...stylex.props(styles.colPr, styles.hidePhone)} />
             <col />
             <col {...stylex.props(styles.colBranch, styles.hideNarrow)} />
             <col {...stylex.props(styles.colDate, styles.hideNarrow)} />
@@ -954,7 +954,10 @@ function ReviewTable({
           </colgroup>
           <thead>
             <tr>
-              <th scope="col" {...stylex.props(styles.th, styles.firstCell)}>
+              <th
+                scope="col"
+                {...stylex.props(styles.th, styles.firstCell, styles.hidePhone)}
+              >
                 PR
               </th>
               <th scope="col" {...stylex.props(styles.th)}>
@@ -989,6 +992,7 @@ function ReviewTable({
                       styles.td,
                       styles.firstCell,
                       styles.strongCell,
+                      styles.hidePhone,
                       last && styles.lastRowCell,
                     )}
                   >
@@ -1083,6 +1087,12 @@ function ReviewTable({
 }
 
 const narrowContainer = "@container review-canvas (max-width: 660px)";
+
+const phoneContainer = "@container review-canvas (max-width: 480px)";
+
+// Between phone and wide: the table keeps a floor and scrolls sideways.
+const tabletContainer =
+  "@container review-canvas (min-width: 481px) and (max-width: 660px)";
 
 const TAG_SYNTAX =
   "1 to 40 letters, digits, dots, slashes, dashes or underscores, starting with a letter or digit.";
@@ -2173,7 +2183,11 @@ const styles = stylex.create({
   },
   table: {
     width: "100%",
-    minWidth: { default: "840px", [narrowContainer]: "480px" },
+    minWidth: {
+      default: "840px",
+      [tabletContainer]: "480px",
+      [phoneContainer]: "0px",
+    },
     borderCollapse: "collapse",
     tableLayout: "fixed",
     font: `${fontSize.body}/18px ${tokens.fontMono}`,
@@ -2182,6 +2196,11 @@ const styles = stylex.create({
   // title with its repository and tags, and updated time stay readable.
   hideNarrow: {
     display: { default: null, [narrowContainer]: "none" },
+  },
+  // On a phone the PR number gives way too, so the table fits without a
+  // sideways scroll that hides the Updated column.
+  hidePhone: {
+    display: { default: null, [phoneContainer]: "none" },
   },
   colPr: {
     width: "88px",
