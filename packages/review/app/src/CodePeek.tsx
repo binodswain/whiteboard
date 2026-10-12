@@ -31,6 +31,7 @@ import {
   CodeExcerptCard,
   CodeFullViewerDialog,
   CodeFullViewerLines,
+  DEFAULT_EXCERPT_HEIGHT_CAP_PX,
   SourceUnavailableCard,
 } from "./code-excerpt-card";
 import { languageFromFilename } from "./code-highlighting";
@@ -615,9 +616,13 @@ function WebSourceExcerpt({
     false,
   );
 
+  const [expanded, setExpanded] = useCodeCardExpanded(
+    `web-expanded:${stateKey}`,
+    false,
+  );
+
   const [dialog, setDialog] = useState<"snippet" | "file" | null>(null);
-  const openSnippetRef = useRef<HTMLButtonElement | null>(null);
-  const openFileRef = useRef<HTMLButtonElement | null>(null);
+  const actionsRef = useRef<HTMLButtonElement | null>(null);
 
   const language = languageFromFilename(file);
 
@@ -692,6 +697,15 @@ function WebSourceExcerpt({
 
   const gaps = lineRangeGaps(displayRanges);
 
+  // The inline cap shows about this many lines; a shorter card has nothing to
+  // expand.
+  const overflows =
+    segments.reduce(
+      (total, segment) => total + segment.code.split("\n").length,
+      0,
+    ) >
+    DEFAULT_EXCERPT_HEIGHT_CAP_PX / 20;
+
   const copyText = segments.map((segment) => segment.code).join("\n");
 
   const fullSnippetText = selectedChunks.join("\n");
@@ -709,39 +723,41 @@ function WebSourceExcerpt({
         ariaLabel={`${file}, ${side} lines ${rangeLabel}`}
         scrollKey={stateKey}
         bodyId={regionId}
-        footer={
-          <>
-            <Button
-              variant="ghost"
-              aria-expanded={showContext}
-              aria-controls={regionId}
-              onClick={() => setShowContext(!showContext)}
-            >
-              {showContext
-                ? "Hide surrounding context"
-                : "Show surrounding context"}
-            </Button>
-            <Button
-              ref={openSnippetRef}
-              variant="ghost"
-              onClick={() => setDialog("snippet")}
-            >
-              Open full snippet
-            </Button>
-            <Button
-              ref={openFileRef}
-              variant="ghost"
-              onClick={() => setDialog("file")}
-            >
-              Open full file
-            </Button>
-          </>
+        heightCapPx={expanded ? 0 : undefined}
+        toggle={
+          overflows
+            ? {
+                expanded,
+                collapsedLabel: "Expand",
+                expandedLabel: "Collapse",
+                onToggle: () => setExpanded(!expanded),
+              }
+            : undefined
         }
+        actions={[
+          {
+            id: "context",
+            label: "Show surrounding context",
+            checked: showContext,
+            onSelect: () => setShowContext(!showContext),
+          },
+          {
+            id: "snippet",
+            label: "Open full snippet",
+            onSelect: () => setDialog("snippet"),
+          },
+          {
+            id: "file",
+            label: "Open full file",
+            onSelect: () => setDialog("file"),
+          },
+        ]}
+        actionsTriggerRef={actionsRef}
       />
       <CodeFullViewerDialog
         open={dialog === "snippet"}
         onClose={() => setDialog(null)}
-        triggerRef={openSnippetRef}
+        triggerRef={actionsRef}
         label={`${file}, full snippet`}
         identity={identity}
         copyLabel="Copy full snippet"
@@ -759,7 +775,7 @@ function WebSourceExcerpt({
       <CodeFullViewerDialog
         open={dialog === "file"}
         onClose={() => setDialog(null)}
-        triggerRef={openFileRef}
+        triggerRef={actionsRef}
         label={`${file}, full file`}
         identity={identity}
         copyLabel="Copy full file"

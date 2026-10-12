@@ -3,6 +3,7 @@ import { type ReactNode, act, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { chooseCardAction } from "./code-card-test-utils";
 import { ReviewDebugSettingsProvider } from "./debug-settings";
 import { ReviewSessionProvider } from "./host/review-session";
 import { GuidedTourPanel, ReviewPanelHost } from "./review-components";
@@ -332,7 +333,7 @@ describe("Guided tour code cards", () => {
     const container = await renderLongTour(onClose);
     const second = stops(container)[1]!;
 
-    await act(async () => buttonIn(second, "Expand snippet").click());
+    await act(async () => buttonIn(second, "Expand").click());
 
     const footer = container.querySelector<HTMLElement>(
       ".side-panel > :last-child",
@@ -342,9 +343,7 @@ describe("Guided tour code cards", () => {
       footer.querySelector<HTMLButtonElement>("button")!.click(),
     );
 
-    const open = buttonIn(second, "Open full snippet");
-
-    await act(async () => open.click());
+    await chooseCardAction(second, "Open full snippet");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
 
     await act(async () =>
@@ -357,11 +356,13 @@ describe("Guided tour code cards", () => {
 
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(open);
+    expect(document.activeElement).toBe(
+      second.querySelector('button[aria-label="More actions"]'),
+    );
     expect(
       container.querySelector("[data-active-tour-anchor]")?.textContent,
     ).toBe("second");
-    expect(buttonIn(second, "Show less").getAttribute("aria-expanded")).toBe(
+    expect(buttonIn(second, "Collapse").getAttribute("aria-expanded")).toBe(
       "true",
     );
 
@@ -379,10 +380,10 @@ describe("Guided tour code cards", () => {
     let container = await renderLongTour();
     const [first, second] = stops(container);
 
-    await act(async () => buttonIn(first!, "Expand snippet").click());
+    await act(async () => buttonIn(first!, "Expand").click());
 
     expect(first!.querySelectorAll("pre > div")).toHaveLength(40);
-    expect(buttonIn(second!, "Expand snippet")).toBeDefined();
+    expect(buttonIn(second!, "Expand")).toBeDefined();
     expect(
       second!.querySelector("[data-code-omission]")?.textContent,
     ).toContain("28 more lines hidden");
@@ -394,7 +395,7 @@ describe("Guided tour code cards", () => {
     const [revisitedFirst, revisitedSecond] = stops(container);
 
     expect(revisitedFirst!.querySelectorAll("pre > div")).toHaveLength(40);
-    expect(buttonIn(revisitedSecond!, "Expand snippet")).toBeDefined();
+    expect(buttonIn(revisitedSecond!, "Expand")).toBeDefined();
   });
 });
 

@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { ActionMenu, type ActionMenuItem } from "./action-menu";
 import { usePersistedCodeScroll } from "./code-card-state";
 import { CodeFontSizeContext } from "./code-font-size";
 import {
@@ -25,10 +26,11 @@ import { isLineWithinRanges } from "./code-line-ranges";
 import { CopyButton } from "./copy-text";
 import { DiagramHeader } from "./diagram-header";
 import { drawStyles } from "./draw-styles";
-import { CloseIcon } from "./icons";
+import { CloseIcon, DisclosureChevron } from "./icons";
 import { useReviewContainer } from "./review-root-context";
 import { withClass } from "./stylex-props";
 import { tokens } from "./tokens.stylex";
+import { Button } from "./ui/button";
 import { surfaceStyles } from "./ui/surface";
 import { useCanvasScrollLock } from "./use-canvas-scroll-lock";
 
@@ -60,7 +62,18 @@ export interface CodeExcerptCardProps {
   /** Inline height cap in px; omit or pass 0 to render uncapped (the full
    * viewer dialog). */
   heightCapPx?: number;
-  footer?: ReactNode;
+  /** The one visible disclosure control under the code; secondary commands
+   * belong in `actions`. */
+  toggle?: {
+    expanded: boolean;
+    collapsedLabel: string;
+    expandedLabel: string;
+    onToggle(): void;
+  };
+  /** Secondary commands, behind the header's "more" menu. */
+  actions?: readonly ActionMenuItem[];
+  /** The menu's trigger, for a dialog it opens to return focus to. */
+  actionsTriggerRef?: RefObject<HTMLButtonElement | null>;
   ariaLabel: string;
   scrollKey?: string;
   /** The code region's id, for an expansion control's `aria-controls`. */
@@ -81,7 +94,9 @@ export function CodeExcerptCard({
   copyLabel = "Copy excerpt",
   copyText,
   heightCapPx = DEFAULT_EXCERPT_HEIGHT_CAP_PX,
-  footer,
+  toggle,
+  actions,
+  actionsTriggerRef,
   ariaLabel,
   scrollKey,
   bodyId,
@@ -108,12 +123,23 @@ export function CodeExcerptCard({
         xstyle={styles.header}
         metaStyle={styles.meta}
         action={
-          <CopyButton
-            text={copyText}
-            label={copyLabel}
-            xstyle={styles.copy}
-            iconStyle={styles.copyIcon}
-          />
+          <div {...stylex.props(styles.actions)}>
+            <CopyButton
+              text={copyText}
+              label={copyLabel}
+              xstyle={styles.copy}
+              iconStyle={styles.copyIcon}
+            />
+            {actions && actions.length > 0 && (
+              <ActionMenu
+                label="More actions"
+                items={actions}
+                triggerRef={actionsTriggerRef}
+                xstyle={styles.copy}
+                iconStyle={styles.copyIcon}
+              />
+            )}
+          </div>
         }
       />
       <pre
@@ -147,7 +173,18 @@ export function CodeExcerptCard({
           No lines to show.
         </p>
       )}
-      {footer && <div {...stylex.props(styles.footer)}>{footer}</div>}
+      {toggle && (
+        <Button
+          variant="ghost"
+          xstyle={styles.toggle}
+          aria-expanded={toggle.expanded}
+          aria-controls={bodyId}
+          onClick={toggle.onToggle}
+        >
+          <DisclosureChevron expanded={toggle.expanded} />
+          {toggle.expanded ? toggle.expandedLabel : toggle.collapsedLabel}
+        </Button>
+      )}
     </figure>
   );
 }
@@ -482,9 +519,7 @@ const styles = stylex.create({
   meta: {
     marginLeft: 0,
   },
-  copy: {
-    marginLeft: "auto",
-  },
+  copy: {},
   copyIcon: {
     width: "14px",
     height: "14px",
@@ -525,11 +560,17 @@ const styles = stylex.create({
     padding: "8px 14px",
     color: tokens.inkFaint,
   },
-  footer: {
+  actions: {
     display: "flex",
-    flexWrap: "wrap",
-    gap: "8px",
-    padding: "8px 10px",
+    alignItems: "center",
+    gap: "4px",
+    marginLeft: "auto",
+  },
+  toggle: {
+    justifyContent: "center",
+    gap: "6px",
+    width: "100%",
+    borderRadius: 0,
     borderTopWidth: "1px",
     borderTopStyle: "solid",
     borderTopColor: tokens.ruleSoft,
