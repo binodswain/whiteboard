@@ -23,6 +23,22 @@ export function writeCachedTheme(choice: ThemeChoice): void {
   } catch {
     // Storage can be blocked; the server setting still applies.
   }
+
+  applyPageTheme(choice);
+}
+
+const PAGE_THEME_COLOR = { light: "#ffffff", dark: "#0c0f15" } as const;
+
+/** Paints the page shell for a theme choice: the background behind the
+ * canvas and the browser chrome's theme color follow the app's theme, not
+ * only the OS preference. */
+export function applyPageTheme(choice: ThemeChoice): void {
+  const theme = resolveTheme(choice);
+
+  document.documentElement.dataset.theme = theme;
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute("content", PAGE_THEME_COLOR[theme]);
 }
 
 export function resolveTheme(choice: ThemeChoice): ReviewTheme {
