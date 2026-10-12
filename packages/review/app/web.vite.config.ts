@@ -9,11 +9,13 @@ export default defineConfig({
   ...desktop,
   plugins: [libavoidWasmAsset(), ...(desktop.plugins ?? [])],
   base: "/",
+  publicDir: path.resolve(__dirname, "web-public"),
   build: {
     ...desktop.build,
     outDir: "dist/web",
     emptyOutDir: true,
     manifest: false,
+    copyPublicDir: true,
     rollupOptions: {
       ...desktop.build?.rollupOptions,
       input: { index: path.resolve(__dirname, "index.html") },
