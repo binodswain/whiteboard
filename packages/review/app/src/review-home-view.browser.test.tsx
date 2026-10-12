@@ -42,6 +42,63 @@ describe("ReviewHome", () => {
     vi.restoreAllMocks();
   });
 
+  it("indexes a project with the first ready agent and shows progress while it works", async () => {
+    const created = summary({
+      reviewId: uuid(901),
+      title: "Project index: Repository",
+      pins: { repositoryId: "repo", base: "base", head: "head" },
+    });
+
+    const onCreateSession = vi.fn<
+      (input: ReviewSessionCreateInput) => Promise<ReviewApiSummary>
+    >(async () => created);
+
+    const render = (reviews: ReviewApiSummary[]) =>
+      act(async () =>
+        renderWithHost(
+          <ReviewHome
+            reviews={reviews}
+            repositories={[{ id: "repo", name: "Repository" }]}
+            askAgents={async () => [
+              {
+                id: "claude",
+                name: "Claude",
+                available: true,
+                readOnly: false,
+                bypass: false,
+              },
+            ]}
+            onCreateSession={onCreateSession}
+            onOpen={vi.fn<() => void>()}
+          />,
+        ),
+      );
+
+    await render([]);
+
+    const index = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Index project",
+    );
+
+    await act(async () => index?.click());
+
+    expect(onCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Project index: Repository",
+        repositoryId: "repo",
+        task: expect.objectContaining({ agent: "claude" }),
+      }),
+    );
+    expect(container.querySelector('[role="progressbar"]')).not.toBeNull();
+
+    await render([{ ...created, working: true }]);
+    expect(container.textContent).toContain("Indexing");
+
+    await render([{ ...created, working: false }]);
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    expect(container.textContent).toContain("Last indexed");
+  });
+
   it("submits a task with the preselected first agent, and omits an empty task", async () => {
     const created = summary({ reviewId: uuid(900), title: "Created" });
 
