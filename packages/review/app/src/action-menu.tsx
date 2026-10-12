@@ -14,7 +14,7 @@ import {
 } from "react";
 
 import { CanvasUiContext, useCanvasMenu } from "./host/canvas-ui";
-import { MoreIcon } from "./icons";
+import { CheckIcon, MoreIcon } from "./icons";
 import { useTooltip } from "./use-tooltip";
 
 export interface ActionMenuItem {
@@ -123,6 +123,9 @@ export function ActionMenu({
                 select(id);
               }}
             >
+              <span {...stylex.props(styles.check)}>
+                {checked ? <CheckIcon /> : null}
+              </span>
               {itemLabel}
             </button>
           ))}
@@ -135,4 +138,5 @@ export function ActionMenu({
 const styles = stylex.create({
   anchor: { position: "relative" },
   popover: { minWidth: "200px" },
+  check: { display: "flex", width: "15px", height: "15px", flex: "none" },
 });

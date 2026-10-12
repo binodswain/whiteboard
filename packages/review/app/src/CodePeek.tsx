@@ -697,12 +697,12 @@ function WebSourceExcerpt({
 
   const gaps = lineRangeGaps(displayRanges);
 
-  // The inline cap shows about this many lines; a shorter card has nothing to
-  // expand.
+  // The inline cap shows about this many rows, each hidden-lines divider
+  // included; a shorter card has nothing to expand.
   const overflows =
     segments.reduce(
       (total, segment) => total + segment.code.split("\n").length,
-      0,
+      gaps.length,
     ) >
     DEFAULT_EXCERPT_HEIGHT_CAP_PX / 20;
 
