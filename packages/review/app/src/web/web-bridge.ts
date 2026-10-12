@@ -450,10 +450,19 @@ export function createWebBridge(
     }
   };
 
+  // With no saved choice, a phone reads one column; a wider window gets split.
+  const defaultDiffLayout: ReviewDiffLayout = globalThis.matchMedia?.(
+    "(max-width: 720px)",
+  ).matches
+    ? "unified"
+    : "split";
+
+  const storedDiffLayout = globalThis.localStorage?.getItem(DIFF_LAYOUT_KEY);
+
   let diffLayout: ReviewDiffLayout =
-    (globalThis.localStorage?.getItem(DIFF_LAYOUT_KEY) ?? "split") === "unified"
-      ? "unified"
-      : "split";
+    storedDiffLayout === "unified" || storedDiffLayout === "split"
+      ? storedDiffLayout
+      : defaultDiffLayout;
 
   const diffLayoutListeners = new Set<(layout: ReviewDiffLayout) => void>();
 
