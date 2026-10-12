@@ -1092,7 +1092,7 @@ const phoneContainer = "@container review-canvas (max-width: 480px)";
 
 // Between phone and wide: the table keeps a floor and scrolls sideways.
 const tabletContainer =
-  "@container review-canvas (min-width: 481px) and (max-width: 660px)";
+  "@container review-canvas (width > 480px) and (width <= 660px)";
 
 const TAG_SYNTAX =
   "1 to 40 letters, digits, dots, slashes, dashes or underscores, starting with a letter or digit.";
