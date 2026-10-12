@@ -7,6 +7,7 @@ import { type ReactNode, act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { chooseCardAction, findCardAction } from "./code-card-test-utils";
 import { CodePeek, CodePeekCard, CodePeekGroup } from "./CodePeek";
 import {
   type ReviewSession,
@@ -95,10 +96,8 @@ describe("CodePeek native editor", () => {
       container.querySelector('button[aria-label="Copy excerpt"]'),
     ).not.toBeNull();
     expect(
-      [...container.querySelectorAll("button")].some((b) =>
-        b.textContent?.includes("Show surrounding context"),
-      ),
-    ).toBe(true);
+      await findCardAction(container, "Show surrounding context"),
+    ).toBeDefined();
   });
 
   it("renders map and grouped code peeks from the API on the web", async () => {
@@ -502,11 +501,7 @@ describe("CodePeek native editor", () => {
     expect(container.textContent).toMatch(/\d+ lines hidden/);
     expect(container.querySelectorAll("pre > div")).toHaveLength(7);
 
-    const toggle = [...container.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Show surrounding context"),
-    )!;
-
-    await act(async () => toggle.click());
+    await chooseCardAction(container, "Show surrounding context");
 
     expect(container.textContent).not.toMatch(/lines hidden/);
     expect(container.querySelectorAll("pre > div")).toHaveLength(23);
@@ -540,11 +535,7 @@ describe("CodePeek native editor", () => {
 
     await vi.waitFor(() => expect(container.textContent).toContain("row2"));
 
-    const openFile = [...container.querySelectorAll("button")].find(
-      (b) => b.textContent === "Open full file",
-    )!;
-
-    await act(async () => openFile.click());
+    await chooseCardAction(container, "Open full file");
 
     const dialog = document.querySelector('[role="dialog"]');
 
@@ -560,7 +551,9 @@ describe("CodePeek native editor", () => {
     );
 
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(openFile);
+    expect(document.activeElement).toBe(
+      container.querySelector('button[aria-label="More actions"]'),
+    );
   });
 
   it("shows Source unavailable with file/side/revision identity when the web revision can't be loaded", async () => {
@@ -778,11 +771,7 @@ describe("CodePeek native editor", () => {
 
     expect(writeText).toHaveBeenLastCalledWith("  l10\n  l11\n  l20\n  l21");
 
-    const openSnippet = [...container.querySelectorAll("button")].find(
-      (b) => b.textContent === "Open full snippet",
-    )!;
-
-    await act(async () => openSnippet.click());
+    await chooseCardAction(container, "Open full snippet");
     await act(async () =>
       document
         .querySelector<HTMLButtonElement>(
@@ -813,15 +802,7 @@ describe("CodePeek native editor", () => {
 
     await vi.waitFor(() => expect(container.textContent).toContain("w2"));
 
-    const toggle = [...container.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Show surrounding context"),
-    )!;
-
-    expect(
-      document.getElementById(toggle.getAttribute("aria-controls")!)?.tagName,
-    ).toBe("PRE");
-
-    await act(async () => toggle.click());
+    await chooseCardAction(container, "Show surrounding context");
     await act(async () => root?.unmount());
     document.body.replaceChildren();
 
@@ -869,11 +850,7 @@ describe("CodePeek native editor", () => {
     await show("step-a");
     await vi.waitFor(() => expect(container.textContent).toContain("s10"));
 
-    await act(async () =>
-      [...container.querySelectorAll("button")]
-        .find((b) => b.textContent?.includes("Show surrounding context"))!
-        .click(),
-    );
+    await chooseCardAction(container, "Show surrounding context");
 
     expect(container.querySelectorAll("pre > div")).toHaveLength(12);
 
@@ -926,11 +903,7 @@ describe("CodePeek native editor", () => {
 
     const first = await renderScoped("step-a");
 
-    const toggle = [...first.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Show surrounding context"),
-    )!;
-
-    await act(async () => toggle.click());
+    await chooseCardAction(first, "Show surrounding context");
     expect(first.querySelectorAll("pre > div")).toHaveLength(12);
 
     await remount();

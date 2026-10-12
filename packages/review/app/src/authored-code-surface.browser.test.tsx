@@ -3,6 +3,7 @@ import { type Root, createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthoredCodeSurface } from "./authored-code-surface";
+import { chooseCardAction } from "./code-card-test-utils";
 import { ReviewSessionProvider } from "./host/review-session";
 import type { PeekAnchor } from "./review-panel-model";
 import { testReviewSession } from "./review-session-test-utils";
@@ -66,7 +67,7 @@ describe("AuthoredCodeSurface", () => {
     expect(container.textContent).toContain("5 lines");
     expect(
       [...container.querySelectorAll("button")].some((b) =>
-        b.textContent?.includes("Expand snippet"),
+        b.textContent?.includes("Expand"),
       ),
     ).toBe(false);
   });
@@ -85,7 +86,7 @@ describe("AuthoredCodeSurface", () => {
     ).toContain("88 more lines hidden");
 
     const expandButton = [...container.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Expand snippet"),
+      b.textContent?.includes("Expand"),
     )!;
 
     expect(expandButton.textContent).toContain("88 more");
@@ -97,7 +98,7 @@ describe("AuthoredCodeSurface", () => {
     expect(container.textContent).toContain("100 lines");
     expect(
       [...container.querySelectorAll("button")].some(
-        (b) => b.textContent === "Show less",
+        (b) => b.textContent === "Collapse",
       ),
     ).toBe(true);
   });
@@ -108,7 +109,7 @@ describe("AuthoredCodeSurface", () => {
     const first = await renderCard(anchor("step-a"), code);
 
     const expandButton = [...first.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Expand snippet"),
+      b.textContent?.includes("Expand"),
     )!;
 
     await act(async () => expandButton.click());
@@ -154,11 +155,7 @@ describe("AuthoredCodeSurface", () => {
     const code = Array.from({ length: 30 }, (_, i) => `n${i}`).join("\n");
     const container = await renderCard(anchor(), code, "ts");
 
-    const openButton = [...container.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Open full snippet"),
-    )!;
-
-    await act(async () => openButton.click());
+    await chooseCardAction(container, "Open full snippet");
 
     const dialog = document.querySelector('[role="dialog"]');
 
@@ -176,7 +173,9 @@ describe("AuthoredCodeSurface", () => {
     );
 
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(openButton);
+    expect(document.activeElement).toBe(
+      container.querySelector('button[aria-label="More actions"]'),
+    );
   });
 
   it("numbers lines from the anchor's authored starting line", async () => {
@@ -210,7 +209,7 @@ describe("AuthoredCodeSurface", () => {
   it("names the code region it expands and keeps the expanded snippet within the height cap", async () => {
     const code = Array.from({ length: 30 }, (_, i) => `  e${i}();`).join("\n");
     const container = await renderCard(anchor(), code, "ts");
-    const expand = button(container, "Expand snippet");
+    const expand = button(container, "Expand");
 
     const region = document.getElementById(
       expand.getAttribute("aria-controls")!,
@@ -241,7 +240,7 @@ describe("AuthoredCodeSurface", () => {
     const code = Array.from({ length: 30 }, (_, i) => `t${i}`).join("\n");
     const container = await renderCard(anchor(), code);
 
-    await act(async () => button(container, "Open full snippet").click());
+    await chooseCardAction(container, "Open full snippet");
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
     const buttons = [...dialog.querySelectorAll("button")];

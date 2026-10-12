@@ -106,6 +106,22 @@ export function PlusIcon({ xstyle }: IconProps = {}): ReactElement {
   );
 }
 
+/** Three dots: a trigger for a menu of secondary actions. */
+export function MoreIcon({ xstyle }: IconProps = {}): ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      {...stylex.props(styles.icon, styles.filled, xstyle)}
+      focusable="false"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="5" cy="12" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
+      <circle cx="19" cy="12" r="1.6" />
+    </svg>
+  );
+}
+
 export function MinusIcon({ xstyle }: IconProps = {}): ReactElement {
   return (
     <svg
@@ -482,6 +498,10 @@ const drawIn = stylex.keyframes({
 const reducedMotion = "@media (prefers-reduced-motion: reduce)";
 
 const styles = stylex.create({
+  filled: {
+    fill: "currentColor",
+    stroke: "none",
+  },
   icon: {
     width: "15px",
     height: "15px",

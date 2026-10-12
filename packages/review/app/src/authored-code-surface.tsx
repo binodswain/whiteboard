@@ -7,7 +7,6 @@ import {
   CodeFullViewerLines,
 } from "./code-excerpt-card";
 import type { PeekAnchor } from "./review-panel-model";
-import { Button } from "./ui/button";
 
 /** A 100-line standalone snippet initially shows its first 12 logical
  * lines; a shorter one shows completely. */
@@ -42,7 +41,7 @@ export function AuthoredCodeSurface({
 
   const [expanded, setExpanded] = useCodeCardExpanded(stateKey, false);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const openFullSnippetRef = useRef<HTMLButtonElement | null>(null);
+  const actionsRef = useRef<HTMLButtonElement | null>(null);
   const regionId = useId();
 
   const showAll = expanded || !truncatable;
@@ -68,34 +67,29 @@ export function AuthoredCodeSurface({
         }
         scrollKey={stateKey}
         bodyId={regionId}
-        footer={
-          <>
-            {truncatable && (
-              <Button
-                variant="ghost"
-                aria-expanded={expanded}
-                aria-controls={regionId}
-                onClick={() => setExpanded(!expanded)}
-              >
-                {expanded
-                  ? "Show less"
-                  : `Expand snippet (${totalLines - STANDALONE_PREVIEW_LINES} more)`}
-              </Button>
-            )}
-            <Button
-              ref={openFullSnippetRef}
-              variant="ghost"
-              onClick={() => setDialogOpen(true)}
-            >
-              Open full snippet
-            </Button>
-          </>
+        toggle={
+          truncatable
+            ? {
+                expanded,
+                collapsedLabel: `Expand (${totalLines - STANDALONE_PREVIEW_LINES} more lines)`,
+                expandedLabel: "Collapse",
+                onToggle: () => setExpanded(!expanded),
+              }
+            : undefined
         }
+        actions={[
+          {
+            id: "snippet",
+            label: "Open full snippet",
+            onSelect: () => setDialogOpen(true),
+          },
+        ]}
+        actionsTriggerRef={actionsRef}
       />
       <CodeFullViewerDialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
-        triggerRef={openFullSnippetRef}
+        triggerRef={actionsRef}
         label={language ? `${language} snippet, full` : "Code snippet, full"}
         copyLabel="Copy full snippet"
         copyText={fullText}
