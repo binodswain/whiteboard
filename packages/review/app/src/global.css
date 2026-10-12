@@ -328,16 +328,18 @@ button {
 
 /* Windows High Contrast and other forced-colors modes replace our palette
    with system colors and drop backgrounds, so controls that are told apart
-   only by a fill vanish. Give them a visible edge and keep focus legible. */
+   only by a fill vanish. Give them a visible edge and keep focus legible.
+   !important because the component styles are single classes that reset the
+   border, and a :where() selector has no specificity to beat them. */
 @media (forced-colors: active) {
   :where(.review-canvas-root)
     :where(button, [role="menuitem"], [role="radio"], input, select) {
-    border: 1px solid ButtonText;
+    border: 1px solid ButtonText !important;
   }
 
   :where(.review-canvas-root)
     :where(button, a, [tabindex], input, select):focus-visible {
-    outline: 2px solid Highlight;
-    outline-offset: 2px;
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px !important;
   }
 }
